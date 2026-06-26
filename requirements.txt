@@ -1,0 +1,1 @@
+pytest>=7.0    # optional: only needed to run the test suite via pytest

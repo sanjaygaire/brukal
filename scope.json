@@ -1,0 +1,16 @@
+{
+  "engagement": "brukal-lab-01",
+  "authorized_cidrs": [
+    "10.10.10.0/24",
+    "127.0.0.1/32"
+  ],
+  "allowlisted_tools": [
+    "nmap",
+    "gobuster",
+    "nikto",
+    "whatweb",
+    "curl",
+    "dig"
+  ],
+  "rate_limit_per_min": 30
+}

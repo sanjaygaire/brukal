@@ -1,0 +1,27 @@
+# The cage: a Kali container holding ONLY the allowlisted tools.
+# Nothing executes here except commands the gate has approved and handed in
+# via `docker exec`. No agent ever gets an interactive shell in this container.
+FROM kalilinux/kali-rolling
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install the tools named in scope.json -> allowlisted_tools.
+# Keep this list in sync with your scope; if a tool is not installed here it
+# simply cannot run even if it were (wrongly) allowlisted.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nmap \
+        gobuster \
+        nikto \
+        whatweb \
+        curl \
+        dnsutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# A non-root user for execution. Defence in depth: even an approved tool runs
+# without root inside the cage.
+RUN useradd -m -s /usr/sbin/nologin operator
+USER operator
+
+# Idle entrypoint: the container just stays alive so the executor can
+# `docker exec` approved commands into it.
+ENTRYPOINT ["sleep", "infinity"]
