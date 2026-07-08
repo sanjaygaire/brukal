@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brukal"
+version = "0.1.0"
+description = "Trust-governed penetration testing: a deterministic scope gate, sandboxed execution, and a tamper-evident audit log."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Ashish" }]
+keywords = ["security", "penetration-testing", "llm", "agent", "governance"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Security",
+]
+
+# The SAFETY CORE has ZERO third-party dependencies (standard library only).
+# This is deliberate: fewer dependencies means a smaller trusted base to audit.
+dependencies = []
+
+[project.optional-dependencies]
+# The AI agents (milestone 2+) need these. Install with:  pip install "brukal[agents]"
+agents = [
+    "anthropic>=0.40",
+    "pydantic>=2.0",
+]
+# Development / running the test suite:
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+# After `pip install .` this makes the `brukal` command available in the shell.
+brukal = "brukal.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/YOUR_USERNAME/brukal"
+Repository = "https://github.com/YOUR_USERNAME/brukal"
+
+[tool.setuptools.packages.find]
+# Find the `brukal` package (and sub-packages like brukal.agents).
+include = ["brukal*"]

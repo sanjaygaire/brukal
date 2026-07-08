@@ -1,0 +1,16 @@
+# Runs the scope-interception test suite on every push and pull request.
+# This is your headline safety claim, checked automatically by GitHub.
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (safety core needs no deps; add dev extras for pytest)
+        run: pip install -e ".[dev]"
+      - name: Run the scope-interception suite
+        run: python -m pytest tests/ -v

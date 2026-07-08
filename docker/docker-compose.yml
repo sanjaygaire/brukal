@@ -1,0 +1,26 @@
+# Brings up the Kali cage as a long-lived container named `brukal-kali`.
+#
+#   docker compose -f docker/docker-compose.yml up -d --build
+#
+# Network isolation
+# -----------------
+# By default this container is placed on an isolated bridge network. To let it
+# reach ONLY your authorised lab range, attach that network here and keep this
+# container off any network that can reach the wider internet or your host LAN.
+# The gate enforces scope in software; this network boundary is defence in
+# depth at the infrastructure layer (belt and braces).
+services:
+  kali:
+    build:
+      context: .
+      dockerfile: Dockerfile.kali
+    container_name: brukal-kali
+    networks:
+      - brukal_isolated
+    # No published ports: nothing inbound. The only way in is `docker exec`,
+    # which the executor uses for approved commands.
+
+networks:
+  brukal_isolated:
+    driver: bridge
+    internal: false   # set true to fully cut internet; attach a lab net to reach targets

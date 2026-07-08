@@ -1,0 +1,7 @@
+# The SAFETY CORE (gate, executor, audit, scope) needs NOTHING beyond the
+# Python standard library. These are only for the AI agents and tests:
+#   pip install "brukal[agents]"   -> anthropic, pydantic
+#   pip install "brukal[dev]"      -> pytest
+anthropic>=0.40
+pydantic>=2.0
+pytest>=7.0
