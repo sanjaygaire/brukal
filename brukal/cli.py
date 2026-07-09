@@ -22,6 +22,21 @@ from pathlib import Path
 from brukal import AuditLog, DockerKali, Executor, FakeKali, Gate, load_scope
 
 
+def _interactive_approver(decision) -> bool:
+    """Human sign-off for an ESCALATE, at the terminal. Fail-closed: anything
+    that is not an explicit yes (incl. EOF / no TTY) is treated as refuse."""
+    print("\n  ESCALATION — human sign-off required")
+    print(f"  action : {decision.action}")
+    print(f"  risk   : {decision.risk_band} "
+          f"(reversibility={decision.reversibility}, blast={decision.blast_radius})")
+    print(f"  reason : {decision.reason}")
+    try:
+        answer = input("  approve this action? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    return answer in ("y", "yes")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="brukal", description="Trust-governed pentest gate")
     p.add_argument("command", nargs="?", help="the command to propose")
@@ -44,13 +59,16 @@ def main(argv: list[str] | None = None) -> int:
 
     gate = Gate(load_scope(args.scope))
     kali = FakeKali() if args.fake else DockerKali()
-    executor = Executor(gate, kali, audit)
+    executor = Executor(gate, kali, audit, approver=_interactive_approver)
 
     decision, result = executor.run(args.command, args.target, agent=args.agent)
 
     print(f"\n  verdict : {decision.verdict}")
     print(f"  reason  : {decision.reason}")
     print(f"  layer   : {decision.layer}")
+    if decision.risk_band is not None:
+        print(f"  risk    : {decision.risk_band} "
+              f"(reversibility={decision.reversibility}, blast={decision.blast_radius})")
     if result is not None:
         print(f"  exit    : {result.returncode}")
         if result.stdout:
@@ -60,7 +78,9 @@ def main(argv: list[str] | None = None) -> int:
             print("  --- stderr ---")
             print("  " + result.stderr.replace("\n", "\n  ").rstrip())
     print()
-    return 0 if decision.allowed else 1
+    # 0 = the action was permitted and ran (ALLOW, or an approved ESCALATE);
+    # 1 = it was blocked (DENY, or an ESCALATE the human declined).
+    return 0 if result is not None else 1
 
 
 if __name__ == "__main__":

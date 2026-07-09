@@ -26,6 +26,7 @@ import shlex
 import time
 from dataclasses import dataclass, field
 
+from .risk import assess
 from .scope import Scope
 
 # Characters that enable shell command chaining / substitution. If any appear
@@ -53,6 +54,11 @@ class Decision:
     reason: str           # human-readable explanation
     layer: str            # which check decided it, e.g. "hard:scope"
     timestamp: float = field(default_factory=time.time)
+    # Soft-risk features (milestone 3). None on hard denies (never reached the
+    # soft layer); set on every decision the soft layer produced.
+    risk_band: str | None = None        # "LOW" | "MEDIUM" | "HIGH"
+    reversibility: str | None = None    # "reversible" | "unknown" | "irreversible"
+    blast_radius: str | None = None     # "host" | "subnet" | "wide"
 
     @property
     def allowed(self) -> bool:
@@ -127,16 +133,38 @@ class Gate:
             return self._deny(command, target, agent,
                               "rate limit exceeded", "hard:rate")
 
-        # ---- Passed the hard gate. -------------------------------------------
-        # MILESTONE 3 EXTENSION POINT:
-        #   soft = soft_score(command)           # impact + policy risk
-        #   if derive_reversibility(command) == "irreversible":
-        #       return Decision("ESCALATE", ...) # human sign-off
-        #   if soft > THETA_HIGH:
-        #       return self._deny(... "risk above ceiling" ...)
-        #   if soft > THETA_LOW:
-        #       return Decision("ESCALATE", ...)
-        # For milestone 1, surviving the hard gate means ALLOW.
+        # ---- Passed the hard gate. Now the SOFT risk layer (milestone 3). ----
+        # The hard gate can only DENY; the soft layer can only add caution on top
+        # of an already-in-scope action. It derives risk deterministically from
+        # the command text (no LLM, no self-report) and returns ALLOW / ESCALATE /
+        # DENY. It can never turn a hard DENY into an ALLOW — by construction it
+        # only runs here, after every hard check has already passed.
+        profile = assess(command)
+
+        if profile.decision == "DENY":
+            # Soft ceiling crossed (e.g. irreversible + wide blast radius).
+            return Decision("DENY", command, target, agent,
+                            f"risk ceiling exceeded — {profile.reason}",
+                            "soft:deny",
+                            risk_band=profile.band,
+                            reversibility=profile.reversibility,
+                            blast_radius=profile.blast_radius)
+
+        # ALLOW and ESCALATE may both end in execution, so reserve a rate slot
+        # for either (conservative: an escalation the human later declines has
+        # still spent budget — fail toward less traffic, not more).
         self._recent_allows.append(time.time())
+
+        if profile.decision == "ESCALATE":
+            return Decision("ESCALATE", command, target, agent,
+                            f"needs human sign-off — {profile.reason}",
+                            "soft:escalate",
+                            risk_band=profile.band,
+                            reversibility=profile.reversibility,
+                            blast_radius=profile.blast_radius)
+
         return Decision("ALLOW", command, target, agent,
-                        "passed all hard constraints", "hard:passed")
+                        f"passed hard gate; {profile.reason}", "soft:allow",
+                        risk_band=profile.band,
+                        reversibility=profile.reversibility,
+                        blast_radius=profile.blast_radius)
