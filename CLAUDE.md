@@ -72,11 +72,15 @@ scope.json ─► scope.py ─► gate.py ─► executor.py ─► kali.py ─�
 
 ## Working copy (verify before editing)
 
-- **The ONLY repo to edit:** `.../brukal_updated/brukal/` → remote
-  `github.com/sanjaygaire/brukal` (branch `main`). Confirm with `git status`.
-- The outer `.../brukal_milestone1/brukal/` is a **stale copy — do not edit it.**
-- Test env: `/home/brute/brukal-venv` (pytest, anthropic, pydantic). Run from the
-  repo root: `/home/brute/brukal-venv/bin/python -m pytest`.
+- **The ONLY repo to edit:** `C:\Users\ashis\Desktop\Brukal\brukal\` (after the
+  2026-07-10 reorg). If the reorg hasn't happened yet, it is still nested at
+  `...\Brukal\brukal_milestone1\brukal\brukal_updated\brukal\`. Either way, the
+  real repo is the one with a `.git` — confirm with `git status` (remote
+  `github.com/sanjaygaire/brukal`, branch `main`).
+- Any `brukal_milestone1\` / `_stale_delete_me\` tree is a **stale copy — never
+  edit it.**
+- Test env (WSL): `/home/brute/brukal-venv` (pytest, anthropic, pydantic). Run
+  from the repo root: `/home/brute/brukal-venv/bin/python -m pytest`.
 
 ## Verified state (as of 2026-07-09 — see Brukal.md for the live log)
 
