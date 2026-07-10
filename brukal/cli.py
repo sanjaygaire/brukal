@@ -306,8 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--container", default="brukal-kali")
     pr.add_argument("--model", default=None, help="model id (provider-specific)")
     pr.add_argument("--provider", default=None,
-                    help="anthropic (default) | ollama | openai | openrouter | groq | "
-                         "lmstudio | openai-compatible")
+                    help="anthropic (default) | ollama | glm/zhipu | deepseek | "
+                         "openrouter | openai | groq | lmstudio | openai-compatible")
     pr.add_argument("--base-url", default=None, help="endpoint for openai-compatible")
     pr.set_defaults(func=_cmd_run)
 

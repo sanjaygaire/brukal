@@ -32,9 +32,12 @@ _PRESETS = {
     "ollama":      ("http://localhost:11434/v1", "OLLAMA_API_KEY", "llama3.1"),
     "lmstudio":    ("http://localhost:1234/v1", "LMSTUDIO_API_KEY", None),
     "openrouter":  ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY",
-                    "meta-llama/llama-3.1-8b-instruct"),
+                    "z-ai/glm-4.6"),
     "groq":        ("https://api.groq.com/openai/v1", "GROQ_API_KEY",
                     "llama-3.1-8b-instant"),
+    "zhipu":       ("https://api.z.ai/api/paas/v4", "ZHIPU_API_KEY", "glm-4.6"),
+    "glm":         ("https://api.z.ai/api/paas/v4", "ZHIPU_API_KEY", "glm-4.6"),
+    "deepseek":    ("https://api.deepseek.com", "DEEPSEEK_API_KEY", "deepseek-chat"),
     "openai-compatible": (None, "OPENAI_API_KEY", None),
 }
 _ANTHROPIC_DEFAULT = "claude-sonnet-5"

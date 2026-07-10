@@ -59,6 +59,9 @@ def test_presets_resolve():
         "https://api.groq.com/openai/v1/chat/completions"
     assert LLMClient(provider="ollama", model="x")._backend.url == \
         "http://localhost:11434/v1/chat/completions"
+    assert LLMClient(provider="glm", model="glm-4.6")._backend.url == \
+        "https://api.z.ai/api/paas/v4/chat/completions"
+    assert LLMClient(provider="deepseek")._backend.model == "deepseek-chat"
 
 
 def test_bad_config_fails_loudly(monkeypatch):
