@@ -186,6 +186,17 @@ def _cmd_run(args) -> int:
         provider=args.provider, base_url=args.base_url)
 
 
+def _cmd_solve(args) -> int:
+    from brukal.assist import run_solve
+    provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
+    if provider == "anthropic" and not args.fake and not _ensure_key():
+        print("  ⚠ No key set. Set ANTHROPIC_API_KEY, or use --provider ollama --model qwen2.5")
+    return run_solve(
+        args.target, fake=args.fake, yes_authorised=args.yes_authorised,
+        scope_path=args.scope, audit_path=args.audit, container=args.container,
+        model=args.model, provider=args.provider, base_url=args.base_url)
+
+
 def _cmd_exec(args) -> int:
     audit = AuditLog(args.audit)
     gate = Gate(load_scope(args.scope))
@@ -300,6 +311,20 @@ def main(argv: list[str] | None = None) -> int:
                          "lmstudio | openai-compatible")
     pr.add_argument("--base-url", default=None, help="endpoint for openai-compatible")
     pr.set_defaults(func=_cmd_run)
+
+    psv = sub.add_parser("solve", help="interactive human-assisted box solver")
+    psv.add_argument("target")
+    psv.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
+    psv.add_argument("--yes-authorised", action="store_true",
+                     help="confirm you are authorised (required for a live run)")
+    psv.add_argument("--scope", default="scope.json")
+    psv.add_argument("--audit", default="runs/audit.jsonl")
+    psv.add_argument("--container", default="brukal-kali")
+    psv.add_argument("--model", default=None)
+    psv.add_argument("--provider", default=None,
+                     help="anthropic (default) | ollama | openai | openrouter | ...")
+    psv.add_argument("--base-url", default=None)
+    psv.set_defaults(func=_cmd_solve)
 
     pe = sub.add_parser("exec", help="propose one command through the gate by hand")
     pe.add_argument("command")

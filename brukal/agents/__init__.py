@@ -2,5 +2,7 @@
 from .recon import ReconAgent
 from .exploit import ExploitAgent
 from .verify import VerifyAgent, VerifyResult
+from .strategist import StrategistAgent, Suggestion
 
-__all__ = ["ReconAgent", "ExploitAgent", "VerifyAgent", "VerifyResult"]
+__all__ = ["ReconAgent", "ExploitAgent", "VerifyAgent", "VerifyResult",
+           "StrategistAgent", "Suggestion"]

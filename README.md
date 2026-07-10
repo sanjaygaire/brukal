@@ -153,6 +153,21 @@ Supported: `anthropic` (default), `ollama`, `lmstudio`, `openai`, `openrouter`,
 `BRUKAL_BASE_URL`. For a free local run: install [Ollama](https://ollama.com),
 `ollama pull qwen2.5`, then use `--provider ollama`.
 
+### Human-assisted solving (governed copilot)
+
+`brukal solve <target>` is an interactive loop: a strategist agent proposes the
+next step (drawing on the skill packs), and you `run` a suggested command
+(through the gate), record a `manual` step you did yourself, add a `note`, or
+`ask` a question. Brukal reasons and logs; you do the ungoverned exploitation on
+your own authority — a suggested command is **never** a bypass, it still goes
+through the gate. Works with any provider, so you can copilot a box on a free
+local model:
+
+```bash
+brukal solve 172.20.0.3 --yes-authorised --scope runs/juice.json \
+    --provider ollama --model qwen2.5
+```
+
 ---
 
 ## Configuring scope
