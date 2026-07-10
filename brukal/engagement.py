@@ -44,7 +44,7 @@ def interactive_approver(decision) -> bool:
 def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
         scope_path: str = "scope.json", audit_path: str = "runs/audit.jsonl",
         vault_path: str = "runs/vault", container: str = "brukal-kali",
-        model: str | None = None, approver=None) -> int:
+        model: str | None = None, approver=None, tui: bool = False) -> int:
     """Run the full engagement against `target`. Returns a process exit code."""
     try:
         from .agents import ExploitAgent, ReconAgent, VerifyAgent
@@ -70,7 +70,33 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
     gate = Gate(scope, trust=trust)
     kali = FakeKali() if fake else DockerKali(container=container)
     audit = AuditLog(audit_path)
-    executor = Executor(gate, kali, audit, approver=approver or interactive_approver)
+
+    # Knowledge layer + strategy + shared memory (built before the executor so a
+    # live dashboard can supply the escalation approver).
+    from .skills import SkillLibrary
+    skills = SkillLibrary()
+    blackboard = Blackboard(vault_path, scope)
+    tree = TaskTree()
+    t_enum = tree.add(f"Enumerate open services on {target}", target, agent="recon")
+    tree.add(f"Fingerprint any web service on {target}", target, agent="recon")
+    tree.add(f"Probe the most promising weakness found on {target}", target,
+             agent="exploit", parent=t_enum.id)
+    tree.add(f"Independently verify any claimed success on {target}", target,
+             agent="verify", parent=t_enum.id)
+
+    # Optional live dashboard (needs `rich`). It is a pure observer + the approver.
+    dashboard = None
+    if tui:
+        try:
+            from .tui import Dashboard
+            dashboard = Dashboard(scope.engagement, target,
+                                  "fake" if fake else f"docker:{container}",
+                                  tree, trust, n_skills=len(skills))
+        except Exception as e:
+            print(f"(live dashboard unavailable: {e} — install `rich`. Continuing plain.)")
+
+    chosen_approver = approver or (dashboard.approver if dashboard else interactive_approver)
+    executor = Executor(gate, kali, audit, approver=chosen_approver)
 
     try:
         llm = LLMClient(model=model)
@@ -84,28 +110,17 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
         "exploit": ExploitAgent(llm, executor),
         "verify": VerifyAgent(llm, executor),
     }
+    orch = Orchestrator(tree, agents, blackboard, trust=trust, skills=skills,
+                        observer=(dashboard.on_event if dashboard else None))
 
-    # Knowledge layer: load any vendored offensive skill packs (reference only).
-    from .skills import SkillLibrary
-    skills = SkillLibrary()
-
-    blackboard = Blackboard(vault_path, scope)
-    tree = TaskTree()
-    t_enum = tree.add(f"Enumerate open services on {target}", target, agent="recon")
-    tree.add(f"Fingerprint any web service on {target}", target, agent="recon")
-    tree.add(f"Probe the most promising weakness found on {target}", target,
-             agent="exploit", parent=t_enum.id)
-    tree.add(f"Independently verify any claimed success on {target}", target,
-             agent="verify", parent=t_enum.id)
-
-    orch = Orchestrator(tree, agents, blackboard, trust=trust, skills=skills)
-
-    print(f"\nEngagement: {scope.engagement}   target: {target}   "
-          f"cage: {'fake' if fake else 'docker:' + container}")
-    print(f"skills    : {len(skills)} playbooks loaded (reference only)")
-    print(f"blackboard: {Path(vault_path).resolve()}\n")
-
-    summary = orch.run()
+    if dashboard is not None:
+        summary = dashboard.run(orch.run)
+    else:
+        print(f"\nEngagement: {scope.engagement}   target: {target}   "
+              f"cage: {'fake' if fake else 'docker:' + container}")
+        print(f"skills    : {len(skills)} playbooks loaded (reference only)")
+        print(f"blackboard: {Path(vault_path).resolve()}\n")
+        summary = orch.run()
 
     print("─" * 62)
     print(f"tasks: executed={summary['executed']} failed={summary['failed']} "

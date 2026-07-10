@@ -122,7 +122,7 @@ brukal exec "nmap -sS -sV -Pn 10.10.10.5" 10.10.10.5     # one command, by hand
 # 3. run the full multi-agent engagement (recon → exploit → verify, adaptive
 #    trust, human sign-off on escalations). Needs ANTHROPIC_API_KEY.
 export ANTHROPIC_API_KEY=sk-...
-brukal run 10.10.10.5 --yes-authorised
+brukal run 10.10.10.5 --yes-authorised --tui    # --tui = live dashboard
 
 # 4. review the audit trail and findings
 brukal verify

@@ -24,7 +24,7 @@ from .tasktree import Task, TaskStatus, TaskTree
 
 class Orchestrator:
     def __init__(self, task_tree: TaskTree, agents: dict, blackboard: Blackboard,
-                 trust=None, skills=None):
+                 trust=None, skills=None, observer=None):
         # agents: {role: agent}, each agent already holding the Executor+LLM.
         self._tree = task_tree
         self._agents = agents
@@ -37,6 +37,17 @@ class Orchestrator:
         # playbook is injected into the agent's context as UNTRUSTED REFERENCE.
         # It informs the agent's proposal; it never bypasses the gate.
         self._skills = skills
+        # Optional observer(kind, payload) callback for live views (the TUI). It
+        # is fire-and-forget telemetry — it never affects control flow, so a
+        # broken observer can never change what runs.
+        self._observer = observer
+
+    def _emit(self, kind: str, **payload) -> None:
+        if self._observer is not None:
+            try:
+                self._observer(kind, payload)
+            except Exception:
+                pass   # a display error must never derail the engagement
 
     def _digest(self, task: Task, request, outcome) -> dict:
         """Compress one turn's outcome to a short, storable summary. The raw
@@ -61,15 +72,18 @@ class Orchestrator:
         """Run every pending task in the tree, sequentially. Returns a small
         summary dict (executed / failed / blocked counts)."""
         executed = failed = blocked = 0
+        self._emit("start")
 
         while (task := self._tree.next_pending()) is not None:
             agent = self._agents.get(task.agent)
             if agent is None:
                 self._tree.mark(task, TaskStatus.BLOCKED)
                 blocked += 1
+                self._emit("turn", task=task, decision=None, result=None)
                 continue
 
             self._tree.mark(task, TaskStatus.IN_PROGRESS)
+            self._emit("task_start", task=task)
 
             # Scoped read: only prior findings relevant to this target.
             context = self._bb.read_context(task.agent, task.target)
@@ -105,6 +119,11 @@ class Orchestrator:
                 self._tree.mark(task, TaskStatus.FAILED)
                 failed += 1
 
+            self._emit("turn", task=task,
+                       decision=(outcome[0] if outcome else None),
+                       result=(outcome[1] if outcome else None))
+
         # Persist the final tree into the vault for a human to read.
         self._bb.save_task_tree(self._tree.to_markdown())
+        self._emit("end", executed=executed, failed=failed, blocked=blocked)
         return {"executed": executed, "failed": failed, "blocked": blocked}

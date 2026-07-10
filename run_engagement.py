@@ -43,11 +43,12 @@ def main(argv=None) -> int:
     p.add_argument("--vault", default="runs/vault", help="blackboard vault directory")
     p.add_argument("--container", default="brukal-kali", help="cage container name")
     p.add_argument("--model", default=None, help="override the model id")
+    p.add_argument("--tui", action="store_true", help="live dashboard (needs rich)")
     args = p.parse_args(argv)
 
     return run(args.target, fake=args.fake, yes_authorised=args.yes_authorised,
                scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
-               container=args.container, model=args.model)
+               container=args.container, model=args.model, tui=args.tui)
 
 
 if __name__ == "__main__":

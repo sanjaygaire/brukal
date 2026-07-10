@@ -157,7 +157,7 @@ def _cmd_hunt(args) -> int:
     return run_engagement(
         target, fake=args.fake, yes_authorised=True, scope_path=args.scope,
         audit_path=args.audit, vault_path=args.vault, container=args.container,
-        model=args.model)
+        model=args.model, tui=args.tui)
 
 
 def _cmd_target(args) -> int:
@@ -179,7 +179,7 @@ def _cmd_run(args) -> int:
     return run_engagement(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
-        container=args.container, model=args.model)
+        container=args.container, model=args.model, tui=args.tui)
 
 
 def _cmd_exec(args) -> int:
@@ -259,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
     ph = sub.add_parser("hunt", help="guided engagement (prompts for key + target)")
     ph.add_argument("target", nargs="?", help="target IP/CIDR (prompted if omitted)")
     ph.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
+    ph.add_argument("--tui", action=argparse.BooleanOptionalAction, default=True,
+                    help="live dashboard (default on; --no-tui to disable)")
     ph.add_argument("--yes", action="store_true", help="skip the broad-range prompt")
     ph.add_argument("--scope", default="scope.json")
     ph.add_argument("--audit", default="runs/audit.jsonl")
@@ -280,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
     pr.add_argument("--yes-authorised", action="store_true",
                     help="confirm you are authorised (required for a live run)")
+    pr.add_argument("--tui", action="store_true", help="live dashboard")
     pr.add_argument("--scope", default="scope.json")
     pr.add_argument("--audit", default="runs/audit.jsonl")
     pr.add_argument("--vault", default="runs/vault")

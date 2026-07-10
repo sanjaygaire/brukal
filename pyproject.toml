@@ -28,6 +28,10 @@ agents = [
     "anthropic>=0.40",
     "pydantic>=2.0",
 ]
+# The live dashboard (brukal run --tui). Install with:  pip install "brukal[tui]"
+tui = [
+    "rich>=13",
+]
 # Development / running the test suite:
 dev = [
     "pytest>=7.0",
