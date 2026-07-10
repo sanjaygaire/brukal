@@ -44,7 +44,8 @@ def interactive_approver(decision) -> bool:
 def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
         scope_path: str = "scope.json", audit_path: str = "runs/audit.jsonl",
         vault_path: str = "runs/vault", container: str = "brukal-kali",
-        model: str | None = None, approver=None, tui: bool = False) -> int:
+        model: str | None = None, approver=None, tui: bool = False,
+        provider: str | None = None, base_url: str | None = None) -> int:
     """Run the full engagement against `target`. Returns a process exit code."""
     try:
         from .agents import ExploitAgent, ReconAgent, VerifyAgent
@@ -99,10 +100,12 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
     executor = Executor(gate, kali, audit, approver=chosen_approver)
 
     try:
-        llm = LLMClient(model=model)
+        llm = LLMClient(model=model, provider=provider, base_url=base_url)
     except Exception as e:
         print(f"Could not initialise the model client: {e}")
-        print("Set ANTHROPIC_API_KEY and install anthropic (pip install \"brukal[agents]\").")
+        print("For Claude: set ANTHROPIC_API_KEY (pip install \"brukal[agents]\").")
+        print("For a free local model: --provider ollama --model <name> "
+              "(no key; run `ollama serve`).")
         return 2
 
     agents = {

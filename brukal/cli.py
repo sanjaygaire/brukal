@@ -126,9 +126,10 @@ def _ensure_key() -> bool:
 
 def _cmd_hunt(args) -> int:
     print(_banner())
-    if not _ensure_key():
-        print("  ⚠ No API key set — the model call will fail. "
-              "Set ANTHROPIC_API_KEY and retry.\n")
+    provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
+    if provider == "anthropic" and not _ensure_key():
+        print("  ⚠ No API key set. Set ANTHROPIC_API_KEY, or use a free local model:"
+              " --provider ollama --model qwen2.5\n")
 
     target = args.target
     if not target:
@@ -157,7 +158,7 @@ def _cmd_hunt(args) -> int:
     return run_engagement(
         target, fake=args.fake, yes_authorised=True, scope_path=args.scope,
         audit_path=args.audit, vault_path=args.vault, container=args.container,
-        model=args.model, tui=args.tui)
+        model=args.model, tui=args.tui, provider=args.provider, base_url=args.base_url)
 
 
 def _cmd_target(args) -> int:
@@ -174,12 +175,15 @@ def _cmd_target(args) -> int:
 
 
 def _cmd_run(args) -> int:
-    if not args.fake and not _ensure_key():
-        print("  ⚠ No API key set — set ANTHROPIC_API_KEY (the agents need it).")
+    provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
+    if provider == "anthropic" and not args.fake and not _ensure_key():
+        print("  ⚠ No key set. Set ANTHROPIC_API_KEY, or use a free local model: "
+              "--provider ollama --model qwen2.5")
     return run_engagement(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
-        container=args.container, model=args.model, tui=args.tui)
+        container=args.container, model=args.model, tui=args.tui,
+        provider=args.provider, base_url=args.base_url)
 
 
 def _cmd_exec(args) -> int:
@@ -266,7 +270,10 @@ def main(argv: list[str] | None = None) -> int:
     ph.add_argument("--audit", default="runs/audit.jsonl")
     ph.add_argument("--vault", default="runs/vault")
     ph.add_argument("--container", default="brukal-kali")
-    ph.add_argument("--model", default=None)
+    ph.add_argument("--model", default=None, help="model id (provider-specific)")
+    ph.add_argument("--provider", default=None,
+                    help="anthropic (default) | ollama | openai | openrouter | groq | ...")
+    ph.add_argument("--base-url", default=None, help="endpoint for openai-compatible")
     ph.set_defaults(func=_cmd_hunt)
 
     pt = sub.add_parser("target", help="set the engagement scope to an IP or CIDR")
@@ -287,7 +294,11 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--audit", default="runs/audit.jsonl")
     pr.add_argument("--vault", default="runs/vault")
     pr.add_argument("--container", default="brukal-kali")
-    pr.add_argument("--model", default=None)
+    pr.add_argument("--model", default=None, help="model id (provider-specific)")
+    pr.add_argument("--provider", default=None,
+                    help="anthropic (default) | ollama | openai | openrouter | groq | "
+                         "lmstudio | openai-compatible")
+    pr.add_argument("--base-url", default=None, help="endpoint for openai-compatible")
     pr.set_defaults(func=_cmd_run)
 
     pe = sub.add_parser("exec", help="propose one command through the gate by hand")

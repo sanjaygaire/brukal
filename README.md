@@ -134,6 +134,25 @@ brukal verify
 > network to `brukal_isolated` in `docker/docker-compose.yml` and keep the cage
 > off any internet-facing network.
 
+### Choosing a model provider
+
+Agents talk to a model through one small `propose()` interface, so you can use
+Claude **or any OpenAI-compatible model** — including free local ones — with no
+extra dependency:
+
+```bash
+brukal run <target> --provider ollama --model qwen2.5        # free, local, no key
+brukal run <target> --provider openrouter --model <model>    # key from OPENROUTER_API_KEY
+brukal run <target> --provider openai --model gpt-4o-mini    # key from OPENAI_API_KEY
+brukal run <target> --model claude-sonnet-5                  # anthropic (default)
+```
+
+Supported: `anthropic` (default), `ollama`, `lmstudio`, `openai`, `openrouter`,
+`groq`, and `openai-compatible` (any endpoint via `--base-url`). Configure with
+`--provider` / `--model` / `--base-url` or `BRUKAL_PROVIDER` / `BRUKAL_MODEL` /
+`BRUKAL_BASE_URL`. For a free local run: install [Ollama](https://ollama.com),
+`ollama pull qwen2.5`, then use `--provider ollama`.
+
 ---
 
 ## Configuring scope
