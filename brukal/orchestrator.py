@@ -23,11 +23,16 @@ from .tasktree import Task, TaskStatus, TaskTree
 
 
 class Orchestrator:
-    def __init__(self, task_tree: TaskTree, agents: dict, blackboard: Blackboard):
+    def __init__(self, task_tree: TaskTree, agents: dict, blackboard: Blackboard,
+                 trust=None):
         # agents: {role: agent}, each agent already holding the Executor+LLM.
         self._tree = task_tree
         self._agents = agents
         self._bb = blackboard
+        # Optional TrustModel (milestone 6). If present, each turn's outcome
+        # updates the proposing agent's T_i, which (via the same Gate) modulates
+        # that agent's FUTURE soft-risk decisions. It never touches the hard gate.
+        self._trust = trust
 
     def _digest(self, task: Task, request, outcome) -> dict:
         """Compress one turn's outcome to a short, storable summary. The raw
@@ -67,6 +72,17 @@ class Orchestrator:
 
             request, outcome = agent.run_task(task.description, context)
             digest = self._digest(task, request, outcome)
+
+            # Milestone 6: fold this turn's outcome into the agent's trust, so a
+            # misbehaving agent draws more scrutiny on its next proposal.
+            if self._trust is not None:
+                self._trust.record_outcome(
+                    task.agent,
+                    request_valid=(request is not None),
+                    decision=(outcome[0] if outcome else None),
+                    executed=digest["executed"],
+                )
+                digest["trust"] = round(self._trust.of(task.agent), 3)
 
             self._bb.write_finding(task.agent, digest)
             self._tree.record_finding(task, digest)

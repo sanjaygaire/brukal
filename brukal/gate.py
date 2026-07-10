@@ -59,6 +59,7 @@ class Decision:
     risk_band: str | None = None        # "LOW" | "MEDIUM" | "HIGH"
     reversibility: str | None = None    # "reversible" | "unknown" | "irreversible"
     blast_radius: str | None = None     # "host" | "subnet" | "wide"
+    trust: float | None = None          # proposing agent's T_i fed to the soft layer (M6)
 
     @property
     def allowed(self) -> bool:
@@ -68,8 +69,11 @@ class Decision:
 class Gate:
     """Stateful gate. Holds the scope and a sliding window for rate limiting."""
 
-    def __init__(self, scope: Scope):
+    def __init__(self, scope: Scope, trust=None):
         self.scope = scope
+        # Optional TrustModel (milestone 6). Feeds ONLY the soft layer below;
+        # None means every agent is fully trusted (T_i = 1.0), i.e. unchanged.
+        self._trust = trust
         self._recent_allows: list[float] = []
 
     # -- helpers ------------------------------------------------------------
@@ -139,7 +143,13 @@ class Gate:
         # the command text (no LLM, no self-report) and returns ALLOW / ESCALATE /
         # DENY. It can never turn a hard DENY into an ALLOW — by construction it
         # only runs here, after every hard check has already passed.
-        profile = assess(command)
+        #
+        # Milestone 6: the proposing agent's adaptive trust T_i feeds ONLY this
+        # soft layer (never the hard checks above). A less-trusted agent's same
+        # command scores as higher risk. No trust model -> T_i defaults to 1.0
+        # (full trust), so behaviour is unchanged until trust is wired in.
+        t = self._trust.of(agent) if self._trust is not None else 1.0
+        profile = assess(command, trust=t)
 
         if profile.decision == "DENY":
             # Soft ceiling crossed (e.g. irreversible + wide blast radius).
@@ -148,7 +158,8 @@ class Gate:
                             "soft:deny",
                             risk_band=profile.band,
                             reversibility=profile.reversibility,
-                            blast_radius=profile.blast_radius)
+                            blast_radius=profile.blast_radius,
+                            trust=t)
 
         # ALLOW and ESCALATE may both end in execution, so reserve a rate slot
         # for either (conservative: an escalation the human later declines has
@@ -161,10 +172,12 @@ class Gate:
                             "soft:escalate",
                             risk_band=profile.band,
                             reversibility=profile.reversibility,
-                            blast_radius=profile.blast_radius)
+                            blast_radius=profile.blast_radius,
+                            trust=t)
 
         return Decision("ALLOW", command, target, agent,
                         f"passed hard gate; {profile.reason}", "soft:allow",
                         risk_band=profile.band,
                         reversibility=profile.reversibility,
-                        blast_radius=profile.blast_radius)
+                        blast_radius=profile.blast_radius,
+                        trust=t)
