@@ -4,6 +4,8 @@ brukal.cli — the command-line entry point (installed as the `brukal` command).
 
 Subcommands
 -----------
+  brukal                           the banner + quick start
+  brukal hunt                      guided engagement (prompts for key + target)
   brukal target <ip|cidr>          set the engagement scope (validates + logs)
   brukal run <target>              run the full multi-agent engagement
   brukal exec "<cmd>" <target>     propose one command through the gate by hand
@@ -15,8 +17,11 @@ inside an engagement folder that contains its own scope.json.
 from __future__ import annotations
 
 import argparse
+import getpass
 import ipaddress
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -26,52 +31,154 @@ from brukal.engagement import run as run_engagement
 
 _DEFAULT_TOOLS = ["nmap", "gobuster", "nikto", "whatweb", "curl", "dig"]
 
+_CYAN, _DIM, _OFF = "\033[36m", "\033[2m", "\033[0m"
 
-def _cmd_target(args) -> int:
-    """Set (or extend) the authorised scope. Validates the address, refuses to
-    silently authorise a broad range, keeps the static fields, and logs it."""
+_LOGO = r"""
+ ██████╗ ██████╗ ██╗   ██╗██╗  ██╗ █████╗ ██╗
+ ██╔══██╗██╔══██╗██║   ██║██║ ██╔╝██╔══██╗██║
+ ██████╔╝██████╔╝██║   ██║█████╔╝ ███████║██║
+ ██╔══██╗██╔══██╗██║   ██║██╔═██╗ ██╔══██║██║
+ ██████╔╝██║  ██║╚██████╔╝██║  ██╗██║  ██║███████╗
+ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝"""
+
+
+def _banner() -> str:
+    return (f"{_CYAN}{_LOGO}{_OFF}\n"
+            f"  trust-governed multi-agent pentest  ·  {_CYAN}let's hunt{_OFF}\n"
+            f"  {_DIM}the model proposes, the deterministic gate disposes{_OFF}\n")
+
+
+def _quickstart() -> str:
+    return ("  Quick start:\n"
+            "    brukal hunt                  guided engagement (asks for key + target)\n"
+            "    brukal target <ip|cidr>      set the authorised scope\n"
+            "    brukal run <target>          full multi-agent engagement\n"
+            "    brukal exec \"<cmd>\" <target>  one command through the gate\n"
+            "    brukal verify                check the audit chain\n\n"
+            "  Add -h to any command for its options (e.g. `brukal run -h`).\n")
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
+
+def _load_scope_data(scope_path) -> dict:
+    p = Path(scope_path)
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+    return {"engagement": "brukal-engagement", "authorized_cidrs": [],
+            "allowlisted_tools": _DEFAULT_TOOLS, "rate_limit_per_min": 30}
+
+
+def _write_scope(cidr_input, scope_path, log_path, *, add=False, assume_yes=False):
+    """Validate + persist scope. Returns (exit_code, scope_data_or_None)."""
     try:
-        net = ipaddress.ip_network(args.cidr, strict=False)
+        net = ipaddress.ip_network(cidr_input, strict=False)
     except ValueError as e:
-        print(f"Not a valid IP or CIDR: {args.cidr}  ({e})")
-        return 2
+        print(f"Not a valid IP or CIDR: {cidr_input}  ({e})")
+        return 2, None
 
-    scope_path = Path(args.scope)
-    if scope_path.exists():
-        data = json.loads(scope_path.read_text(encoding="utf-8"))
-    else:
-        data = {"engagement": "brukal-engagement", "authorized_cidrs": [],
-                "allowlisted_tools": _DEFAULT_TOOLS, "rate_limit_per_min": 30}
-
+    data = _load_scope_data(scope_path)
     cidr = str(net)
-    if net.num_addresses > 1 and not args.yes:
+    if net.num_addresses > 1 and not assume_yes:
         try:
             ans = input(f"  {cidr} authorises {net.num_addresses} addresses "
                         f"(broader than one host). Proceed? [y/N] ").strip().lower()
         except (EOFError, OSError, KeyboardInterrupt):
-            ans = ""   # non-interactive / interrupted -> fail-closed (treat as no)
+            ans = ""   # non-interactive / interrupted -> fail-closed (no)
         if ans not in ("y", "yes"):
             print("  aborted — scope unchanged.")
-            return 1
+            return 1, None
 
     existing = data.get("authorized_cidrs", [])
-    data["authorized_cidrs"] = (existing + [cidr] if args.add and cidr not in existing
-                                else existing if args.add else [cidr])
-    scope_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    data["authorized_cidrs"] = (existing + [cidr] if add and cidr not in existing
+                                else existing if add else [cidr])
+    Path(scope_path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    logp = Path(args.log)
+    logp = Path(log_path)
     logp.parent.mkdir(parents=True, exist_ok=True)
     with logp.open("a", encoding="utf-8") as f:
         f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')}  scope "
-                f"{'+=' if args.add else '='} {cidr}  "
-                f"(engagement={data.get('engagement')})\n")
+                f"{'+=' if add else '='} {cidr}  (engagement={data.get('engagement')})\n")
+    return 0, data
 
+
+def _ensure_key() -> bool:
+    """Make sure ANTHROPIC_API_KEY is set; prompt (hidden) if interactive."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    if not sys.stdin.isatty():
+        return False
+    try:
+        key = getpass.getpass("  Anthropic API key (input hidden): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        key = ""
+    if key:
+        os.environ["ANTHROPIC_API_KEY"] = key
+        return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
+# subcommands
+# --------------------------------------------------------------------------- #
+
+def _cmd_hunt(args) -> int:
+    print(_banner())
+    if not _ensure_key():
+        print("  ⚠ No API key set — the model call will fail. "
+              "Set ANTHROPIC_API_KEY and retry.\n")
+
+    target = args.target
+    if not target:
+        try:
+            target = input("  Target IP or CIDR you are AUTHORISED to test: ").strip()
+        except (EOFError, OSError):
+            target = ""
+    if not target:
+        print("  No target given — nothing to do.")
+        return 1
+
+    rc, data = _write_scope(target, args.scope, args.log, assume_yes=args.yes)
+    if rc != 0:
+        return rc
+    print(f"  scope set: {', '.join(data['authorized_cidrs'])}")
+
+    try:
+        ok = input(f"\n  Confirm you are AUTHORISED to test {target}? [y/N] ").strip().lower()
+    except (EOFError, OSError):
+        ok = ""
+    if ok not in ("y", "yes"):
+        print("  aborted — authorisation not confirmed.")
+        return 1
+
+    print()
+    return run_engagement(
+        target, fake=args.fake, yes_authorised=True, scope_path=args.scope,
+        audit_path=args.audit, vault_path=args.vault, container=args.container,
+        model=args.model)
+
+
+def _cmd_target(args) -> int:
+    rc, data = _write_scope(args.cidr, args.scope, args.log,
+                            add=args.add, assume_yes=args.yes)
+    if rc != 0:
+        return rc
     print(f"\n  engagement : {data.get('engagement')}")
     print(f"  authorised : {', '.join(data['authorized_cidrs'])}")
     print(f"  tools      : {', '.join(data.get('allowlisted_tools', _DEFAULT_TOOLS))}")
     print(f"  rate limit : {data.get('rate_limit_per_min', 30)}/min")
-    print(f"  wrote {scope_path}   (logged to {logp})\n")
+    print(f"  wrote {args.scope}   (logged to {args.log})\n")
     return 0
+
+
+def _cmd_run(args) -> int:
+    if not args.fake and not _ensure_key():
+        print("  ⚠ No API key set — set ANTHROPIC_API_KEY (the agents need it).")
+    return run_engagement(
+        args.target, fake=args.fake, yes_authorised=args.yes_authorised,
+        scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
+        container=args.container, model=args.model)
 
 
 def _cmd_exec(args) -> int:
@@ -105,16 +212,27 @@ def _cmd_verify(args) -> int:
     return 0
 
 
-def _cmd_run(args) -> int:
-    return run_engagement(
-        args.target, fake=args.fake, yes_authorised=args.yes_authorised,
-        scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
-        container=args.container, model=args.model)
-
+# --------------------------------------------------------------------------- #
+# parser
+# --------------------------------------------------------------------------- #
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="brukal", description="Trust-governed pentest gate")
-    sub = p.add_subparsers(dest="cmd")
+    p = argparse.ArgumentParser(
+        prog="brukal", description="Brukal — trust-governed multi-agent pentest.",
+        epilog="Run `brukal hunt` for a guided engagement, or `brukal <cmd> -h`.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", metavar="<command>")
+
+    ph = sub.add_parser("hunt", help="guided engagement (prompts for key + target)")
+    ph.add_argument("target", nargs="?", help="target IP/CIDR (prompted if omitted)")
+    ph.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
+    ph.add_argument("--yes", action="store_true", help="skip the broad-range prompt")
+    ph.add_argument("--scope", default="scope.json")
+    ph.add_argument("--audit", default="runs/audit.jsonl")
+    ph.add_argument("--vault", default="runs/vault")
+    ph.add_argument("--container", default="brukal-kali")
+    ph.add_argument("--model", default=None)
+    ph.set_defaults(func=_cmd_hunt)
 
     pt = sub.add_parser("target", help="set the engagement scope to an IP or CIDR")
     pt.add_argument("cidr", help="e.g. 10.10.10.5 or 10.10.10.0/24")
@@ -152,8 +270,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     if not getattr(args, "func", None):
-        p.print_help()
-        return 1
+        print(_banner())
+        print(_quickstart())
+        return 0
     return args.func(args)
 
 
