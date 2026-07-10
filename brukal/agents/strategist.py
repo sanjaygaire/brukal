@@ -46,7 +46,10 @@ def _parse(text: str, default_target: str) -> Suggestion:
         s = line.strip()
         up = s.upper()
         if up.startswith("RUN:") and command is None:
-            command = s[4:].strip().strip("`").strip()
+            cmd = s[4:].strip().strip("`").strip('"').strip()
+            if " (" in cmd:                       # drop a trailing "(...)" note
+                cmd = cmd[:cmd.index(" (")].strip()
+            command = cmd or None
         elif up.startswith("MANUAL:") and manual is None:
             manual = s[7:].strip()
         else:

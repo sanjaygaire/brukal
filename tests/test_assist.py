@@ -43,6 +43,15 @@ def test_strategist_parses_run_and_manual():
     assert "web app" in s.rationale
 
 
+def test_strategist_strips_trailing_parenthetical():
+    # local models often append a "(why)" note to the RUN line — it must not end
+    # up in the command that gets executed.
+    llm = StubLLM("Comprehensive scan first.\n"
+                  "RUN: nmap -sV -p- 10.129.51.151   (to enumerate all services)")
+    s = StrategistAgent(llm).advise("10.129.51.151", "")
+    assert s.command == "nmap -sV -p- 10.129.51.151"
+
+
 def test_strategist_advice_only():
     s = StrategistAgent(StubLLM("Enumerate more before exploiting.")).advise("10.10.10.5", "")
     assert s.command is None and s.manual is None

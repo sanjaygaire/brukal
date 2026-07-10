@@ -1,18 +1,17 @@
 """
 assist.py — human-assisted box solving (v1): a governed pentest copilot.
 
-The operator drives an interactive loop. The strategist proposes the next move;
-the operator can RUN a suggested command (through the gate/cage), record a MANUAL
-step they did themselves, add a note, or ask a question. Brukal reasons + records;
-the human does the ungoverned exploitation on their own authority. Everything
-Brukal runs still goes through Executor.run(), and everything is logged.
+The operator drives a menu-driven loop. The strategist proposes the next move;
+the operator picks an option — run the suggested command (through the gate/cage),
+run a different one, record a MANUAL step they did themselves, add a note, or ask
+a question. Brukal reasons + records; the human does the ungoverned exploitation
+on their own authority. Everything Brukal runs still goes through Executor.run().
 
-`AssistSession` holds the testable logic; `run_solve` assembles it and runs the
-console loop.
+`AssistSession` holds the testable logic; `run_solve` assembles it and drives the
+rich menu UI (falling back to a plain prompt if `rich` is unavailable).
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from .audit import AuditLog
@@ -21,6 +20,8 @@ from .gate import Gate
 from .kali import DockerKali, FakeKali
 from .scope import load_scope
 from .trust import TrustModel
+
+_VERDICT_COLOUR = {"ALLOW": "green", "ESCALATE": "yellow", "DENY": "red"}
 
 
 class AssistSession:
@@ -60,16 +61,132 @@ class AssistSession:
         self.notes.append(f"[manual] {text}")
 
 
-_HELP = """  commands:
-    next / <enter>     ask the strategist for the next step
-    run                run the strategist's suggested command (through the gate)
-    run <command>      run a specific command through the gate/cage
-    note <text>        record an observation / paste tool output
-    manual <text>      record a manual step you did yourself (shell, exploit, ...)
-    ask <question>     ask the strategist something
-    skills <topic>     search the offensive playbooks
-    verify             check the audit chain
-    help / quit"""
+class _NoRich(Exception):
+    pass
+
+
+def _menu_loop(session, audit, target, cage):
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.prompt import Prompt
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError:
+        raise _NoRich
+
+    con = Console()
+    con.print(Panel(Text.assemble(("BRUKAL solve   ", "bold cyan"),
+                                   (f"target={target}   cage={cage}", "white")),
+                    border_style="cyan"))
+
+    def run_and_show(command):
+        con.print(f"  [cyan]running:[/] {command}")
+        d, r = session.run(command)
+        colour = _VERDICT_COLOUR.get(d.verdict, "white")
+        con.print(Text.assemble(("  → ", ""), (d.verdict, f"bold {colour}"),
+                                 (f"   {d.layer}", "grey50")))
+        if r is not None and (r.stdout or "").strip():
+            con.print(Panel(r.stdout.strip()[:2000], title="output", border_style="grey23"))
+        elif r is None:
+            con.print(f"  [grey50]{d.reason}[/]")
+        session.last = None   # regenerate advice from the new findings
+
+    while True:
+        if session.last is None:
+            with con.status("[cyan]strategist thinking…", spinner="dots"):
+                session.advise()
+        s = session.last
+
+        body = Text(s.rationale or "—")
+        if s.command:
+            body.append(f"\n\n▶ suggested command:\n  {s.command}", style="green")
+        if s.manual:
+            body.append(f"\n\n✋ manual step (you do this):\n  {s.manual}", style="yellow")
+        con.print(Panel(body, title="strategist", border_style="grey37"))
+        if session.notes:
+            con.print(Panel(Text("\n".join(session.notes[-4:])),
+                            title=f"findings ({len(session.notes)})", border_style="grey23"))
+
+        options = [
+            ("1", f"Run suggested:  {s.command}" if s.command else "Run a command"),
+            ("2", "Run a different command"),
+            ("3", "Ask for another suggestion"),
+            ("4", "Add a note / paste tool output"),
+            ("5", "Record a manual step you did"),
+            ("6", "Search the skill playbooks"),
+            ("7", "Verify the audit chain"),
+            ("8", "Quit"),
+        ]
+        grid = Table.grid(padding=(0, 2))
+        for key, label in options:
+            grid.add_row(Text(f"[{key}]", style="bold cyan"), Text(label))
+        con.print(grid)
+
+        choice = Prompt.ask("  choose", choices=[k for k, _ in options], default="1")
+        if choice == "1":
+            run_and_show(s.command or Prompt.ask("  command"))
+        elif choice == "2":
+            run_and_show(Prompt.ask("  command"))
+        elif choice == "3":
+            focus = Prompt.ask("  focus (optional)", default="")
+            with con.status("[cyan]strategist thinking…", spinner="dots"):
+                session.advise(focus)
+        elif choice == "4":
+            session.note(Prompt.ask("  note / paste output")); session.last = None
+        elif choice == "5":
+            session.manual(Prompt.ask("  what you did")); session.last = None
+        elif choice == "6":
+            for sk in (session.skills.retrieve(Prompt.ask("  topic"), 4)
+                       if session.skills else []):
+                con.print(f"    [magenta]\\[{sk.category}][/] {sk.name}")
+        elif choice == "7":
+            con.print(f"  audit chain intact: [green]{audit.verify()}[/]")
+        elif choice == "8":
+            break
+
+
+_HELP = """  commands: next/<enter>  run  run <cmd>  note <text>  manual <text>
+            ask <question>  skills <topic>  verify  help  quit"""
+
+
+def _plain_loop(session, audit, target, cage):
+    print(f"\n  brukal solve — target {target}   cage={cage}")
+    print(_HELP)
+    _print_suggestion(session.advise())
+    while True:
+        try:
+            raw = input("  brukal> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(); break
+        if not raw or raw in ("next", "n"):
+            _print_suggestion(session.advise())
+        elif raw in ("quit", "exit", "q"):
+            break
+        elif raw in ("help", "?"):
+            print(_HELP)
+        elif raw == "verify":
+            print("  audit chain intact:", audit.verify())
+        elif raw == "run":
+            if session.last and session.last.command:
+                d, r = session.run(session.last.command)
+                print(f"  -> {d.verdict}" + (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer})"))
+            else:
+                print("  (no suggested command; use `run <command>`)")
+        elif raw.startswith("run "):
+            d, r = session.run(raw[4:].strip())
+            print(f"  -> {d.verdict}" + (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer}: {d.reason})"))
+        elif raw.startswith("note "):
+            session.note(raw[5:].strip()); print("  noted.")
+        elif raw.startswith("manual "):
+            session.manual(raw[7:].strip()); print("  recorded.")
+        elif raw.startswith("ask "):
+            _print_suggestion(session.advise(raw[4:].strip()))
+        elif raw.startswith("skills "):
+            for s in (session.skills.retrieve(raw[7:].strip(), 4) if session.skills else []):
+                print(f"    [{s.category}] {s.name}")
+        else:
+            print("  unknown command — type `help`.")
 
 
 def _print_suggestion(s):
@@ -114,49 +231,12 @@ def run_solve(target, *, fake=False, yes_authorised=False, scope_path="scope.jso
         return 2
 
     session = AssistSession(target, executor, strategist, skills=SkillLibrary())
+    cage = "fake" if fake else "docker:" + container
 
-    print(f"\n  brukal solve — target {target}   "
-          f"cage={'fake' if fake else 'docker:' + container}")
-    print(_HELP)
-    session.advise()
-    _print_suggestion(session.last)
-
-    while True:
-        try:
-            raw = input("  brukal> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not raw or raw in ("next", "n"):
-            _print_suggestion(session.advise())
-        elif raw in ("quit", "exit", "q"):
-            break
-        elif raw in ("help", "?"):
-            print(_HELP)
-        elif raw == "verify":
-            print("  audit chain intact:", audit.verify())
-        elif raw == "run":
-            if session.last and session.last.command:
-                d, r = session.run(session.last.command)
-                print(f"  -> {d.verdict}"
-                      + (f"\n{ (r.stdout or '').rstrip()}" if r else f" ({d.layer})"))
-            else:
-                print("  (no suggested command; use `run <command>`)")
-        elif raw.startswith("run "):
-            d, r = session.run(raw[4:].strip())
-            print(f"  -> {d.verdict}"
-                  + (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer}: {d.reason})"))
-        elif raw.startswith("note "):
-            session.note(raw[5:].strip()); print("  noted.")
-        elif raw.startswith("manual "):
-            session.manual(raw[7:].strip()); print("  recorded.")
-        elif raw.startswith("ask "):
-            _print_suggestion(session.advise(raw[4:].strip()))
-        elif raw.startswith("skills "):
-            for s in (session.skills.retrieve(raw[7:].strip(), limit=4) if session.skills else []):
-                print(f"    [{s.category}] {s.name}")
-        else:
-            print("  unknown command — type `help`.")
+    try:
+        _menu_loop(session, audit, target, cage)
+    except _NoRich:
+        _plain_loop(session, audit, target, cage)
 
     print(f"\n  session recorded to {audit_path}  (chain intact: {audit.verify()})\n")
     return 0
