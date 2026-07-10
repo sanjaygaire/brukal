@@ -17,6 +17,12 @@ services:
     container_name: brukal-kali
     networks:
       - brukal_isolated
+    # Raw-socket scanning (nmap SYN/service/OS detection). These caps are in the
+    # container's bounding set; the Dockerfile grants them to the nmap binary
+    # only, so nothing else in the cage gains privilege.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     # No published ports: nothing inbound. The only way in is `docker exec`,
     # which the executor uses for approved commands.
 

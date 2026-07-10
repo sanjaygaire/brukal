@@ -15,12 +15,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         whatweb \
         curl \
         dnsutils \
+        libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
+# Least-privilege scanning: grant the raw-socket capability to the nmap binary
+# ONLY (so SYN/service/OS scans work), rather than giving the whole container
+# or the user broad privilege. Everything else stays unprivileged.
+RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip "$(command -v nmap)"
+
 # A non-root user for execution. Defence in depth: even an approved tool runs
-# without root inside the cage.
-RUN useradd -m -s /usr/sbin/nologin operator
-USER operator
+# without root inside the cage. (Named 'brukalop' to avoid Debian's existing
+# system group 'operator'.)
+RUN useradd -m -s /usr/sbin/nologin brukalop
+USER brukalop
 
 # Idle entrypoint: the container just stays alive so the executor can
 # `docker exec` approved commands into it.

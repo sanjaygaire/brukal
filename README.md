@@ -100,18 +100,39 @@ python -m pytest -q
 # 3. reproduce the benchmark metrics (fake cage)
 python run_experiments.py
 
-# 4. drive the spine by hand against the fake cage
-python brukal_cli.py --fake "nmap -sV 10.10.10.5" 10.10.10.5
+# 4. drive the gate by hand against the fake cage
+python brukal_cli.py exec --fake "nmap -sV 10.10.10.5" 10.10.10.5
 ```
 
-A **live run** against a real target you are authorised to test uses the Docker
-cage and is deliberately gated behind an explicit flag — see
-[`SECURITY.md`](SECURITY.md):
+### Running a live engagement
+
+A live run executes real tools inside an isolated Kali container and is
+deliberately gated behind an explicit authorisation flag — only ever point it at
+systems you are authorised to test (see [`SECURITY.md`](SECURITY.md)).
 
 ```bash
+# 1. bring up the cage (a Kali container with only the allowlisted tools)
 docker compose -f docker/docker-compose.yml up -d --build
-python run_experiments.py --env docker --target 10.10.10.5 --yes-authorised
+
+# 2. set scope to your authorised target (a bare host becomes /32; a CIDR
+#    broader than one host asks for confirmation) and check it end to end
+brukal target 10.10.10.5
+brukal exec "nmap -sS -sV -Pn 10.10.10.5" 10.10.10.5     # one command, by hand
+
+# 3. run the full multi-agent engagement (recon → exploit → verify, adaptive
+#    trust, human sign-off on escalations). Needs ANTHROPIC_API_KEY.
+export ANTHROPIC_API_KEY=sk-...
+brukal run 10.10.10.5 --yes-authorised
+
+# 4. review the audit trail and findings
+brukal verify
+#    findings + task tree land in runs/vault/  (open it in Obsidian)
 ```
+
+> `brukal` is installed via `pip install -e .`; without installing, use
+> `python brukal_cli.py <subcommand> ...`. To reach a lab target, attach your lab
+> network to `brukal_isolated` in `docker/docker-compose.yml` and keep the cage
+> off any internet-facing network.
 
 ---
 
