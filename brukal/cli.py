@@ -125,7 +125,6 @@ def _ensure_key() -> bool:
 # --------------------------------------------------------------------------- #
 
 def _cmd_hunt(args) -> int:
-    print(_banner())
     provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
     if provider == "anthropic" and not _ensure_key():
         print("  ⚠ No API key set. Set ANTHROPIC_API_KEY, or use a free local model:"
@@ -347,8 +346,8 @@ def main(argv: list[str] | None = None) -> int:
     ps.set_defaults(func=_cmd_skills)
 
     args = p.parse_args(argv)
+    print(_banner())                       # the welcome banner shows on every call
     if not getattr(args, "func", None):
-        print(_banner())
         print(_quickstart())
         return 0
     return args.func(args)

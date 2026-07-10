@@ -7,6 +7,9 @@ run a different one, record a MANUAL step they did themselves, add a note, or as
 a question. Brukal reasons + records; the human does the ungoverned exploitation
 on their own authority. Everything Brukal runs still goes through Executor.run().
 
+A spinner shows while the strategist is thinking or a command is running (long
+scans no longer look frozen). Escalations pause the spinner, prompt, and resume.
+
 `AssistSession` holds the testable logic; `run_solve` assembles it and drives the
 rich menu UI (falling back to a plain prompt if `rich` is unavailable).
 """
@@ -61,28 +64,48 @@ class AssistSession:
         self.notes.append(f"[manual] {text}")
 
 
-class _NoRich(Exception):
-    pass
+def _rich_approver(con, holder):
+    """Escalation sign-off that pauses the live spinner, prompts, then resumes."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    def approve(decision) -> bool:
+        st = holder.get("status")
+        if st is not None:
+            st.stop()
+        con.print(Panel(Text.assemble(
+            ("ESCALATION — human sign-off required\n", "bold yellow"),
+            (f"action : {decision.action}\n", "white"),
+            (f"target : {decision.target}   agent: {decision.agent}\n", "white"),
+            (f"risk   : {decision.risk_band}  ({decision.reason})", "grey62")),
+            border_style="yellow"))
+        try:
+            ans = (con.input("  approve this action? [y/N] ").strip().lower()
+                   if con.file.isatty() else "")
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if st is not None:
+            st.start()
+        return ans in ("y", "yes")
+
+    return approve
 
 
-def _menu_loop(session, audit, target, cage):
-    try:
-        from rich.console import Console
-        from rich.panel import Panel
-        from rich.prompt import Prompt
-        from rich.table import Table
-        from rich.text import Text
-    except ImportError:
-        raise _NoRich
+def _menu_loop(session, audit, target, cage, con, holder):
+    from rich.panel import Panel
+    from rich.prompt import Prompt
+    from rich.table import Table
+    from rich.text import Text
 
-    con = Console()
     con.print(Panel(Text.assemble(("BRUKAL solve   ", "bold cyan"),
                                    (f"target={target}   cage={cage}", "white")),
                     border_style="cyan"))
 
     def run_and_show(command):
-        con.print(f"  [cyan]running:[/] {command}")
-        d, r = session.run(command)
+        with con.status(f"[cyan]running:[/] {command}", spinner="dots") as st:
+            holder["status"] = st
+            d, r = session.run(command)
+            holder["status"] = None
         colour = _VERDICT_COLOUR.get(d.verdict, "white")
         con.print(Text.assemble(("  → ", ""), (d.verdict, f"bold {colour}"),
                                  (f"   {d.layer}", "grey50")))
@@ -219,9 +242,20 @@ def run_solve(target, *, fake=False, yes_authorised=False, scope_path="scope.jso
         return 2
 
     audit = AuditLog(audit_path)
+
+    # A rich console (menu UI + spinner-aware approver), or plain fallback.
+    console = None
+    holder: dict = {"status": None}
+    try:
+        from rich.console import Console
+        console = Console()
+    except ImportError:
+        console = None
+    approver = _rich_approver(console, holder) if console is not None else interactive_approver
+
     executor = Executor(Gate(scope, trust=TrustModel()),
                         FakeKali() if fake else DockerKali(container=container),
-                        audit, approver=interactive_approver)
+                        audit, approver=approver)
     try:
         strategist = StrategistAgent(LLMClient(model=model, provider=provider,
                                                base_url=base_url))
@@ -233,9 +267,9 @@ def run_solve(target, *, fake=False, yes_authorised=False, scope_path="scope.jso
     session = AssistSession(target, executor, strategist, skills=SkillLibrary())
     cage = "fake" if fake else "docker:" + container
 
-    try:
-        _menu_loop(session, audit, target, cage)
-    except _NoRich:
+    if console is not None:
+        _menu_loop(session, audit, target, cage, console, holder)
+    else:
         _plain_loop(session, audit, target, cage)
 
     print(f"\n  session recorded to {audit_path}  (chain intact: {audit.verify()})\n")
