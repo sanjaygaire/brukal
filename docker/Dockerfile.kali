@@ -9,10 +9,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Enumeration toolset (keep in sync with scope.json -> allowlisted_tools),
 # OpenVPN + iproute2 to reach the target network, and libcap2-bin for setcap.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        nmap gobuster ffuf feroxbuster nikto whatweb wafw00f curl \
+        nmap gobuster ffuf feroxbuster nikto whatweb wafw00f curl wget \
         dnsutils dnsrecon sslscan \
-        smbclient smbmap enum4linux nbtscan snmp ldap-utils redis-tools \
+        smbclient smbmap enum4linux nbtscan snmp onesixtyone ldap-utils redis-tools \
         openvpn iproute2 libcap2-bin \
+    && rm -rf /var/lib/apt/lists/*
+
+# The wider offensive arsenal (brute force, web attack, cracking, exploitation
+# helpers, shells). These are ALLOWLISTED, but the risk layer marks them
+# irreversible, so it routes them to human sign-off (ESCALATE) or refusal (DENY)
+# — see scope.htb.json + risk.py. Capability grows; the gate is unchanged.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        masscan dirb wfuzz nuclei dnsenum fierce \
+        hydra medusa ncrack sqlmap wpscan \
+        john hashcat hash-identifier exploitdb \
+        crackmapexec impacket-scripts evil-winrm responder \
+        netcat-traditional socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Least-privilege raw-socket scanning: grant the capability to the nmap binary

@@ -1,13 +1,22 @@
 {
   "engagement": "brukal-htb",
   "authorized_cidrs": [
-    "10.10.10.0/24"
+    "10.129.51.151/32"
   ],
   "allowlisted_tools": [
-    "nmap", "gobuster", "ffuf", "feroxbuster", "nikto", "whatweb", "wafw00f",
-    "curl", "dig", "dnsrecon", "sslscan",
-    "smbclient", "smbmap", "enum4linux", "nbtscan", "snmpwalk", "ldapsearch",
-    "redis-cli"
+    "nmap", "masscan", "dirb", "gobuster", "ffuf", "feroxbuster", "wfuzz",
+    "nikto", "whatweb", "wafw00f", "nuclei", "curl", "wget",
+    "dig", "dnsrecon", "dnsenum", "fierce",
+    "sslscan", "sslyze",
+    "smbclient", "smbmap", "enum4linux", "enum4linux-ng", "nbtscan",
+    "snmpwalk", "onesixtyone", "ldapsearch", "redis-cli",
+    "hydra", "medusa", "ncrack", "patator",
+    "sqlmap", "wpscan",
+    "john", "hashcat", "hashid", "hash-identifier", "searchsploit",
+    "crackmapexec", "netexec", "kerbrute", "responder", "evil-winrm",
+    "impacket-secretsdump", "impacket-psexec", "impacket-smbexec",
+    "impacket-wmiexec", "impacket-GetUserSPNs", "impacket-GetNPUsers",
+    "nc", "ncat", "netcat", "socat"
   ],
   "rate_limit_per_min": 60
 }

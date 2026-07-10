@@ -48,12 +48,30 @@ _TRUST_SCALE = 2  # a fully-distrusted agent (trust=0) adds +2 to every score
 # Tools that observe but do not change target state. Traffic *volume* is a
 # blast-radius concern (handled below), not a reversibility one.
 _READ_ONLY_TOOLS = frozenset(
-    {"nmap", "gobuster", "nikto", "whatweb", "curl", "dig", "host", "dnsutils",
-     # read-only enumeration tools (HTB-ready cage). Write-capable ones
-     # (smbclient, redis-cli, ldapsearch-with-writes) are deliberately left out,
-     # so they score as "unknown" and the soft layer escalates them.
-     "ffuf", "feroxbuster", "wafw00f", "dnsrecon", "sslscan", "smbmap",
-     "enum4linux", "nbtscan", "snmpwalk"}
+    {"nmap", "gobuster", "nikto", "whatweb", "curl", "wget", "dig", "host", "dnsutils",
+     # read-only enumeration tools. Write-capable ones (smbclient, redis-cli,
+     # ldapsearch-with-writes) are deliberately left out, so they score as
+     # "unknown" and the soft layer escalates them.
+     "ffuf", "feroxbuster", "wafw00f", "dirb", "wfuzz",
+     "dnsrecon", "dnsenum", "fierce", "sslscan", "sslyze",
+     "smbmap", "enum4linux", "enum4linux-ng", "nbtscan", "snmpwalk", "onesixtyone",
+     "searchsploit", "hashid", "hash-identifier"}
+)
+
+# Tools that actively ATTACK a target (brute force, exploitation, cracking,
+# shells). They are ALLOWLISTED — an operator can use them — but they are always
+# IRREVERSIBLE, so the soft layer routes them to human sign-off (ESCALATE) on a
+# single host and refuses them (DENY) once the blast radius widens. Capability
+# grows; the safety boundary does not.
+_ATTACK_TOOLS = frozenset(
+    {"hydra", "medusa", "ncrack", "patator",          # credential brute force
+     "sqlmap", "wpscan", "nuclei", "masscan",         # active web / mass probing
+     "crackmapexec", "netexec", "nxc", "kerbrute", "responder", "evil-winrm",
+     "impacket-secretsdump", "impacket-psexec", "impacket-smbexec",
+     "impacket-wmiexec", "impacket-getuserspns", "impacket-getnpusers",
+     "john", "hashcat",                               # offline cracking
+     "msfconsole", "msfvenom", "metasploit",          # exploitation framework
+     "nc", "ncat", "netcat", "socat"}                 # shells / transfer
 )
 
 # Signals that an action WRITES / ATTACKS remote state -> irreversible.
@@ -130,6 +148,8 @@ def derive_reversibility(command: str) -> str:
         if _script_categories(tokens) & _IRREVERSIBLE_SCRIPT_CATS:
             return "irreversible"
 
+    if tool in _ATTACK_TOOLS:
+        return "irreversible"          # brute/exploit/shell -> always needs sign-off
     if tool in _READ_ONLY_TOOLS:
         return "reversible"
     return "unknown"

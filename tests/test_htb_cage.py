@@ -33,6 +33,28 @@ def test_write_capable_tool_stays_conservative():
     assert p.decision == "ESCALATE"
 
 
+def test_more_enum_tools_allow():
+    for cmd in ("dirb http://10.10.10.5", "wfuzz -u http://10.10.10.5/FUZZ -w w.txt",
+                "dnsenum 10.10.10.5", "searchsploit apache 2.4"):
+        assert assess(cmd).decision == "ALLOW", cmd
+
+
+def test_attack_tools_escalate_on_a_single_host():
+    # brute force / exploitation / shells are ALLOWLISTED but always need sign-off
+    for cmd in ("hydra -l admin -P rockyou.txt 10.10.10.5 ssh",
+                "sqlmap -u http://10.10.10.5/p?id=1 --batch",
+                "medusa -h 10.10.10.5 -u admin -P list -M ssh",
+                "nc 10.10.10.5 4444"):
+        p = assess(cmd)
+        assert p.reversibility == "irreversible", cmd
+        assert p.decision == "ESCALATE", cmd
+
+
+def test_attack_tool_denied_when_blast_widens():
+    # irreversible + a whole subnet -> over the ceiling -> DENY
+    assert assess("hydra -t 32 10.10.10.0/24 ssh").decision == "DENY"
+
+
 def test_dockerkali_execs_as_nonroot(monkeypatch):
     import brukal.kali as kali
 
