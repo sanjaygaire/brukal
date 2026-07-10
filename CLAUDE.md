@@ -72,21 +72,17 @@ scope.json ─► scope.py ─► gate.py ─► executor.py ─► kali.py ─�
 
 ## Working copy (verify before editing)
 
-- **The ONLY repo to edit:** `C:\Users\ashis\Desktop\Brukal\brukal\` (after the
-  2026-07-10 reorg). If the reorg hasn't happened yet, it is still nested at
-  `...\Brukal\brukal_milestone1\brukal\brukal_updated\brukal\`. Either way, the
-  real repo is the one with a `.git` — confirm with `git status` (remote
-  `github.com/sanjaygaire/brukal`, branch `main`).
-- Any `brukal_milestone1\` / `_stale_delete_me\` tree is a **stale copy — never
-  edit it.**
-- Test env (WSL): `/home/brute/brukal-venv` (pytest, anthropic, pydantic). Run
-  from the repo root: `/home/brute/brukal-venv/bin/python -m pytest`.
+- The repo root is the directory containing `.git` — confirm with `git status`.
+- Create a virtualenv, install the agent extras (`pip install -e ".[agents]"` or
+  `pip install -r requirements.txt`), and run the tests from the repo root:
+  `python -m pytest`.
 
-## Verified state (as of 2026-07-09 — see Brukal.md for the live log)
+## Verified state (see Brukal.md for the live running log)
 
-- M1 (deterministic spine) ✅ · M2 seed (recon agent + schema + llm) ✅
-- **M3 (soft risk layer) is NOT built** — no `risk.py`, no `test_soft_gate.py`;
-  the gate's `MILESTONE 3` extension point is still a stub. (The prior
-  "milestones 1–3 complete / 15 tests" summary was inaccurate for this repo.)
-- **5 tests pass** (4 recon-wiring + 1 scope-interception). M3 must be built
-  before M4's orchestrator can integrate the risk layer.
+- **Milestones 1–7 complete.** Deterministic spine (M1) · recon agent + schema +
+  LLM client (M2) · soft risk layer + human escalation (M3) · orchestrator +
+  Obsidian blackboard + Pentesting Task Tree (M4) · exploit + verify agents (M5) ·
+  adaptive per-agent trust (M6) · four-metric experiment harness (M7).
+- **40 tests pass** (`python -m pytest`). Reproduce the benchmark metrics with
+  `python run_experiments.py` (fake cage — no Docker, network, key, or target
+  needed).

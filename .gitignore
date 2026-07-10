@@ -1,3 +1,39 @@
-runs/
+# --- Brukal runtime artifacts (never commit engagement data) ---
+runs/                      # audit logs + run outputs
+vault/                     # Obsidian blackboard written during a run
+*.audit.jsonl
+audit.jsonl
+results*.json              # experiment-harness dumps
+scope.local.json           # personal/live scope files
+
+# --- Python ---
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Secrets / local config ---
+.env
+.env.*
+*.key
+*.pem
+
+# --- Editor / OS cruft ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
