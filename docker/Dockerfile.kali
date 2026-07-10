@@ -1,34 +1,29 @@
-# The cage: a Kali container holding ONLY the allowlisted tools.
-# Nothing executes here except commands the gate has approved and handed in
-# via `docker exec`. No agent ever gets an interactive shell in this container.
+# The cage: a Kali container holding the allowlisted ENUMERATION tools, plus an
+# OpenVPN client so it can reach a lab/HTB network. Nothing executes here except
+# commands the gate has approved and handed in via `docker exec`. No agent ever
+# gets an interactive shell in this container.
 FROM kalilinux/kali-rolling
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install the tools named in scope.json -> allowlisted_tools.
-# Keep this list in sync with your scope; if a tool is not installed here it
-# simply cannot run even if it were (wrongly) allowlisted.
+# Enumeration toolset (keep in sync with scope.json -> allowlisted_tools),
+# OpenVPN + iproute2 to reach the target network, and libcap2-bin for setcap.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        nmap \
-        gobuster \
-        nikto \
-        whatweb \
-        curl \
-        dnsutils \
-        libcap2-bin \
+        nmap gobuster ffuf feroxbuster nikto whatweb wafw00f curl \
+        dnsutils dnsrecon sslscan \
+        smbclient smbmap enum4linux nbtscan snmp ldap-utils redis-tools \
+        openvpn iproute2 libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
-# Least-privilege scanning: grant the raw-socket capability to the nmap binary
-# ONLY (so SYN/service/OS scans work), rather than giving the whole container
-# or the user broad privilege. Everything else stays unprivileged.
+# Least-privilege raw-socket scanning: grant the capability to the nmap binary
+# ONLY, so SYN/service/OS scans work without privileging the whole container.
 RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip "$(command -v nmap)"
 
-# A non-root user for execution. Defence in depth: even an approved tool runs
-# without root inside the cage. (Named 'brukalop' to avoid Debian's existing
-# system group 'operator'.)
+# Non-root user for TOOL execution. The executor runs `docker exec -u brukalop`,
+# so approved tools run unprivileged. The container's main process stays root so
+# the entrypoint can bring up the VPN (which needs NET_ADMIN + /dev/net/tun).
 RUN useradd -m -s /usr/sbin/nologin brukalop
-USER brukalop
 
-# Idle entrypoint: the container just stays alive so the executor can
-# `docker exec` approved commands into it.
-ENTRYPOINT ["sleep", "infinity"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

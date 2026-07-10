@@ -30,6 +30,8 @@ ENV/
 .env.*
 *.key
 *.pem
+docker/vpn/*.ovpn          # HTB / lab VPN configs (may embed private keys)
+docker/vpn/*.conf
 
 # --- Editor / OS cruft ---
 .vscode/

@@ -168,6 +168,24 @@ brukal solve 172.20.0.3 --yes-authorised --scope runs/juice.json \
     --provider ollama --model qwen2.5
 ```
 
+### HTB / lab boxes (VPN-connected cage)
+
+The cage ships with a wider **enumeration** allowlist (`ffuf`, `feroxbuster`,
+`smbmap`, `enum4linux`, `snmpwalk`, `sslscan`, …) and an OpenVPN client so it can
+reach a VPN-gated lab. Drop your HackTheBox `.ovpn` at `docker/vpn/config.ovpn`
+(gitignored), rebuild, and the cage brings the tunnel up automatically:
+
+```bash
+cp ~/Downloads/lab.ovpn docker/vpn/config.ovpn
+docker compose -f docker/docker-compose.yml up -d --build     # cage connects the VPN
+brukal target 10.10.10.5 --scope scope.htb.json               # scope to YOUR box
+brukal solve 10.10.10.5 --yes-authorised --scope scope.htb.json --provider ollama --model qwen2.5
+```
+
+It's a **governed recon/enum copilot**, not an autopwn tool — enumeration runs in
+the cage (gated), and you do the exploitation yourself and report back. Use
+`scope.htb.json` and narrow `authorized_cidrs` to the single box you're testing.
+
 ---
 
 ## Configuring scope

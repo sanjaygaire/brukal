@@ -23,6 +23,13 @@ services:
     cap_add:
       - NET_RAW
       - NET_ADMIN
+    # OpenVPN needs a tun device to reach a lab/HTB network. Drop your .ovpn at
+    # docker/vpn/config.ovpn (gitignored) and the entrypoint brings the VPN up;
+    # with no config it runs in plain local mode.
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./vpn:/vpn:ro
     # No published ports: nothing inbound. The only way in is `docker exec`,
     # which the executor uses for approved commands.
 

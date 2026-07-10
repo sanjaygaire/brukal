@@ -48,7 +48,12 @@ _TRUST_SCALE = 2  # a fully-distrusted agent (trust=0) adds +2 to every score
 # Tools that observe but do not change target state. Traffic *volume* is a
 # blast-radius concern (handled below), not a reversibility one.
 _READ_ONLY_TOOLS = frozenset(
-    {"nmap", "gobuster", "nikto", "whatweb", "curl", "dig", "host", "dnsutils"}
+    {"nmap", "gobuster", "nikto", "whatweb", "curl", "dig", "host", "dnsutils",
+     # read-only enumeration tools (HTB-ready cage). Write-capable ones
+     # (smbclient, redis-cli, ldapsearch-with-writes) are deliberately left out,
+     # so they score as "unknown" and the soft layer escalates them.
+     "ffuf", "feroxbuster", "wafw00f", "dnsrecon", "sslscan", "smbmap",
+     "enum4linux", "nbtscan", "snmpwalk"}
 )
 
 # Signals that an action WRITES / ATTACKS remote state -> irreversible.

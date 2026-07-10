@@ -1,0 +1,13 @@
+{
+  "engagement": "brukal-htb",
+  "authorized_cidrs": [
+    "10.10.10.0/24"
+  ],
+  "allowlisted_tools": [
+    "nmap", "gobuster", "ffuf", "feroxbuster", "nikto", "whatweb", "wafw00f",
+    "curl", "dig", "dnsrecon", "sslscan",
+    "smbclient", "smbmap", "enum4linux", "nbtscan", "snmpwalk", "ldapsearch",
+    "redis-cli"
+  ],
+  "rate_limit_per_min": 60
+}

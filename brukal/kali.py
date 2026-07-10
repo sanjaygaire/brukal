@@ -47,12 +47,17 @@ class DockerKali:
     is no second place for shell injection to live.
     """
 
-    def __init__(self, container: str = "brukal-kali", timeout: int = 300):
+    def __init__(self, container: str = "brukal-kali", timeout: int = 300,
+                 user: str = "brukalop"):
         self.container = container
         self.timeout = timeout
+        self.user = user   # run approved tools unprivileged; "" for the default user
 
     def run(self, command: str) -> ExecResult:
-        argv = ["docker", "exec", self.container, *shlex.split(command)]
+        argv = ["docker", "exec"]
+        if self.user:
+            argv += ["-u", self.user]
+        argv += [self.container, *shlex.split(command)]
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=self.timeout
