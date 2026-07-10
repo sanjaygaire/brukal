@@ -85,6 +85,10 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
         "verify": VerifyAgent(llm, executor),
     }
 
+    # Knowledge layer: load any vendored offensive skill packs (reference only).
+    from .skills import SkillLibrary
+    skills = SkillLibrary()
+
     blackboard = Blackboard(vault_path, scope)
     tree = TaskTree()
     t_enum = tree.add(f"Enumerate open services on {target}", target, agent="recon")
@@ -94,10 +98,11 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
     tree.add(f"Independently verify any claimed success on {target}", target,
              agent="verify", parent=t_enum.id)
 
-    orch = Orchestrator(tree, agents, blackboard, trust=trust)
+    orch = Orchestrator(tree, agents, blackboard, trust=trust, skills=skills)
 
     print(f"\nEngagement: {scope.engagement}   target: {target}   "
           f"cage: {'fake' if fake else 'docker:' + container}")
+    print(f"skills    : {len(skills)} playbooks loaded (reference only)")
     print(f"blackboard: {Path(vault_path).resolve()}\n")
 
     summary = orch.run()

@@ -25,7 +25,8 @@ import sys
 import time
 from pathlib import Path
 
-from brukal import AuditLog, DockerKali, Executor, FakeKali, Gate, load_scope
+from brukal import (AuditLog, DockerKali, Executor, FakeKali, Gate, SkillLibrary,
+                    install_pack, load_scope)
 from brukal.engagement import interactive_approver
 from brukal.engagement import run as run_engagement
 
@@ -212,6 +213,38 @@ def _cmd_verify(args) -> int:
     return 0
 
 
+def _cmd_skills(args) -> int:
+    if args.action == "add":
+        if not args.source:
+            print("  usage: brukal skills add <git-url>")
+            return 2
+        print(f"  fetching skill pack from {args.source} ...")
+        try:
+            count, dest = install_pack(args.source)
+        except Exception as e:
+            print(f"  failed: {e}")
+            return 2
+        print(f"  installed {count} skills into {dest}")
+        return 0
+
+    lib = SkillLibrary()
+    if args.action == "search":
+        hits = lib.retrieve(args.source or "", limit=5)
+        if not hits:
+            print("  no matching skills.")
+            return 0
+        for s in hits:
+            print(f"  [{s.category}] {s.name}\n      {s.description[:100]}")
+        return 0
+
+    # default: list
+    print(f"\n  {len(lib)} skills loaded across {len(lib.categories())} categories:")
+    for cat, n in lib.categories().items():
+        print(f"    {cat:<18} {n}")
+    print("\n  brukal skills search \"<topic>\"   ·   brukal skills add <git-url>\n")
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # parser
 # --------------------------------------------------------------------------- #
@@ -267,6 +300,12 @@ def main(argv: list[str] | None = None) -> int:
     pv = sub.add_parser("verify", help="verify the audit chain and exit")
     pv.add_argument("--audit", default="runs/audit.jsonl")
     pv.set_defaults(func=_cmd_verify)
+
+    ps = sub.add_parser("skills", help="list / search / add offensive skill packs")
+    ps.add_argument("action", nargs="?", default="list",
+                    choices=["list", "search", "add"], help="default: list")
+    ps.add_argument("source", nargs="?", help="query (search) or git URL (add)")
+    ps.set_defaults(func=_cmd_skills)
 
     args = p.parse_args(argv)
     if not getattr(args, "func", None):

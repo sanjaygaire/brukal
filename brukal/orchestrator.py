@@ -24,7 +24,7 @@ from .tasktree import Task, TaskStatus, TaskTree
 
 class Orchestrator:
     def __init__(self, task_tree: TaskTree, agents: dict, blackboard: Blackboard,
-                 trust=None):
+                 trust=None, skills=None):
         # agents: {role: agent}, each agent already holding the Executor+LLM.
         self._tree = task_tree
         self._agents = agents
@@ -33,6 +33,10 @@ class Orchestrator:
         # updates the proposing agent's T_i, which (via the same Gate) modulates
         # that agent's FUTURE soft-risk decisions. It never touches the hard gate.
         self._trust = trust
+        # Optional SkillLibrary (knowledge layer). If present, the most relevant
+        # playbook is injected into the agent's context as UNTRUSTED REFERENCE.
+        # It informs the agent's proposal; it never bypasses the gate.
+        self._skills = skills
 
     def _digest(self, task: Task, request, outcome) -> dict:
         """Compress one turn's outcome to a short, storable summary. The raw
@@ -69,6 +73,13 @@ class Orchestrator:
 
             # Scoped read: only prior findings relevant to this target.
             context = self._bb.read_context(task.agent, task.target)
+
+            # Knowledge layer: prepend the most relevant playbook as untrusted
+            # reference (guidance only — the gate still rules on what it proposes).
+            if self._skills is not None:
+                reference = self._skills.context_for(task.description)
+                if reference:
+                    context = f"{reference}\n\n{context}" if context else reference
 
             request, outcome = agent.run_task(task.description, context)
             digest = self._digest(task, request, outcome)
