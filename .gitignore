@@ -30,8 +30,12 @@ ENV/
 .env.*
 *.key
 *.pem
-docker/vpn/*.ovpn          # HTB / lab VPN configs (may embed private keys)
+# HTB / lab VPN configs (may embed private keys)
+docker/vpn/*.ovpn
 docker/vpn/*.conf
+
+# Local engagement output (audit logs, per-run scope files)
+runs/
 
 # --- Editor / OS cruft ---
 .vscode/

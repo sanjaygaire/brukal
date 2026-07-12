@@ -15,6 +15,7 @@ rich menu UI (falling back to a plain prompt if `rich` is unavailable).
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .audit import AuditLog
@@ -25,6 +26,39 @@ from .scope import load_scope
 from .trust import TrustModel
 
 _VERDICT_COLOUR = {"ALLOW": "green", "ESCALATE": "yellow", "DENY": "red"}
+_PHASE_COLOUR = {"recon": "cyan", "enumeration": "cyan", "exploitation": "magenta",
+                 "privilege-escalation": "red", "looting": "yellow"}
+
+# Patterns that mark a line as an important RESULT worth surfacing to the operator.
+_HIGHLIGHTS = [
+    (re.compile(r"^\s*(\d{1,5})/(tcp|udp)\s+open\s+(\S+)(.*)$", re.I), "open port"),
+    (re.compile(r"\b(200|301|302|401|403)\b.*(/\S*)", re.I), "web path"),
+    (re.compile(r"(user(?:name)?|login|account)\s*[:=]\s*(\S+)", re.I), "credential"),
+    (re.compile(r"(pass(?:word)?)\s*[:=]\s*(\S+)", re.I), "credential"),
+    (re.compile(r"\b([a-f0-9]{32}|[a-f0-9]{40}|\$[0-9a-z]{1,3}\$\S+)\b", re.I), "hash"),
+    (re.compile(r"\b(CVE-\d{4}-\d{4,7})\b", re.I), "CVE"),
+    (re.compile(r"(anonymous|guest)\s+(login|access|allowed)", re.I), "anon access"),
+    (re.compile(r"(disallow|robots|/admin|/backup|\.git|\.env|phpmyadmin)", re.I), "interesting"),
+]
+
+
+def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
+    """Pull the lines from raw tool output that a pentester actually cares about.
+    Returns (tag, line) pairs — open ports, web paths, creds, hashes, CVEs, ..."""
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in (output or "").splitlines():
+        line = raw.strip()
+        if not line or len(line) > 200:
+            continue
+        for rx, tag in _HIGHLIGHTS:
+            if rx.search(line) and line not in seen:
+                hits.append((tag, line))
+                seen.add(line)
+                break
+        if len(hits) >= limit:
+            break
+    return hits
 
 
 class AssistSession:
@@ -34,27 +68,42 @@ class AssistSession:
         self.strategist = strategist
         self.skills = skills
         self.notes: list[str] = []     # observations: command results, manual reports, notes
+        self.highlights: list[tuple[str, str]] = []   # accumulated key results
+        self.objectives: list[str] = []               # what the box is asking (HTB tasks)
         self.last = None               # last Suggestion
+
+    def add_objective(self, text: str):
+        if text.strip():
+            self.objectives.append(text.strip())
+
+    def _objectives_text(self) -> str:
+        return "\n".join(f"- {o}" for o in self.objectives)
 
     def _state(self) -> str:
         return "\n".join(self.notes[-25:]) if self.notes else "(no findings yet)"
 
     def advise(self, question: str = ""):
-        ref = self.skills.context_for(question or self.target) if self.skills else ""
-        self.last = self.strategist.advise(self.target, self._state(), question, ref)
+        focus = question or " ".join(self.objectives) or self.target
+        ref = self.skills.context_for(focus) if self.skills else ""
+        self.last = self.strategist.advise(
+            self.target, self._state(), question, ref, self._objectives_text())
         return self.last
 
     def run(self, command: str, target: str | None = None):
-        """Run a command through the gate/cage and record the outcome."""
+        """Run a command through the gate/cage, record it, and surface the key
+        results. Returns (decision, result, new_highlights)."""
         decision, result = self.executor.run(command, target or self.target,
                                              agent="strategist")
+        new_hl: list[tuple[str, str]] = []
         if result is not None:
-            out = (result.stdout or "").strip()[:800] or "(no output)"
-            self.notes.append(f"[ran] {command}\n{decision.verdict}: {out}")
+            raw = (result.stdout or "").strip()
+            new_hl = highlight_findings(raw)
+            self.highlights.extend(h for h in new_hl if h not in self.highlights)
+            self.notes.append(f"[ran] {command}\n{decision.verdict}: {raw[:800] or '(no output)'}")
         else:
             self.notes.append(f"[ran] {command}\nNOT RUN — {decision.verdict} "
                               f"({decision.layer}: {decision.reason})")
-        return decision, result
+        return decision, result, new_hl
 
     def note(self, text: str):
         self.notes.append(f"[note] {text}")
@@ -91,55 +140,94 @@ def _rich_approver(con, holder):
     return approve
 
 
+def _show_highlights(con, Panel, Text, hits, title):
+    if not hits:
+        return
+    body = Text()
+    for i, (tag, line) in enumerate(hits):
+        if i:
+            body.append("\n")
+        body.append(f"{tag:>11} ", style="bold yellow")
+        body.append(line, style="white")
+    con.print(Panel(body, title=f"[bold yellow]★ {title}[/]", border_style="yellow"))
+
+
 def _menu_loop(session, audit, target, cage, con, holder):
     from rich.panel import Panel
     from rich.prompt import Prompt
     from rich.table import Table
     from rich.text import Text
 
-    con.print(Panel(Text.assemble(("BRUKAL solve   ", "bold cyan"),
+    con.print(Panel(Text.assemble(("BRUKAL — pentest companion   ", "bold cyan"),
                                    (f"target={target}   cage={cage}", "white")),
                     border_style="cyan"))
+
+    # Ask up front what the box wants (HTB task questions) — this steers everything.
+    con.print("[grey62]What is the box asking you to find? (HTB task questions, one per "
+              "line — e.g. \"How many open TCP ports?\"). Enter blank to skip / finish.[/]")
+    while True:
+        obj = Prompt.ask("  objective", default="")
+        if not obj:
+            break
+        session.add_objective(obj)
 
     def run_and_show(command):
         with con.status(f"[cyan]running:[/] {command}", spinner="dots") as st:
             holder["status"] = st
-            d, r = session.run(command)
+            d, r, new_hl = session.run(command)
             holder["status"] = None
         colour = _VERDICT_COLOUR.get(d.verdict, "white")
         con.print(Text.assemble(("  → ", ""), (d.verdict, f"bold {colour}"),
                                  (f"   {d.layer}", "grey50")))
         if r is not None and (r.stdout or "").strip():
-            con.print(Panel(r.stdout.strip()[:2000], title="output", border_style="grey23"))
+            con.print(Panel(r.stdout.strip()[:1800], title="raw output", border_style="grey23"))
+            _show_highlights(con, Panel, Text, new_hl, "key results")
         elif r is None:
             con.print(f"  [grey50]{d.reason}[/]")
         session.last = None   # regenerate advice from the new findings
 
     while True:
         if session.last is None:
-            with con.status("[cyan]strategist thinking…", spinner="dots"):
+            with con.status("[cyan]companion thinking…", spinner="dots"):
                 session.advise()
         s = session.last
 
-        body = Text(s.rationale or "—")
+        # objectives tracker
+        if session.objectives:
+            ot = Text()
+            for o in session.objectives:
+                ot.append("? ", style="bold yellow"); ot.append(o + "\n")
+            con.print(Panel(ot, title="objectives", border_style="yellow"))
+
+        # the companion's reasoning: phase + goal + why
+        head = Text()
+        if s.phase:
+            pc = _PHASE_COLOUR.get(s.phase.lower(), "cyan")
+            head.append(f"[{s.phase.upper()}] ", style=f"bold {pc}")
+        if s.goal:
+            head.append(s.goal, style="bold white")
+        if head.plain:
+            head.append("\n\n")
+        head.append(s.rationale or "—", style="grey85")
         if s.command:
-            body.append(f"\n\n▶ suggested command:\n  {s.command}", style="green")
+            head.append(f"\n\n▶ suggested command\n  {s.command}", style="green")
         if s.manual:
-            body.append(f"\n\n✋ manual step (you do this):\n  {s.manual}", style="yellow")
-        con.print(Panel(body, title="strategist", border_style="grey37"))
-        if session.notes:
-            con.print(Panel(Text("\n".join(session.notes[-4:])),
-                            title=f"findings ({len(session.notes)})", border_style="grey23"))
+            head.append(f"\n\n✋ you do this (manual)\n  {s.manual}", style="yellow")
+        con.print(Panel(head, title="companion", border_style="cyan"))
+
+        if session.highlights:
+            _show_highlights(con, Panel, Text, session.highlights[-8:], "what we know so far")
 
         options = [
             ("1", f"Run suggested:  {s.command}" if s.command else "Run a command"),
             ("2", "Run a different command"),
-            ("3", "Ask for another suggestion"),
+            ("3", "Ask the companion something / re-plan"),
             ("4", "Add a note / paste tool output"),
             ("5", "Record a manual step you did"),
-            ("6", "Search the skill playbooks"),
-            ("7", "Verify the audit chain"),
-            ("8", "Quit"),
+            ("6", "Add an objective the box is asking"),
+            ("7", "Search the skill playbooks"),
+            ("8", "Verify the audit chain"),
+            ("9", "Quit"),
         ]
         grid = Table.grid(padding=(0, 2))
         for key, label in options:
@@ -152,20 +240,22 @@ def _menu_loop(session, audit, target, cage, con, holder):
         elif choice == "2":
             run_and_show(Prompt.ask("  command"))
         elif choice == "3":
-            focus = Prompt.ask("  focus (optional)", default="")
-            with con.status("[cyan]strategist thinking…", spinner="dots"):
-                session.advise(focus)
+            q = Prompt.ask("  ask / focus (e.g. 'how do I answer objective 2?')", default="")
+            with con.status("[cyan]companion thinking…", spinner="dots"):
+                session.advise(q)
         elif choice == "4":
             session.note(Prompt.ask("  note / paste output")); session.last = None
         elif choice == "5":
             session.manual(Prompt.ask("  what you did")); session.last = None
         elif choice == "6":
+            session.add_objective(Prompt.ask("  objective")); session.last = None
+        elif choice == "7":
             for sk in (session.skills.retrieve(Prompt.ask("  topic"), 4)
                        if session.skills else []):
                 con.print(f"    [magenta]\\[{sk.category}][/] {sk.name}")
-        elif choice == "7":
-            con.print(f"  audit chain intact: [green]{audit.verify()}[/]")
         elif choice == "8":
+            con.print(f"  audit chain intact: [green]{audit.verify()}[/]")
+        elif choice == "9":
             break
 
 
@@ -192,12 +282,12 @@ def _plain_loop(session, audit, target, cage):
             print("  audit chain intact:", audit.verify())
         elif raw == "run":
             if session.last and session.last.command:
-                d, r = session.run(session.last.command)
+                d, r, _ = session.run(session.last.command)
                 print(f"  -> {d.verdict}" + (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer})"))
             else:
                 print("  (no suggested command; use `run <command>`)")
         elif raw.startswith("run "):
-            d, r = session.run(raw[4:].strip())
+            d, r, _ = session.run(raw[4:].strip())
             print(f"  -> {d.verdict}" + (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer}: {d.reason})"))
         elif raw.startswith("note "):
             session.note(raw[5:].strip()); print("  noted.")
@@ -213,7 +303,10 @@ def _plain_loop(session, audit, target, cage):
 
 
 def _print_suggestion(s):
-    print(f"\n  [strategist] {s.rationale}")
+    tag = f"[{s.phase.upper()}] " if s.phase else ""
+    if s.goal:
+        print(f"\n  {tag}GOAL: {s.goal}")
+    print(f"  [companion] {s.rationale}")
     if s.command:
         print(f"  suggested (gated):  {s.command}")
     if s.manual:

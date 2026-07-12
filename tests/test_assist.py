@@ -32,21 +32,37 @@ class StubLLM:
         return self.response
 
 
-def test_strategist_parses_run_and_manual():
-    llm = StubLLM("Port 3000 is a web app, enumerate it.\n"
+def test_strategist_parses_phase_goal_run_and_manual():
+    llm = StubLLM("PHASE: enumeration\n"
+                  "GOAL: fingerprint the web app on port 3000\n"
+                  "REASONING: Port 3000 is a web app, so enumerate it before attacking.\n"
                   "RUN: whatweb http://10.10.10.5:3000\n"
                   "MANUAL: try default creds admin:admin in the login form")
     s = StrategistAgent(llm).advise("10.10.10.5", "port 3000 open")
     assert s.command == "whatweb http://10.10.10.5:3000"
     assert s.target == "10.10.10.5"
+    assert s.phase == "enumeration"
+    assert "fingerprint" in s.goal
     assert "default creds" in s.manual
-    assert "web app" in s.rationale
+    assert "enumerate it" in s.rationale
+
+
+def test_highlight_findings_surfaces_key_results():
+    from brukal.assist import highlight_findings
+    out = ("Starting Nmap...\n"
+           "22/tcp open  ssh     OpenSSH 8.2p1\n"
+           "80/tcp open  http    Apache httpd 2.4.41\n"
+           "Nmap done: 1 IP address\n")
+    hits = highlight_findings(out)
+    lines = " ".join(l for _, l in hits)
+    assert "22/tcp open" in lines and "80/tcp open" in lines
+    assert "Nmap done" not in lines            # noise is filtered out
 
 
 def test_strategist_strips_trailing_parenthetical():
     # local models often append a "(why)" note to the RUN line — it must not end
     # up in the command that gets executed.
-    llm = StubLLM("Comprehensive scan first.\n"
+    llm = StubLLM("REASONING: Comprehensive scan first.\n"
                   "RUN: nmap -sV -p- 10.129.51.151   (to enumerate all services)")
     s = StrategistAgent(llm).advise("10.129.51.151", "")
     assert s.command == "nmap -sV -p- 10.129.51.151"
@@ -68,12 +84,12 @@ def test_suggested_command_still_goes_through_the_gate():
                              StrategistAgent(StubLLM("RUN: nmap -sV 10.10.10.5")))
 
         sug = sess.advise()
-        d, r = sess.run(sug.command)
+        d, r, _ = sess.run(sug.command)
         assert d.verdict == "ALLOW" and r is not None
         assert kali.executed == ["nmap -sV 10.10.10.5"]
 
         # a suggestion pointed off-scope is STILL denied when the operator runs it
-        d2, r2 = sess.run("nmap -sV 8.8.8.8", "8.8.8.8")
+        d2, r2, _ = sess.run("nmap -sV 8.8.8.8", "8.8.8.8")
         assert d2.verdict == "DENY" and r2 is None
         assert kali.executed == ["nmap -sV 10.10.10.5"]     # not executed
 

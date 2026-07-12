@@ -1,7 +1,7 @@
 {
   "engagement": "brukal-htb",
   "authorized_cidrs": [
-    "10.129.51.151/32"
+    "10.129.51.168/32"
   ],
   "allowlisted_tools": [
     "nmap", "masscan", "dirb", "gobuster", "ffuf", "feroxbuster", "wfuzz",

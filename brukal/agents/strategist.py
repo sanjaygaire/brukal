@@ -1,64 +1,81 @@
 """
-agents/strategist.py — the advisory agent for human-assisted solving (v1).
+agents/strategist.py — the advisory agent for human-assisted solving.
 
 Unlike recon/exploit/verify (which each propose one gated command), the strategist
-REASONS about the whole engagement and tells the human operator the single next
-best move. Its output is advice, not an execution: the human decides whether to
-`run` a suggested gated command (which still goes through the gate) or to perform
-a MANUAL step themselves and report the result back.
+REASONS about the whole engagement like a companion sitting next to you: it names
+the current PHASE, states the GOAL it is working toward, explains its REASONING
+from the findings so far (and any objectives the box is asking you to answer), and
+only then proposes the next move — a gated RUN command or a MANUAL step you do.
 
-This is how Brukal becomes a governed copilot: it advises freely, but it only ever
-*executes* through the same gated door. A suggestion is not a bypass — if the
-operator runs a suggested command, the gate rules on it exactly as always.
+Its output is advice, not execution. If the operator runs a suggested command it
+still goes through the gate. A suggestion is not a bypass.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from ..llm import LLMClient
 
 STRATEGIST_SYSTEM = (
-    "You are a penetration-testing strategist guiding a human operator through an "
-    "AUTHORISED engagement. Given the findings so far, propose the SINGLE next best "
-    "step, concisely. Draw on the reference playbooks if given.\n\n"
-    "Format your reply as:\n"
-    "  <one or two sentences of reasoning>\n"
-    "  RUN: <a single recon/enumeration command Brukal can run>   (optional)\n"
-    "  MANUAL: <a step the operator must do themselves, e.g. exploitation, a shell, "
-    "priv-esc>   (optional)\n"
-    "Give RUN for anything safe and in-scope; give MANUAL for anything intrusive or "
-    "interactive. A separate gate still rules on any RUN command."
+    "You are a friendly, sharp penetration-testing companion guiding a human "
+    "operator through an AUTHORISED engagement (e.g. a Hack The Box machine). "
+    "Talk like a teammate thinking out loud, not a tool dispatcher. Keep the human "
+    "oriented: what are we doing and why. Reason from the findings and, if given, "
+    "the OBJECTIVES the box is asking the operator to answer.\n\n"
+    "Reply in EXACTLY this template:\n"
+    "PHASE: <recon | enumeration | exploitation | privilege-escalation | looting>\n"
+    "GOAL: <the concrete thing we're trying to achieve right now, one line>\n"
+    "REASONING: <2-4 sentences: what we've learned, what it implies, why this next "
+    "step. Reference specific ports/services/findings. If an objective can now be "
+    "answered, say so.>\n"
+    "RUN: <one recon/enumeration command Brukal can run>   (optional)\n"
+    "MANUAL: <a step the operator does themselves — exploitation, a shell, cracking "
+    "a hash, submitting a flag>   (optional)\n\n"
+    "Give RUN for safe in-scope enumeration; give MANUAL for intrusive/interactive "
+    "work. Prefer ONE clear next step. A separate gate still rules on any RUN."
 )
 
 
 @dataclass
 class Suggestion:
-    rationale: str
-    command: str | None      # a gated command Brukal can run, if any
-    target: str | None       # target for that command
-    manual: str | None       # a manual step for the operator, if any
+    rationale: str            # the REASONING text (companion voice)
+    command: str | None       # a gated command Brukal can run, if any
+    target: str | None        # target for that command
+    manual: str | None        # a manual step for the operator, if any
+    phase: str = ""           # recon / enumeration / exploitation / ...
+    goal: str = ""            # the concrete objective of this step
+
+
+def _field(text: str, name: str) -> str:
+    m = re.search(rf"^{name}\s*:\s*(.+?)\s*$", text, re.M | re.I)
+    return m.group(1).strip() if m else ""
 
 
 def _parse(text: str, default_target: str) -> Suggestion:
-    command = manual = None
-    rationale: list[str] = []
-    for line in (text or "").splitlines():
-        s = line.strip()
-        up = s.upper()
-        if up.startswith("RUN:") and command is None:
-            cmd = s[4:].strip().strip("`").strip('"').strip()
-            if " (" in cmd:                       # drop a trailing "(...)" note
-                cmd = cmd[:cmd.index(" (")].strip()
-            command = cmd or None
-        elif up.startswith("MANUAL:") and manual is None:
-            manual = s[7:].strip()
-        else:
-            rationale.append(line)
-    return Suggestion(
-        rationale="\n".join(rationale).strip() or (text or "").strip(),
-        command=command or None,
-        target=default_target if command else None,
-        manual=manual or None)
+    text = text or ""
+    phase = _field(text, "PHASE")
+    goal = _field(text, "GOAL")
+    reasoning = _field(text, "REASONING")
+    command = _field(text, "RUN") or None
+    manual = _field(text, "MANUAL") or None
+
+    if command:                                   # strip a trailing "(why)" note
+        command = command.strip("`").strip('"').strip()
+        if " (" in command:
+            command = command[:command.index(" (")].strip()
+        command = command or None
+    if manual and manual.lower() in ("none", "n/a", "-"):
+        manual = None
+
+    # Fall back to the whole reply as rationale if the model ignored the template.
+    if not reasoning:
+        reasoning = re.sub(r"^(PHASE|GOAL|RUN|MANUAL)\s*:.*$", "", text,
+                           flags=re.M | re.I).strip() or text.strip()
+
+    return Suggestion(rationale=reasoning, command=command,
+                      target=default_target if command else None, manual=manual,
+                      phase=phase, goal=goal)
 
 
 class StrategistAgent:
@@ -66,12 +83,15 @@ class StrategistAgent:
         self._llm = llm
 
     def advise(self, target: str, findings: str, notes: str = "",
-               reference: str = "") -> Suggestion:
-        parts = [f"TARGET: {target}", f"FINDINGS SO FAR:\n{findings or '(none yet)'}"]
+               reference: str = "", objectives: str = "") -> Suggestion:
+        parts = [f"TARGET: {target}"]
+        if objectives:
+            parts.append(f"OBJECTIVES the box is asking us to answer:\n{objectives}")
+        parts.append(f"FINDINGS SO FAR:\n{findings or '(nothing yet — we just started)'}")
         if notes:
-            parts.append(f"OPERATOR NOTE:\n{notes}")
+            parts.append(f"OPERATOR JUST SAID:\n{notes}")
         if reference:
-            parts.append(reference)   # untrusted skill reference, already labelled
-        parts.append("Propose the single next best step.")
-        text = self._llm.propose(STRATEGIST_SYSTEM, "\n\n".join(parts), max_tokens=700)
+            parts.append(reference)               # untrusted skill reference, labelled
+        parts.append("Give me the next step in the template.")
+        text = self._llm.propose(STRATEGIST_SYSTEM, "\n\n".join(parts), max_tokens=800)
         return _parse(text, target)
