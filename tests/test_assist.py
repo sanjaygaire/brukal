@@ -114,6 +114,19 @@ def test_parse_plan_reads_numbered_steps_with_phase():
     assert steps[2].phase == "" and "login" in steps[2].text
 
 
+def test_parse_plan_recovers_phase_without_brackets():
+    # qwen2.5 and other small models often skip the [phase] brackets and write
+    # "1. recon nmap ..." or "1. **Exploit**: ..." — the phase must still be found.
+    from brukal.agents.strategist import parse_plan
+    steps = parse_plan("1. recon nmap -sV -p- 10.129.51.168\n"
+                       "2. **Enumeration**: feroxbuster the web app\n"
+                       "3. Exploit - the vulnerable login form\n")
+    assert [s.phase for s in steps] == ["recon", "enumeration", "exploitation"]
+    assert steps[0].text == "nmap -sV -p- 10.129.51.168"      # phase word peeled off
+    assert steps[1].text == "feroxbuster the web app"
+    assert steps[2].text == "the vulnerable login form"
+
+
 def test_strategist_plan_returns_ordered_steps():
     llm = StubLLM("1. [recon] nmap -p- 10.10.10.5\n2. [enumeration] enum web\n")
     steps = StrategistAgent(llm).plan("10.10.10.5", "port 3000 open", "objective")

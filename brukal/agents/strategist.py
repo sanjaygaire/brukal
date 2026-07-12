@@ -72,18 +72,58 @@ class Suggestion:
 
 _PLAN_LINE = re.compile(r"^\s*\d+[.)]\s*(?:\[(?P<phase>[^\]]+)\]\s*)?(?P<text>.+?)\s*$")
 
+# Canonical phase names, and the aliases smaller models emit without brackets
+# (e.g. qwen2.5 writes "1. recon nmap ..." or "1. **Exploit**: ...").
+_PHASE_ALIASES = {
+    "recon": "recon", "reconnaissance": "recon",
+    "enum": "enumeration", "enumeration": "enumeration", "enumerate": "enumeration",
+    "exploit": "exploitation", "exploitation": "exploitation",
+    "privesc": "privilege-escalation", "priv-esc": "privilege-escalation",
+    "privilege": "privilege-escalation", "privilege-escalation": "privilege-escalation",
+    "escalate": "privilege-escalation", "escalation": "privilege-escalation",
+    "loot": "looting", "looting": "looting",
+    "post": "looting", "post-exploitation": "looting",
+}
+# Nouns that are safe to peel off even with just a space ("recon nmap ..."). Verbs
+# (exploit, loot, escalate, enumerate) are NOT here — "exploit the login form" is a
+# real step, not a phase label — so they only count when a separator makes the
+# label explicit ("Exploit: ...", "Exploit - ...").
+_BARE_PHASE_NOUNS = {
+    "recon", "reconnaissance", "enum", "enumeration", "exploitation",
+    "privesc", "priv-esc", "privilege", "privilege-escalation", "escalation",
+    "looting", "post", "post-exploitation",
+}
+_LEAD_PHASE_SEP = re.compile(r"^([A-Za-z][A-Za-z-]*)\s*[:\-–—)]\s+(.*)$")
+_LEAD_PHASE_BARE = re.compile(r"^([A-Za-z][A-Za-z-]*)\s+(.*)$")
+
+
+def _normalise_phase(phase: str, body: str) -> tuple[str, str]:
+    """Return (canonical_phase, body). If no bracketed phase was given, peel a
+    leading phase word off the body (how models without [brackets] format it)."""
+    phase = _PHASE_ALIASES.get(phase.strip().lower(), phase.strip().lower())
+    if phase:
+        return phase, body
+    sep = _LEAD_PHASE_SEP.match(body)                 # "recon: ..."  /  "Exploit - ..."
+    if sep and sep.group(1).lower() in _PHASE_ALIASES and sep.group(2).strip():
+        return _PHASE_ALIASES[sep.group(1).lower()], sep.group(2).strip()
+    bare = _LEAD_PHASE_BARE.match(body)               # "recon nmap ..." (nouns only)
+    if bare and bare.group(1).lower() in _BARE_PHASE_NOUNS and bare.group(2).strip():
+        return _PHASE_ALIASES[bare.group(1).lower()], bare.group(2).strip()
+    return phase, body
+
 
 def parse_plan(text: str) -> list[PlanStep]:
     """Parse a numbered plan into ordered PlanSteps. Tolerant of models that
-    wrap the list in prose — it simply keeps the numbered lines."""
+    wrap the list in prose, use markdown, or drop the [phase] brackets."""
     steps: list[PlanStep] = []
     for line in (text or "").splitlines():
         m = _PLAN_LINE.match(line)
         if not m:
             continue
-        body = m.group("text").strip().strip("`").strip()
+        body = m.group("text").strip().strip("`").replace("**", "").strip()
+        phase, body = _normalise_phase(m.group("phase") or "", body)
         if body:
-            steps.append(PlanStep(text=body, phase=(m.group("phase") or "").strip().lower()))
+            steps.append(PlanStep(text=body, phase=phase))
     return steps
 
 
