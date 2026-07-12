@@ -9,8 +9,9 @@ Milestone 7: the experiment harness for the four benchmark metrics.
 from .scope import Scope, load_scope
 from .gate import Gate, Decision
 from .audit import AuditLog
-from .kali import FakeKali, DockerKali, ExecResult
+from .kali import FakeKali, DockerKali, ExecResult, FakeSession, DockerSession
 from .executor import Executor, Approver
+from .session import GovernedSession, open_session, run_shell
 from .risk import RiskProfile, assess
 from .tasktree import TaskTree, Task, TaskStatus
 from .blackboard import Blackboard, render_scope
@@ -22,7 +23,9 @@ from .experiment import ExperimentResult, run_all, render
 __all__ = [
     "Scope", "load_scope", "Gate", "Decision",
     "AuditLog", "FakeKali", "DockerKali", "ExecResult",
+    "FakeSession", "DockerSession",
     "Executor", "Approver",
+    "GovernedSession", "open_session", "run_shell",
     "RiskProfile", "assess",
     "TaskTree", "Task", "TaskStatus",
     "Blackboard", "render_scope", "Orchestrator",

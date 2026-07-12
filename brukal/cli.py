@@ -196,6 +196,13 @@ def _cmd_solve(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
+def _cmd_shell(args) -> int:
+    from brukal.session import run_shell
+    return run_shell(
+        args.target, fake=args.fake, yes_authorised=args.yes_authorised,
+        scope_path=args.scope, audit_path=args.audit, container=args.container)
+
+
 def _cmd_exec(args) -> int:
     audit = AuditLog(args.audit)
     gate = Gate(load_scope(args.scope))
@@ -326,6 +333,16 @@ def main(argv: list[str] | None = None) -> int:
                      help="anthropic (default) | ollama | openai | openrouter | ...")
     psv.add_argument("--base-url", default=None)
     psv.set_defaults(func=_cmd_solve)
+
+    psh = sub.add_parser("shell", help="open a governed interactive shell in the cage")
+    psh.add_argument("target", help="in-scope host to work on")
+    psh.add_argument("--fake", action="store_true", help="fake session (no Docker)")
+    psh.add_argument("--yes-authorised", action="store_true",
+                     help="confirm you are authorised (skips the live prompt)")
+    psh.add_argument("--scope", default="scope.json")
+    psh.add_argument("--audit", default="runs/audit.jsonl")
+    psh.add_argument("--container", default="brukal-kali")
+    psh.set_defaults(func=_cmd_shell)
 
     pe = sub.add_parser("exec", help="propose one command through the gate by hand")
     pe.add_argument("command")

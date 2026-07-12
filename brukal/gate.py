@@ -39,6 +39,19 @@ _SUBSTITUTION_PATTERNS = ("$(", "${", "`")
 # not just the one the agent declared as its target.
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
+# Catastrophic patterns we never auto-run inside an interactive session — they
+# can destroy the box under test or the cage itself. Inside a session (unlike the
+# one-shot gate) shell metacharacters are legitimate, so scope containment and
+# this destructive guard are what stand in for the allowlist. We ESCALATE these
+# for human sign-off rather than silently blocking useful work.
+_DESTRUCTIVE_RE = re.compile(
+    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/(?:\s|$|\*)"     # rm -rf / , rm -rf /*
+    r"|\bmkfs\b|\bdd\b[^\n]*\bof=/dev/"                   # reformat / raw-disk write
+    r"|\b(?:shutdown|reboot|halt|poweroff|init\s+0)\b"    # take the host down
+    r"|\bwipefs\b|>\s*/dev/sd|\bfdisk\b[^\n]*/dev/"       # wipe partitions/disks
+    r"|:\s*\(\s*\)\s*\{.*\}\s*;\s*:",                     # classic fork bomb
+    re.I)
+
 
 @dataclass
 class Decision:
@@ -86,6 +99,50 @@ class Gate:
         now = time.time()
         self._recent_allows = [t for t in self._recent_allows if now - t < 60.0]
         return len(self._recent_allows) < self.scope.rate_limit_per_min
+
+    # -- interactive-session gate -------------------------------------------
+
+    def check_session(self, line: str, target: str,
+                      agent: str = "operator") -> Decision:
+        """Rule on ONE line typed into a governed interactive session.
+
+        A session is opened only after its target passed the normal gate, so the
+        box itself is in scope. Inside the shell the operator runs arbitrary
+        in-box commands (`id`, `cat flag`, `cd`) that don't fit the tool
+        allowlist — so session policy instead enforces the two things that still
+        matter, deterministically and with no LLM:
+
+          * scope containment — no out-of-scope IP may appear in the input, so a
+            session can never be used to pivot to a host you're not authorised
+            for (invariants 3 & 5);
+          * a destructive-command guard — box/cage-wrecking commands ESCALATE for
+            human sign-off (fail-closed on the approver).
+
+        Everything is logged one layer up in GovernedSession (invariant 5).
+        """
+        text = (line or "").strip()
+        if not text:
+            return self._deny(line, target, agent, "empty session input",
+                              "session:empty")
+
+        for host in _IPV4_RE.findall(text):
+            if not self.scope.contains_ip(host):
+                return self._deny(line, target, agent,
+                                  f"out-of-scope host {host} in session input",
+                                  "session:scope")
+
+        if not self._rate_ok():
+            return self._deny(line, target, agent, "rate limit exceeded",
+                              "session:rate")
+        self._recent_allows.append(time.time())
+
+        if _DESTRUCTIVE_RE.search(text):
+            return Decision("ESCALATE", line, target, agent,
+                            "destructive/irreversible session command — needs "
+                            "human sign-off", "session:destructive")
+
+        return Decision("ALLOW", line, target, agent,
+                        "in-scope session input", "session:allow")
 
     # -- the gate ------------------------------------------------------------
 

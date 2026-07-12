@@ -15,8 +15,10 @@ ever called for an ALLOWed action. A backend never sees a denied command.
 """
 from __future__ import annotations
 
+import select
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
 
 
@@ -67,3 +69,111 @@ class DockerKali:
             return ExecResult(command, 124, "", "timed out")
         except FileNotFoundError:
             return ExecResult(command, 127, "", "docker not found")
+
+
+# --------------------------------------------------------------------------- #
+# Interactive sessions — a STATEFUL shell in the cage (cwd/env/jobs persist),
+# unlike the one-shot run() above. Each line is gated one layer up (in
+# GovernedSession); a session backend never sees a denied line.
+# --------------------------------------------------------------------------- #
+
+
+class FakeSession:
+    """Records lines instead of executing; keeps a fake cwd so tests can see
+    that state persists. Mirrors DockerSession's interface."""
+
+    def __init__(self, target: str = "target"):
+        self.target = target
+        self.sent: list[str] = []
+        self.alive = True
+        self._cwd = "/root"
+
+    def send(self, line: str) -> ExecResult:
+        self.sent.append(line)
+        s = line.strip()
+        if s.startswith("cd "):                       # state survives across sends
+            self._cwd = s[3:].strip() or "/root"
+            return ExecResult(line, 0, "", "")
+        if s == "pwd":
+            return ExecResult(line, 0, self._cwd, "")
+        return ExecResult(line, 0, f"[fake-session {self._cwd}] {line}", "")
+
+    def close(self):
+        self.alive = False
+
+
+class DockerSession:
+    """A persistent, stateful shell inside the cage via `docker exec -i bash`.
+
+    State (cwd, exported vars, background jobs) survives across sends, so you can
+    `cd`, set env, catch a reverse shell, and keep working — impossible with the
+    one-shot DockerKali.run(). We frame each command with a sentinel so we can
+    read exactly its output and exit code, and bound the read so an interactive
+    or long-running command can't hang the session forever.
+    """
+    _SENTINEL = "__BRUKAL_DONE__"
+
+    def __init__(self, container: str = "brukal-kali", user: str = "brukalop",
+                 target: str = "", read_timeout: int = 120):
+        self.container = container
+        self.target = target
+        self.read_timeout = read_timeout
+        argv = ["docker", "exec", "-i"]
+        if user:
+            argv += ["-u", user]
+        argv += [container, "bash"]
+        try:
+            self._proc = subprocess.Popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except FileNotFoundError:
+            self._proc = None
+        self.alive = self._proc is not None and self._proc.poll() is None
+
+    def send(self, line: str) -> ExecResult:
+        if not self._proc or self._proc.poll() is not None:
+            self.alive = False
+            return ExecResult(line, 127, "", "session is not running")
+        try:
+            self._proc.stdin.write(line + "\n")
+            self._proc.stdin.write(f'echo "{self._SENTINEL} $?"\n')
+            self._proc.stdin.flush()
+        except (BrokenPipeError, OSError) as e:
+            self.alive = False
+            return ExecResult(line, 127, "", f"session write failed: {e}")
+
+        out: list[str] = []
+        rc = 0
+        deadline = time.time() + self.read_timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return ExecResult(line, 124, "".join(out).rstrip("\n"),
+                                  "read timed out — command may be interactive or "
+                                  "long-running (still active in the session)")
+            r, _, _ = select.select([self._proc.stdout], [], [], min(remaining, 1.0))
+            if not r:
+                continue
+            chunk = self._proc.stdout.readline()
+            if chunk == "":                            # backend EOF
+                self.alive = False
+                break
+            if chunk.startswith(self._SENTINEL):
+                try:
+                    rc = int(chunk.strip().split()[-1])
+                except (ValueError, IndexError):
+                    rc = 0
+                break
+            out.append(chunk)
+        return ExecResult(line, rc, "".join(out).rstrip("\n"), "")
+
+    def close(self):
+        try:
+            if self._proc and self._proc.poll() is None:
+                self._proc.stdin.write("exit\n")
+                self._proc.stdin.flush()
+                self._proc.wait(timeout=5)
+        except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            if self._proc:
+                self._proc.kill()
+        self.alive = False
