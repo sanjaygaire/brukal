@@ -87,21 +87,42 @@ On top of that spine:
 
 ---
 
+## Prerequisites
+
+| You want to… | You need |
+|---|---|
+| Run the tests, the benchmarks, or the fake cage | **Python 3.10+** and `pip`. Nothing else. |
+| Drive real tools against a live target | **Docker** (Desktop or Engine) for the Kali cage |
+| Use Claude as the brain | an **Anthropic API key** (`ANTHROPIC_API_KEY`) |
+| Use a paid OpenAI-compatible brain | that provider's key (OpenAI, OpenRouter, Groq, DeepSeek, GLM…) |
+| Use a **free, local, no-key** brain | **[Ollama](https://ollama.com)** with a model pulled (e.g. `ollama pull qwen2.5`) |
+
+You only need a model to run the *agents* (`run` / `hunt` / `solve`). The gate,
+the tests, the benchmarks, and `brukal exec` need no model and no key at all.
+
+## Install
+
+```bash
+git clone https://github.com/sanjaygaire/brukal.git && cd brukal
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -e ".[agents]"                            # installs the `brukal` command + agent deps
+```
+
+`pip install -e ".[agents]"` pulls in `anthropic` + `pydantic` and puts `brukal`
+on your PATH. Add the `[tui]` extra for the live dashboard: `pip install -e ".[agents,tui]"`.
+(Prefer not to install? Every command also works as `python brukal_cli.py <cmd> …`.)
+
 ## Quickstart
 
 ```bash
-# 1. install (agent extras pull in anthropic + pydantic)
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # or:  pip install -e ".[agents]"
-
-# 2. run the test suite (40 tests, no infra needed)
+# 1. run the test suite (75 tests, no infra, no key needed)
 python -m pytest -q
 
-# 3. reproduce the benchmark metrics (fake cage)
+# 2. reproduce the benchmark metrics (fake cage)
 python run_experiments.py
 
-# 4. drive the gate by hand against the fake cage
-python brukal_cli.py exec --fake "nmap -sV 10.10.10.5" 10.10.10.5
+# 3. drive the gate by hand against the fake cage — no model, no key
+brukal exec --fake "nmap -sV 10.10.10.5" 10.10.10.5
 ```
 
 ### Running a live engagement
@@ -134,36 +155,80 @@ brukal verify
 > network to `brukal_isolated` in `docker/docker-compose.yml` and keep the cage
 > off any internet-facing network.
 
-### Choosing a model provider
+### Choosing the model (the brain)
 
-Agents talk to a model through one small `propose()` interface, so you can use
+Agents talk to a model through one small `propose()` interface, so Brukal runs on
 Claude **or any OpenAI-compatible model** — including free local ones — with no
-extra dependency:
+extra dependency. You don't have to remember flags: **`brukal solve` just asks.**
 
-```bash
-brukal run <target> --provider ollama --model qwen2.5        # free, local, no key
-brukal run <target> --provider openrouter --model <model>    # key from OPENROUTER_API_KEY
-brukal run <target> --provider openai --model gpt-4o-mini    # key from OPENAI_API_KEY
-brukal run <target> --model claude-sonnet-5                  # anthropic (default)
+```
+How should Brukal think? Pick the model it runs on:
+  [1] Claude API (Anthropic) — best quality, needs an API key
+  [2] Local model via Ollama — free, private, no key (e.g. qwen2.5)
+  [3] OpenAI-compatible API — OpenAI / OpenRouter / Groq / DeepSeek / GLM / LM Studio
+  [4] Advanced — type provider / model / base-url yourself
 ```
 
-Supported: `anthropic` (default), `ollama`, `lmstudio`, `openai`, `openrouter`,
-`groq`, and `openai-compatible` (any endpoint via `--base-url`). Configure with
-`--provider` / `--model` / `--base-url` or `BRUKAL_PROVIDER` / `BRUKAL_MODEL` /
-`BRUKAL_BASE_URL`. For a free local run: install [Ollama](https://ollama.com),
-`ollama pull qwen2.5`, then use `--provider ollama`.
+Pick 1 and it prompts (hidden) for your key if it isn't already set; pick 2 and it
+asks which local model. To skip the prompt (e.g. in scripts), pass `--provider` /
+`--model` or set `BRUKAL_PROVIDER` / `BRUKAL_MODEL` and it uses those instead.
+
+**Option A — Claude API (best quality).** Get a key from the Anthropic console and
+export it:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...        # Windows PowerShell: $env:ANTHROPIC_API_KEY="sk-ant-..."
+brukal solve                               # pick [1]; default model claude-sonnet-5
+```
+
+**Option B — free local model, no key (Ollama).** Nothing leaves your machine:
+
+```bash
+# 1. install Ollama from https://ollama.com, then pull a model:
+ollama pull qwen2.5
+# 2. run Brukal and pick [2] (default model qwen2.5), or non-interactively:
+brukal solve <target> --provider ollama --model qwen2.5
+```
+
+> **WSL note:** if Ollama runs on Windows but you run Brukal inside WSL, WSL's
+> `localhost` isn't Windows'. Start Ollama with `OLLAMA_HOST=0.0.0.0` and point
+> Brukal at the Windows host IP: `--base-url http://<windows-ip>:11434/v1` (or
+> just install Ollama inside WSL).
+
+**Option C — other hosted providers.** Pick `[3]` and it asks for the provider and
+key, or set them yourself:
+
+```bash
+export OPENROUTER_API_KEY=...   ; brukal solve <target> --provider openrouter --model z-ai/glm-4.6
+export OPENAI_API_KEY=...       ; brukal solve <target> --provider openai     --model gpt-4o-mini
+export GROQ_API_KEY=...         ; brukal solve <target> --provider groq       --model llama-3.1-8b-instant
+```
+
+Supported providers: `anthropic` (default), `ollama`, `lmstudio` (both free/local,
+no key), `openai`, `openrouter`, `groq`, `deepseek`, `glm`/`zhipu`, and
+`openai-compatible` (any endpoint via `--base-url`). Everything is also settable
+via `BRUKAL_PROVIDER` / `BRUKAL_MODEL` / `BRUKAL_BASE_URL`.
 
 ### Human-assisted solving (governed copilot)
 
 `brukal solve` is an interactive loop that acts like a teammate, not a tool
 dispatcher. Run it with no target and it **asks** for one (offering to authorise
-a single out-of-scope host for the session); it then lays out a **shortest-path
-plan** — recon → enumeration → exploitation → priv-esc — and works it step by
-step, naming the current PHASE and GOAL and reasoning from what it has learned.
-You `run` a suggested command (through the gate), record a `manual` step you did
-yourself, add a `note`, `ask` a question, or re-`plan`. Brukal reasons and logs;
-you do the ungoverned exploitation on your own authority — a suggested command is
-**never** a bypass, it still goes through the gate.
+a single out-of-scope host for the session), then **asks which model** to use
+(§ Choosing the model) and **how to work the plan**:
+
+- **Manual** (default) — Brukal proposes each step; **you** approve every command.
+- **Auto** — Brukal **runs the safe (ALLOW) enumeration steps itself** and pauses
+  for anything the gate escalates or that needs your hands (exploitation, a shell,
+  a flag). Toggle any time with `a` (menu) or `auto` / `manual-mode` (typed);
+  Ctrl-C during an auto run drops you back to manual.
+
+It lays out a **shortest-path plan** — recon → enumeration → exploitation →
+priv-esc — and works it step by step, naming the current PHASE and GOAL and
+reasoning from what it has learned. You `run` a suggested command (through the
+gate), record a `manual` step you did yourself, add a `note`, `ask` a question, or
+re-`plan`. Brukal reasons and logs; you do the ungoverned exploitation on your own
+authority — a suggested command is **never** a bypass, it still goes through the
+gate.
 
 Every finding is written to a per-target **Obsidian vault** (`runs/vault/<target>/`
 — `engagement.md`, `plan.md`, per-agent notes, `findings.jsonl`), so a later
@@ -171,9 +236,9 @@ Every finding is written to a per-target **Obsidian vault** (`runs/vault/<target
 Works with any provider, so you can copilot a box on a free local model:
 
 ```bash
-brukal solve                       # asks for the target, plans, then walks it
+brukal solve                       # asks target → model → manual/auto, plans, walks it
 brukal solve 172.20.0.3 --yes-authorised --scope runs/juice.json \
-    --provider ollama --model qwen2.5
+    --provider ollama --model qwen2.5     # flags skip the model prompt
 ```
 
 ### HTB / lab boxes (VPN-connected cage)

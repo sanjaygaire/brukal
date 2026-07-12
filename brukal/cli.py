@@ -186,10 +186,9 @@ def _cmd_run(args) -> int:
 
 
 def _cmd_solve(args) -> int:
+    # No pre-flight key nag here: when no --provider/BRUKAL_PROVIDER is set,
+    # `brukal solve` asks how to run the model (and for a key) interactively.
     from brukal.assist import run_solve
-    provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
-    if provider == "anthropic" and not args.fake and not _ensure_key():
-        print("  ⚠ No key set. Set ANTHROPIC_API_KEY, or use --provider ollama --model qwen2.5")
     return run_solve(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,

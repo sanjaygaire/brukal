@@ -15,7 +15,10 @@ rich menu UI (falling back to a plain prompt if `rich` is unavailable).
 """
 from __future__ import annotations
 
+import getpass
+import os
 import re
+import sys
 from pathlib import Path
 
 from .audit import AuditLog
@@ -287,14 +290,21 @@ def _show_highlights(con, Panel, Text, hits, title):
     con.print(Panel(body, title=f"[bold yellow]★ {title}[/]", border_style="yellow"))
 
 
-def _menu_loop(session, audit, target, cage, con, holder):
+_AUTO_CAP = 20   # in auto mode, hand back to the human after this many auto-runs
+
+
+def _menu_loop(session, audit, target, cage, con, holder, auto=False):
     from rich.panel import Panel
     from rich.prompt import Prompt
     from rich.table import Table
     from rich.text import Text
 
+    flags = {"auto": auto}
+    auto_steps = 0
+
     con.print(Panel(Text.assemble(("BRUKAL — pentest companion   ", "bold cyan"),
-                                   (f"target={target}   cage={cage}", "white")),
+                                   (f"target={target}   cage={cage}   "
+                                    f"mode={'AUTO' if auto else 'MANUAL'}", "white")),
                     border_style="cyan"))
 
     if session.resumed:
@@ -305,7 +315,10 @@ def _menu_loop(session, audit, target, cage, con, holder):
     con.print("[grey62]What is the box asking you to find? (HTB task questions, one per "
               "line — e.g. \"How many open TCP ports?\"). Enter blank to skip / finish.[/]")
     while True:
-        obj = Prompt.ask("  objective", default="")
+        try:
+            obj = Prompt.ask("  objective", default="")
+        except (EOFError, KeyboardInterrupt):
+            break
         if not obj:
             break
         session.add_objective(obj)
@@ -370,11 +383,32 @@ def _menu_loop(session, audit, target, cage, con, holder):
         if session.highlights:
             _show_highlights(con, Panel, Text, session.highlights[-8:], "what we know so far")
 
+        # AUTO mode: run the suggested (safe) command without asking. Risky steps
+        # still hit the gate's escalation prompt; a manual/exploitation step, an
+        # empty suggestion, the step cap, or Ctrl-C hands control back to you.
+        if flags["auto"]:
+            if s.command and auto_steps < _AUTO_CAP:
+                con.print("[grey62]▶ auto — running the safe next step (Ctrl-C to pause)…[/]")
+                try:
+                    run_and_show(s.command)
+                    auto_steps += 1
+                    continue
+                except KeyboardInterrupt:
+                    con.print("\n[yellow]paused — back to manual.[/]")
+                    flags["auto"] = False
+            else:
+                why = ("hit the auto-step limit" if auto_steps >= _AUTO_CAP
+                       else "the next step is yours (manual/exploitation)" if s.manual
+                       else "no safe command to run")
+                con.print(f"[yellow]⏸ auto paused — {why}. Over to you.[/]")
+                flags["auto"] = False
+
         options = [
             ("1", f"Run suggested:  {s.command}" if s.command else "Run a command"),
             ("2", "Run a different command"),
             ("3", "Ask the companion something"),
             ("r", "Re-plan the shortest path from what we know"),
+            ("a", f"Switch to {'MANUAL' if flags['auto'] else 'AUTO'} mode"),
             ("4", "Add a note / paste tool output"),
             ("5", "Record a manual step you did"),
             ("6", "Add an objective the box is asking"),
@@ -387,7 +421,10 @@ def _menu_loop(session, audit, target, cage, con, holder):
             grid.add_row(Text(f"[{key}]", style="bold cyan"), Text(label))
         con.print(grid)
 
-        choice = Prompt.ask("  choose", choices=[k for k, _ in options], default="1")
+        try:
+            choice = Prompt.ask("  choose", choices=[k for k, _ in options], default="1")
+        except (EOFError, KeyboardInterrupt):
+            break
         if choice == "1":
             run_and_show(s.command or Prompt.ask("  command"))
         elif choice == "2":
@@ -400,6 +437,10 @@ def _menu_loop(session, audit, target, cage, con, holder):
             with con.status("[cyan]re-planning the route…", spinner="dots"):
                 session.make_plan()
             session.last = None
+        elif choice == "a":
+            flags["auto"] = not flags["auto"]
+            auto_steps = 0
+            con.print(f"  mode → [bold]{'AUTO' if flags['auto'] else 'MANUAL'}[/]")
         elif choice == "4":
             session.note(Prompt.ask("  note / paste output")); session.last = None
         elif choice == "5":
@@ -417,7 +458,8 @@ def _menu_loop(session, audit, target, cage, con, holder):
 
 
 _HELP = """  commands: next/<enter>  run  run <cmd>  note <text>  manual <text>
-            ask <question>  plan  skills <topic>  verify  help  quit"""
+            ask <question>  plan  auto  manual-mode  skills <topic>  verify  help  quit
+            (`auto` runs safe steps itself; `manual` goes back to approving each)"""
 
 
 def _show_plan_plain(session):
@@ -429,8 +471,9 @@ def _show_plan_plain(session):
         print()
 
 
-def _plain_loop(session, audit, target, cage):
-    print(f"\n  brukal solve — target {target}   cage={cage}")
+def _plain_loop(session, audit, target, cage, auto=False):
+    print(f"\n  brukal solve — target {target}   cage={cage}   "
+          f"mode={'AUTO' if auto else 'MANUAL'}")
     if session.resumed:
         print(f"  ↻ resumed — loaded {session.resumed} prior finding(s) for {target}.")
     print(_HELP)
@@ -439,7 +482,27 @@ def _plain_loop(session, audit, target, cage):
         session.make_plan()
     _show_plan_plain(session)
     _print_suggestion(session.advise())
+    flags = {"auto": auto}
+    auto_steps = 0
     while True:
+        # AUTO: run the safe suggested step, pausing on manual/cap/Ctrl-C.
+        if flags["auto"]:
+            s = session.last
+            if s and s.command and auto_steps < _AUTO_CAP:
+                print(f"  [auto] running: {s.command}")
+                try:
+                    d, r, _ = session.run(s.command)
+                    print(f"  -> {d.verdict}" +
+                          (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer})"))
+                    auto_steps += 1
+                    _print_suggestion(session.advise())
+                    continue
+                except KeyboardInterrupt:
+                    print("\n  paused — manual mode.")
+                    flags["auto"] = False
+            else:
+                print("  [auto] paused — over to you (type `auto` to resume).")
+                flags["auto"] = False
         try:
             raw = input("  brukal> ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -450,6 +513,10 @@ def _plain_loop(session, audit, target, cage):
             break
         elif raw in ("help", "?"):
             print(_HELP)
+        elif raw == "auto":
+            flags["auto"] = True; auto_steps = 0; print("  mode → AUTO")
+        elif raw in ("manual-mode", "manual_mode"):
+            flags["auto"] = False; print("  mode → MANUAL")
         elif raw == "verify":
             print("  audit chain intact:", audit.verify())
         elif raw == "plan":
@@ -504,6 +571,96 @@ def _confirm(console, prompt: str) -> bool:
     """Yes/No confirmation, fail-closed (default No, No on EOF/non-tty)."""
     ans = _ask(console, f"{prompt} [y/N]", "").strip().lower()
     return ans in ("y", "yes")
+
+
+def _emit(console, plain: str, markup: str | None = None):
+    if console is not None:
+        console.print(markup if markup is not None else plain)
+    else:
+        print(plain)
+
+
+def _ensure_key_env(var: str, label: str) -> bool:
+    """Ensure an API-key env var is set; prompt (hidden) if interactive."""
+    if os.environ.get(var):
+        return True
+    if not sys.stdin.isatty():
+        return False
+    try:
+        val = getpass.getpass(f"  {label} (input hidden, blank to skip): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        val = ""
+    if val:
+        os.environ[var] = val
+        return True
+    return False
+
+
+def choose_brain(console):
+    """Ask the operator HOW to run Brukal's brain and return (provider, model,
+    base_url), ensuring any needed API key is set. Returns (None, None, None) when
+    non-interactive (fall back to defaults/env)."""
+    from .llm import _ANTHROPIC_DEFAULT, _PRESETS
+    if not sys.stdin.isatty():
+        return None, None, None
+
+    _emit(console, "\n  How should Brukal think? Pick the model it runs on:",
+          "\n  [bold]How should Brukal think? Pick the model it runs on:[/]")
+    for k, label in (
+        ("1", "Claude API (Anthropic) — best quality, needs an API key"),
+        ("2", "Local model via Ollama — free, private, no key (e.g. qwen2.5)"),
+        ("3", "OpenAI-compatible API — OpenAI / OpenRouter / Groq / DeepSeek / GLM / LM Studio"),
+        ("4", "Advanced — type provider / model / base-url yourself"),
+    ):
+        _emit(console, f"    [{k}] {label}", f"    [cyan]\\[{k}][/] {label}")
+    choice = (_ask(console, "  choose", "1") or "1").strip()
+
+    if choice == "2":                                        # free local Ollama
+        model = (_ask(console, "  Ollama model", "qwen2.5") or "qwen2.5").strip()
+        base = (_ask(console, "  Ollama base URL", "http://localhost:11434/v1") or "").strip()
+        _emit(console, "  (WSL note: if Ollama runs on Windows, use the Windows host IP, "
+              "e.g. http://172.x.x.x:11434/v1, and start Ollama with OLLAMA_HOST=0.0.0.0)")
+        return "ollama", model, base or None
+
+    if choice == "3":                                        # OpenAI-compatible preset
+        prov = (_ask(console, "  provider (openai/openrouter/groq/deepseek/glm/lmstudio)",
+                     "openai") or "openai").strip().lower()
+        if prov not in _PRESETS:
+            _emit(console, f"  unknown provider '{prov}', using openai.")
+            prov = "openai"
+        _, key_env, default_model = _PRESETS[prov]
+        model = (_ask(console, "  model", default_model or "") or "").strip() or default_model
+        if prov != "lmstudio" and not _ensure_key_env(key_env, f"{prov} API key ({key_env})"):
+            _emit(console, f"  ⚠ no {key_env} set — calls will fail until you export it.")
+        return prov, model, None
+
+    if choice == "4":                                        # advanced
+        prov = (_ask(console, "  provider", "openai") or "openai").strip().lower()
+        model = (_ask(console, "  model (blank = provider default)", "") or "").strip() or None
+        base = (_ask(console, "  base URL (blank = preset)", "") or "").strip() or None
+        return prov, model, base
+
+    # default: Claude API
+    if not _ensure_key_env("ANTHROPIC_API_KEY", "Anthropic API key"):
+        _emit(console, "  ⚠ no ANTHROPIC_API_KEY — Claude calls will fail. "
+              "Tip: option 2 runs a free local model instead.")
+    model = (_ask(console, "  Claude model", _ANTHROPIC_DEFAULT) or _ANTHROPIC_DEFAULT).strip()
+    return "anthropic", model, None
+
+
+def choose_run_mode(console) -> bool:
+    """Ask how to work the plan. Returns True for AUTO, False for MANUAL."""
+    if not sys.stdin.isatty():
+        return False
+    _emit(console, "\n  How should I work through the plan?",
+          "\n  [bold]How should I work through the plan?[/]")
+    _emit(console, "    [1] Manual — you approve each step (recommended)",
+          "    [cyan]\\[1][/] Manual — you approve each step (recommended)")
+    _emit(console, "    [2] Auto — I run the safe (ALLOW) steps myself, and pause for "
+                   "anything risky or manual",
+          "    [cyan]\\[2][/] Auto — I run the safe (ALLOW) steps myself, and pause for "
+          "anything risky or manual")
+    return (_ask(console, "  choose", "1") or "1").strip() == "2"
 
 
 def _authorise_host(scope, target: str):
@@ -575,6 +732,13 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
             print("Refused: a live run needs your authorisation (--yes-authorised).")
             return 2
 
+    # 4) The brain — ask how to run the model, unless it was set on the CLI/env.
+    if provider is None and not os.environ.get("BRUKAL_PROVIDER"):
+        provider, model, base_url = choose_brain(console)
+
+    # 5) How to work the plan — manual (approve each step) or auto (run safe steps).
+    auto = choose_run_mode(console)
+
     audit = AuditLog(audit_path)
     approver = _rich_approver(console, holder) if console is not None else interactive_approver
 
@@ -586,20 +750,30 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
                                                base_url=base_url))
     except Exception as e:
         print(f"Could not initialise the model client: {e}")
-        print("Set a key, or use --provider ollama --model qwen2.5 (free, local).")
+        print("Set a key, or choose Ollama (free, local) when asked.")
         return 2
 
-    # 4) Per-target Obsidian vault → persistence + resume across sessions.
+    # 6) Per-target Obsidian vault → persistence + resume across sessions.
     vault_dir = _vault_for(vault_path, target)
     blackboard = Blackboard(vault_dir, session_scope)
     session = AssistSession(target, executor, strategist,
                             skills=SkillLibrary(), blackboard=blackboard)
     cage = "fake" if fake else "docker:" + container
 
-    if console is not None:
-        _menu_loop(session, audit, target, cage, console, holder)
-    else:
-        _plain_loop(session, audit, target, cage)
+    try:
+        if console is not None:
+            _menu_loop(session, audit, target, cage, console, holder, auto=auto)
+        else:
+            _plain_loop(session, audit, target, cage, auto=auto)
+    except KeyboardInterrupt:
+        print()
+    except Exception as e:
+        if os.environ.get("BRUKAL_DEBUG"):
+            raise
+        print(f"\n  ⚠ model/cage error: {e}")
+        print("  Check the model is reachable (key set, or Ollama running with "
+              "`ollama serve`) and the cage is up. Set BRUKAL_DEBUG=1 for the trace.")
+        return 1
 
     print(f"\n  session recorded to {audit_path}  ·  notes in {vault_dir}"
           f"  ·  chain intact: {audit.verify()}\n")

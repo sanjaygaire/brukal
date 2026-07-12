@@ -171,6 +171,53 @@ def test_session_resumes_prior_findings_from_vault():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_pickers_are_noninteractive_safe():
+    # Under pytest stdin is not a tty: the brain picker falls back to defaults and
+    # the mode picker to MANUAL — neither may block waiting for input.
+    from brukal.assist import choose_brain, choose_run_mode
+    assert choose_brain(None) == (None, None, None)
+    assert choose_run_mode(None) is False
+
+
+class SeqLLM:
+    """Returns scripted responses in order, then repeats the last one."""
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.i = 0
+
+    def propose(self, system, user, max_tokens=1024):
+        r = self.responses[min(self.i, len(self.responses) - 1)]
+        self.i += 1
+        return r
+
+
+def test_auto_mode_runs_the_safe_step_by_itself():
+    import io
+    tmp = tempfile.mkdtemp()
+    try:
+        from brukal.assist import _plain_loop
+        scope = load_scope(SCOPE)
+        kali = FakeKali()
+        audit = AuditLog(Path(tmp) / "a.jsonl")
+        ex = Executor(Gate(scope), kali, audit)
+        llm = SeqLLM([
+            "1. [recon] nmap -sV 10.10.10.5",                       # the plan
+            "PHASE: recon\nGOAL: scan\nREASONING: go.\nRUN: nmap -sV 10.10.10.5",
+            "PHASE: recon\nGOAL: think\nREASONING: enumerate more, nothing to run.",
+        ])
+        sess = AssistSession("10.10.10.5", ex, StrategistAgent(llm))
+        old = sys.stdin
+        sys.stdin = io.StringIO("quit\n")     # after auto pauses, we quit
+        try:
+            _plain_loop(sess, audit, "10.10.10.5", "fake", auto=True)
+        finally:
+            sys.stdin = old
+        # the command ran WITHOUT the operator typing `run`
+        assert kali.executed == ["nmap -sV 10.10.10.5"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_authorise_host_scopes_to_a_single_ip():
     from brukal.assist import _authorise_host, _vault_for
     scope = load_scope(SCOPE)
