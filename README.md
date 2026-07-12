@@ -155,15 +155,23 @@ Supported: `anthropic` (default), `ollama`, `lmstudio`, `openai`, `openrouter`,
 
 ### Human-assisted solving (governed copilot)
 
-`brukal solve <target>` is an interactive loop: a strategist agent proposes the
-next step (drawing on the skill packs), and you `run` a suggested command
-(through the gate), record a `manual` step you did yourself, add a `note`, or
-`ask` a question. Brukal reasons and logs; you do the ungoverned exploitation on
-your own authority — a suggested command is **never** a bypass, it still goes
-through the gate. Works with any provider, so you can copilot a box on a free
-local model:
+`brukal solve` is an interactive loop that acts like a teammate, not a tool
+dispatcher. Run it with no target and it **asks** for one (offering to authorise
+a single out-of-scope host for the session); it then lays out a **shortest-path
+plan** — recon → enumeration → exploitation → priv-esc — and works it step by
+step, naming the current PHASE and GOAL and reasoning from what it has learned.
+You `run` a suggested command (through the gate), record a `manual` step you did
+yourself, add a `note`, `ask` a question, or re-`plan`. Brukal reasons and logs;
+you do the ungoverned exploitation on your own authority — a suggested command is
+**never** a bypass, it still goes through the gate.
+
+Every finding is written to a per-target **Obsidian vault** (`runs/vault/<target>/`
+— `engagement.md`, `plan.md`, per-agent notes, `findings.jsonl`), so a later
+`brukal solve <target>` **resumes with memory** instead of asking from scratch.
+Works with any provider, so you can copilot a box on a free local model:
 
 ```bash
+brukal solve                       # asks for the target, plans, then walks it
 brukal solve 172.20.0.3 --yes-authorised --scope runs/juice.json \
     --provider ollama --model qwen2.5
 ```

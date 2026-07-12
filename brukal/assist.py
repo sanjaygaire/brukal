@@ -62,19 +62,28 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
 
 
 class AssistSession:
-    def __init__(self, target, executor, strategist, skills=None):
+    def __init__(self, target, executor, strategist, skills=None, blackboard=None):
         self.target = target
         self.executor = executor
         self.strategist = strategist
         self.skills = skills
+        self.blackboard = blackboard   # Obsidian-backed persistence (optional)
         self.notes: list[str] = []     # observations: command results, manual reports, notes
         self.highlights: list[tuple[str, str]] = []   # accumulated key results
         self.objectives: list[str] = []               # what the box is asking (HTB tasks)
+        self.plan: list = []           # list[PlanStep] — the shortest-path plan
+        self.plan_cursor = 0           # index of the step we're working on
         self.last = None               # last Suggestion
+        self.resumed = 0               # how many prior findings we loaded
+        if blackboard is not None:
+            self._load_memory()
+
+    # -- objectives --------------------------------------------------------- #
 
     def add_objective(self, text: str):
         if text.strip():
             self.objectives.append(text.strip())
+            self._write_notebook()
 
     def _objectives_text(self) -> str:
         return "\n".join(f"- {o}" for o in self.objectives)
@@ -82,12 +91,55 @@ class AssistSession:
     def _state(self) -> str:
         return "\n".join(self.notes[-25:]) if self.notes else "(no findings yet)"
 
+    # -- planning (the shortest path, made visible) ------------------------- #
+
+    def make_plan(self):
+        """Ask the strategist for the shortest-path plan, keep completed steps
+        marked, and persist it so a human can watch (and edit) the route."""
+        focus = " ".join(self.objectives) or self.target
+        ref = self.skills.context_for(focus) if self.skills else ""
+        new = self.strategist.plan(self.target, self._state(),
+                                   self._objectives_text(), ref)
+        done = self.plan_cursor                    # preserve progress across a re-plan
+        self.plan = new
+        self.plan_cursor = min(done, len(self.plan))
+        for i in range(self.plan_cursor):
+            if i < len(self.plan):
+                self.plan[i].done = True
+        self._persist_plan()
+        return self.plan
+
+    def _current_step(self):
+        return self.plan[self.plan_cursor] if self.plan_cursor < len(self.plan) else None
+
+    def _advance_plan(self):
+        """Mark the current plan step done and move to the next."""
+        step = self._current_step()
+        if step is not None:
+            step.done = True
+            self.plan_cursor += 1
+            self._persist_plan()
+
+    def _plan_text(self) -> str:
+        """The plan rendered with a ▶ on the step we're working on."""
+        if not self.plan:
+            return ""
+        lines = []
+        for i, st in enumerate(self.plan):
+            mark = "x" if st.done else (">" if i == self.plan_cursor else " ")
+            ph = f"[{st.phase}] " if st.phase else ""
+            lines.append(f"{i + 1}. [{mark}] {ph}{st.text}")
+        return "\n".join(lines)
+
     def advise(self, question: str = ""):
         focus = question or " ".join(self.objectives) or self.target
         ref = self.skills.context_for(focus) if self.skills else ""
         self.last = self.strategist.advise(
-            self.target, self._state(), question, ref, self._objectives_text())
+            self.target, self._state(), question, ref, self._objectives_text(),
+            self._plan_text())
         return self.last
+
+    # -- doing / recording (persisted to the vault) ------------------------- #
 
     def run(self, command: str, target: str | None = None):
         """Run a command through the gate/cage, record it, and surface the key
@@ -100,17 +152,100 @@ class AssistSession:
             new_hl = highlight_findings(raw)
             self.highlights.extend(h for h in new_hl if h not in self.highlights)
             self.notes.append(f"[ran] {command}\n{decision.verdict}: {raw[:800] or '(no output)'}")
+            summary = ("; ".join(f"{t}: {l}" for t, l in new_hl[:6])
+                       or (raw[:200] or "(no output)"))
+            self._persist_finding("ran", command, decision.verdict, summary, new_hl)
+            self._advance_plan()       # this step is done; move to the next
         else:
             self.notes.append(f"[ran] {command}\nNOT RUN — {decision.verdict} "
                               f"({decision.layer}: {decision.reason})")
+            self._persist_finding("blocked", command, decision.verdict,
+                                  f"{decision.layer}: {decision.reason}", [])
         return decision, result, new_hl
 
     def note(self, text: str):
         self.notes.append(f"[note] {text}")
+        self._persist_finding("note", "", "", text, [])
 
     def manual(self, text: str):
         """Record an out-of-cage action the operator performed themselves."""
         self.notes.append(f"[manual] {text}")
+        self._persist_finding("manual", "", "", text, [])
+
+    # -- persistence + resume ---------------------------------------------- #
+
+    def _persist_finding(self, kind, command, verdict, summary, highlights):
+        if self.blackboard is None:
+            return
+        self.blackboard.write_finding("strategist", {
+            "target": self.target, "task": kind, "command": command,
+            "verdict": verdict, "summary": summary,
+            "highlights": [list(h) for h in highlights],
+        })
+        self._write_notebook()
+
+    def _persist_plan(self):
+        if self.blackboard is None:
+            return
+        body = self._plan_text() or "_(no plan yet)_"
+        self.blackboard.write_page(
+            "plan.md",
+            f"# Plan — {self.target}\n\n"
+            f"> Shortest path to the goal. `x` done · `>` current · ` ` pending. "
+            f"Edit freely; Brukal re-plans from findings.\n\n{body}\n")
+        self._write_notebook()
+
+    def _write_notebook(self):
+        """A single human-readable engagement page: objectives, plan, what we
+        know, and the timeline — the thing you open in Obsidian to see the story."""
+        if self.blackboard is None:
+            return
+        parts = [f"# Engagement — {self.target}\n"]
+        if self.objectives:
+            parts.append("## Objectives\n" +
+                         "\n".join(f"- [ ] {o}" for o in self.objectives) + "\n")
+        if self.plan:
+            parts.append("## Plan (shortest path)\n" + self._plan_text() + "\n")
+        if self.highlights:
+            parts.append("## What we know\n" +
+                         "\n".join(f"- **{t}** — {l}" for t, l in self.highlights[-20:]) + "\n")
+        if self.notes:
+            parts.append("## Timeline\n" +
+                         "\n".join(f"- {n.splitlines()[0]}" for n in self.notes[-40:]) + "\n")
+        self.blackboard.write_page("engagement.md", "\n".join(parts))
+
+    def _load_memory(self):
+        """Resume: pull prior findings + plan for this target back into context."""
+        prior = self.blackboard.all_findings(self.target)
+        for rec in prior:
+            summ = rec.get("summary", "")
+            self.notes.append(f"[{rec.get('task', 'note')}] {summ}")
+            for h in rec.get("highlights", []):
+                pair = tuple(h)
+                if len(pair) == 2 and pair not in self.highlights:
+                    self.highlights.append(pair)
+        self.resumed = len(prior)
+        self.plan = _parse_saved_plan(self.blackboard.read_page("plan.md"))
+        self.plan_cursor = sum(1 for st in self.plan if st.done)
+
+
+# A saved plan line is "N. [mark] [phase] text" where mark is x (done), > (current)
+# or blank (pending) — distinct from the strategist's fresh "N. [phase] text".
+_SAVED_PLAN_LINE = re.compile(
+    r"^\s*\d+\.\s*\[(?P<mark>[x> ])\]\s*(?:\[(?P<phase>[^\]]+)\]\s*)?(?P<text>.+?)\s*$")
+
+
+def _parse_saved_plan(text: str) -> list:
+    from .agents.strategist import PlanStep
+    steps: list = []
+    for line in (text or "").splitlines():
+        m = _SAVED_PLAN_LINE.match(line)
+        if not m:
+            continue
+        steps.append(PlanStep(text=m.group("text").strip(),
+                              phase=(m.group("phase") or "").strip().lower(),
+                              done=m.group("mark") == "x"))
+    return steps
 
 
 def _rich_approver(con, holder):
@@ -162,6 +297,10 @@ def _menu_loop(session, audit, target, cage, con, holder):
                                    (f"target={target}   cage={cage}", "white")),
                     border_style="cyan"))
 
+    if session.resumed:
+        con.print(f"[green]↻ resumed[/] — loaded [bold]{session.resumed}[/] prior "
+                  f"finding(s) for {target}; picking up where we left off.")
+
     # Ask up front what the box wants (HTB task questions) — this steers everything.
     con.print("[grey62]What is the box asking you to find? (HTB task questions, one per "
               "line — e.g. \"How many open TCP ports?\"). Enter blank to skip / finish.[/]")
@@ -170,6 +309,16 @@ def _menu_loop(session, audit, target, cage, con, holder):
         if not obj:
             break
         session.add_objective(obj)
+
+    # Lay out the shortest-path plan up front so the operator sees the route.
+    if not session.plan:
+        with con.status("[cyan]companion planning the route…", spinner="dots"):
+            session.make_plan()
+
+    def show_plan():
+        pt = session._plan_text()
+        if pt:
+            con.print(Panel(pt, title="[bold]plan — shortest path[/]", border_style="blue"))
 
     def run_and_show(command):
         with con.status(f"[cyan]running:[/] {command}", spinner="dots") as st:
@@ -199,6 +348,9 @@ def _menu_loop(session, audit, target, cage, con, holder):
                 ot.append("? ", style="bold yellow"); ot.append(o + "\n")
             con.print(Panel(ot, title="objectives", border_style="yellow"))
 
+        # the plan (what we're trying to do and how) — shown every turn
+        show_plan()
+
         # the companion's reasoning: phase + goal + why
         head = Text()
         if s.phase:
@@ -221,7 +373,8 @@ def _menu_loop(session, audit, target, cage, con, holder):
         options = [
             ("1", f"Run suggested:  {s.command}" if s.command else "Run a command"),
             ("2", "Run a different command"),
-            ("3", "Ask the companion something / re-plan"),
+            ("3", "Ask the companion something"),
+            ("r", "Re-plan the shortest path from what we know"),
             ("4", "Add a note / paste tool output"),
             ("5", "Record a manual step you did"),
             ("6", "Add an objective the box is asking"),
@@ -243,6 +396,10 @@ def _menu_loop(session, audit, target, cage, con, holder):
             q = Prompt.ask("  ask / focus (e.g. 'how do I answer objective 2?')", default="")
             with con.status("[cyan]companion thinking…", spinner="dots"):
                 session.advise(q)
+        elif choice == "r":
+            with con.status("[cyan]re-planning the route…", spinner="dots"):
+                session.make_plan()
+            session.last = None
         elif choice == "4":
             session.note(Prompt.ask("  note / paste output")); session.last = None
         elif choice == "5":
@@ -260,12 +417,27 @@ def _menu_loop(session, audit, target, cage, con, holder):
 
 
 _HELP = """  commands: next/<enter>  run  run <cmd>  note <text>  manual <text>
-            ask <question>  skills <topic>  verify  help  quit"""
+            ask <question>  plan  skills <topic>  verify  help  quit"""
+
+
+def _show_plan_plain(session):
+    pt = session._plan_text()
+    if pt:
+        print("\n  PLAN (shortest path):")
+        for line in pt.splitlines():
+            print(f"    {line}")
+        print()
 
 
 def _plain_loop(session, audit, target, cage):
     print(f"\n  brukal solve — target {target}   cage={cage}")
+    if session.resumed:
+        print(f"  ↻ resumed — loaded {session.resumed} prior finding(s) for {target}.")
     print(_HELP)
+    if not session.plan:
+        print("  planning the route…")
+        session.make_plan()
+    _show_plan_plain(session)
     _print_suggestion(session.advise())
     while True:
         try:
@@ -280,6 +452,9 @@ def _plain_loop(session, audit, target, cage):
             print(_HELP)
         elif raw == "verify":
             print("  audit chain intact:", audit.verify())
+        elif raw == "plan":
+            print("  re-planning the route…")
+            session.make_plan(); _show_plan_plain(session)
         elif raw == "run":
             if session.last and session.last.command:
                 d, r, _ = session.run(session.last.command)
@@ -314,11 +489,48 @@ def _print_suggestion(s):
     print()
 
 
-def run_solve(target, *, fake=False, yes_authorised=False, scope_path="scope.json",
-              audit_path="runs/audit.jsonl", container="brukal-kali",
-              model=None, provider=None, base_url=None) -> int:
+def _ask(console, prompt: str, default: str = "") -> str:
+    """One-line prompt that works with or without rich; fail-closed on EOF."""
+    try:
+        if console is not None:
+            from rich.prompt import Prompt
+            return Prompt.ask(prompt, default=default)
+        return input(f"{prompt} ").strip() or default
+    except (EOFError, KeyboardInterrupt):
+        return default
+
+
+def _confirm(console, prompt: str) -> bool:
+    """Yes/No confirmation, fail-closed (default No, No on EOF/non-tty)."""
+    ans = _ask(console, f"{prompt} [y/N]", "").strip().lower()
+    return ans in ("y", "yes")
+
+
+def _authorise_host(scope, target: str):
+    """Build a session Scope narrowed to a single /32 host, reusing the loaded
+    scope's tool allowlist and rate limit. This SETS scope before the engagement
+    (like `brukal target`) — it does not widen a running scope (invariant 5)."""
+    import ipaddress
+
+    from .scope import Scope
+    net = ipaddress.ip_network(f"{target.strip()}/32", strict=False)
+    return Scope(engagement=f"{scope.engagement}-solve",
+                 authorized_networks=(net,),
+                 allowlisted_tools=scope.allowlisted_tools,
+                 rate_limit_per_min=scope.rate_limit_per_min)
+
+
+def _vault_for(vault_root, target: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", target.strip()) or "target"
+    return Path(vault_root) / safe
+
+
+def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
+              audit_path="runs/audit.jsonl", vault_path="runs/vault",
+              container="brukal-kali", model=None, provider=None, base_url=None) -> int:
     try:
         from .agents.strategist import StrategistAgent
+        from .blackboard import Blackboard
         from .engagement import interactive_approver
         from .llm import LLMClient
         from .skills import SkillLibrary
@@ -326,27 +538,47 @@ def run_solve(target, *, fake=False, yes_authorised=False, scope_path="scope.jso
         print(f"Agent dependencies missing ({e}). Install: pip install \"brukal[agents]\"")
         return 2
 
-    scope = load_scope(scope_path)
-    if not scope.contains_ip(target):
-        print(f"Refused: target {target} is not inside {scope_path}.  (brukal target {target})")
-        return 2
-    if not fake and not yes_authorised:
-        print("Refused: a live run needs --yes-authorised (you confirm you are authorised).")
-        return 2
-
-    audit = AuditLog(audit_path)
-
     # A rich console (menu UI + spinner-aware approver), or plain fallback.
-    console = None
     holder: dict = {"status": None}
     try:
         from rich.console import Console
         console = Console()
     except ImportError:
         console = None
+
+    # 1) The target — ask for it if it wasn't given on the command line.
+    if not target:
+        target = _ask(console, "  target IP to work on").strip()
+    if not target:
+        print("No target given.")
+        return 2
+
+    # 2) Scope — use the file if it already authorises this host, else offer to
+    #    authorise just this one host for the session (a deliberate, confirmed act).
+    scope = load_scope(scope_path)
+    if scope.contains_ip(target):
+        session_scope = scope
+    else:
+        msg = (f"  ⚠ {target} is not in {scope_path}. Authorise this single host "
+               f"({target}/32) for this session?")
+        if not _confirm(console, msg):
+            print(f"Refused: {target} is out of scope.  (or run: brukal target {target})")
+            return 2
+        session_scope = _authorise_host(scope, target)
+        yes_authorised = True          # explicitly authorising the host is the sign-off
+
+    # 3) Live-run sign-off (fake cage needs none). Confirm interactively if a
+    #    tty is available; otherwise the --yes-authorised flag is required.
+    if not fake and not yes_authorised:
+        if not _confirm(console, f"  LIVE run against {target}. Confirm you are "
+                                 f"authorised to test it?"):
+            print("Refused: a live run needs your authorisation (--yes-authorised).")
+            return 2
+
+    audit = AuditLog(audit_path)
     approver = _rich_approver(console, holder) if console is not None else interactive_approver
 
-    executor = Executor(Gate(scope, trust=TrustModel()),
+    executor = Executor(Gate(session_scope, trust=TrustModel()),
                         FakeKali() if fake else DockerKali(container=container),
                         audit, approver=approver)
     try:
@@ -357,7 +589,11 @@ def run_solve(target, *, fake=False, yes_authorised=False, scope_path="scope.jso
         print("Set a key, or use --provider ollama --model qwen2.5 (free, local).")
         return 2
 
-    session = AssistSession(target, executor, strategist, skills=SkillLibrary())
+    # 4) Per-target Obsidian vault → persistence + resume across sessions.
+    vault_dir = _vault_for(vault_path, target)
+    blackboard = Blackboard(vault_dir, session_scope)
+    session = AssistSession(target, executor, strategist,
+                            skills=SkillLibrary(), blackboard=blackboard)
     cage = "fake" if fake else "docker:" + container
 
     if console is not None:
@@ -365,5 +601,6 @@ def run_solve(target, *, fake=False, yes_authorised=False, scope_path="scope.jso
     else:
         _plain_loop(session, audit, target, cage)
 
-    print(f"\n  session recorded to {audit_path}  (chain intact: {audit.verify()})\n")
+    print(f"\n  session recorded to {audit_path}  ·  notes in {vault_dir}"
+          f"  ·  chain intact: {audit.verify()}\n")
     return 0

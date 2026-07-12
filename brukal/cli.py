@@ -192,7 +192,8 @@ def _cmd_solve(args) -> int:
         print("  ⚠ No key set. Set ANTHROPIC_API_KEY, or use --provider ollama --model qwen2.5")
     return run_solve(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
-        scope_path=args.scope, audit_path=args.audit, container=args.container,
+        scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
+        container=args.container,
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
@@ -312,12 +313,14 @@ def main(argv: list[str] | None = None) -> int:
     pr.set_defaults(func=_cmd_run)
 
     psv = sub.add_parser("solve", help="interactive human-assisted box solver")
-    psv.add_argument("target")
+    psv.add_argument("target", nargs="?", help="target IP (omit to be prompted)")
     psv.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
     psv.add_argument("--yes-authorised", action="store_true",
-                     help="confirm you are authorised (required for a live run)")
+                     help="confirm you are authorised (skips the live-run prompt)")
     psv.add_argument("--scope", default="scope.json")
     psv.add_argument("--audit", default="runs/audit.jsonl")
+    psv.add_argument("--vault", default="runs/vault",
+                     help="Obsidian vault root for saved findings (per-target subfolder)")
     psv.add_argument("--container", default="brukal-kali")
     psv.add_argument("--model", default=None)
     psv.add_argument("--provider", default=None,

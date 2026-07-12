@@ -60,13 +60,22 @@ class Blackboard:
         (self.root / "agents").mkdir(parents=True, exist_ok=True)
         (self.root / "scope").mkdir(parents=True, exist_ok=True)
         self._findings_path = self.root / "findings.jsonl"
-        self._seq = 0                     # monotonic id for collision-free notes
+        # Resume-safe: continue the sequence past any notes a prior session wrote,
+        # so re-opening a vault never overwrites earlier findings.
+        self._seq = max((r.get("seq", 0) for r in self._read_findings()), default=0)
         self._write_scope_mirror()
 
     # -- scope mirror (reference only) -------------------------------------- #
 
     def _write_scope_mirror(self) -> None:
         path = self.root / "scope" / "scope.md"
+        # A prior session may have left this 0o444; make it writable so RESUMING
+        # a vault refreshes the mirror instead of crashing on a read-only file.
+        if path.exists():
+            try:
+                os.chmod(path, 0o644)
+            except OSError:
+                pass
         path.write_text(render_scope(self._scope), encoding="utf-8")
         # Best-effort read-only on disk. Even where the filesystem ignores this
         # (e.g. Windows/DrvFs), the real guarantee is that the gate never reads
@@ -110,6 +119,32 @@ class Blackboard:
             f"{summary}\n",
             encoding="utf-8",
         )
+
+    def _read_findings(self) -> list[dict]:
+        if not self._findings_path.exists():
+            return []
+        out: list[dict] = []
+        for line in self._findings_path.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    def all_findings(self, target: str | None = None) -> list[dict]:
+        """Every digested finding (optionally filtered to one target), oldest
+        first. Used to RESUME a session with the memory of prior ones."""
+        recs = self._read_findings()
+        return [r for r in recs if target is None or r.get("target") == target]
+
+    def write_page(self, filename: str, markdown: str) -> None:
+        """Write a human-readable page (plan, engagement notebook) at the vault
+        root. Plain file I/O — no authority, just a note a human can open."""
+        (self.root / filename).write_text(markdown, encoding="utf-8")
+
+    def read_page(self, filename: str) -> str:
+        path = self.root / filename
+        return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def read_context(self, agent: str, target: str, limit: int = 5) -> str:
         """Return a SCOPED slice of prior findings relevant to `target` — the

@@ -37,6 +37,29 @@ STRATEGIST_SYSTEM = (
 )
 
 
+STRATEGIST_PLAN_SYSTEM = (
+    "You are a penetration-testing companion planning the SHORTEST path to the "
+    "goal on an AUTHORISED engagement (typically the user+root flags on a Hack The "
+    "Box machine, or the listed objectives). Given the target, the objectives, and "
+    "the findings so far, lay out a concise ordered plan of the next concrete "
+    "steps — recon → enumeration → exploitation → privilege-escalation → looting — "
+    "only as many steps as actually get us there. Don't enumerate everything; "
+    "enumerate what moves us toward the goal.\n\n"
+    "Reply as a numbered list, ONE step per line, nothing else:\n"
+    "1. [phase] <concrete step naming the tool/technique>\n"
+    "2. [phase] <...>\n"
+    "Keep it to 3-7 steps. If findings already answer earlier steps, start the "
+    "plan from the next real move."
+)
+
+
+@dataclass
+class PlanStep:
+    text: str                 # the concrete step, e.g. "enumerate web on :3000 with feroxbuster"
+    phase: str = ""           # recon / enumeration / exploitation / ...
+    done: bool = False
+
+
 @dataclass
 class Suggestion:
     rationale: str            # the REASONING text (companion voice)
@@ -45,6 +68,23 @@ class Suggestion:
     manual: str | None        # a manual step for the operator, if any
     phase: str = ""           # recon / enumeration / exploitation / ...
     goal: str = ""            # the concrete objective of this step
+
+
+_PLAN_LINE = re.compile(r"^\s*\d+[.)]\s*(?:\[(?P<phase>[^\]]+)\]\s*)?(?P<text>.+?)\s*$")
+
+
+def parse_plan(text: str) -> list[PlanStep]:
+    """Parse a numbered plan into ordered PlanSteps. Tolerant of models that
+    wrap the list in prose — it simply keeps the numbered lines."""
+    steps: list[PlanStep] = []
+    for line in (text or "").splitlines():
+        m = _PLAN_LINE.match(line)
+        if not m:
+            continue
+        body = m.group("text").strip().strip("`").strip()
+        if body:
+            steps.append(PlanStep(text=body, phase=(m.group("phase") or "").strip().lower()))
+    return steps
 
 
 def _field(text: str, name: str) -> str:
@@ -82,11 +122,27 @@ class StrategistAgent:
     def __init__(self, llm: LLMClient):
         self._llm = llm
 
+    def plan(self, target: str, findings: str, objectives: str = "",
+             reference: str = "") -> list[PlanStep]:
+        """Lay out the shortest-path plan of concrete next steps."""
+        parts = [f"TARGET: {target}"]
+        if objectives:
+            parts.append(f"OBJECTIVES to answer:\n{objectives}")
+        parts.append(f"FINDINGS SO FAR:\n{findings or '(nothing yet — just starting)'}")
+        if reference:
+            parts.append(reference)               # untrusted skill reference, labelled
+        parts.append("Give me the shortest-path plan as a numbered list.")
+        text = self._llm.propose(STRATEGIST_PLAN_SYSTEM, "\n\n".join(parts), max_tokens=500)
+        return parse_plan(text)
+
     def advise(self, target: str, findings: str, notes: str = "",
-               reference: str = "", objectives: str = "") -> Suggestion:
+               reference: str = "", objectives: str = "", plan: str = "") -> Suggestion:
         parts = [f"TARGET: {target}"]
         if objectives:
             parts.append(f"OBJECTIVES the box is asking us to answer:\n{objectives}")
+        if plan:
+            parts.append(f"OUR PLAN (work the marked ▶ step next; keep advice on the "
+                         f"shortest path):\n{plan}")
         parts.append(f"FINDINGS SO FAR:\n{findings or '(nothing yet — we just started)'}")
         if notes:
             parts.append(f"OPERATOR JUST SAID:\n{notes}")

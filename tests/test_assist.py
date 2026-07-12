@@ -99,3 +99,83 @@ def test_suggested_command_still_goes_through_the_gate():
         assert any("www-data" in n for n in sess.notes)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_parse_plan_reads_numbered_steps_with_phase():
+    from brukal.agents.strategist import parse_plan
+    steps = parse_plan("Here's the route:\n"
+                       "1. [recon] full TCP port scan with nmap -p-\n"
+                       "2. [enumeration] enumerate web on :3000\n"
+                       "3. exploit the login form\n"
+                       "not a step line")
+    assert len(steps) == 3
+    assert steps[0].phase == "recon" and "port scan" in steps[0].text
+    assert steps[1].phase == "enumeration"
+    assert steps[2].phase == "" and "login" in steps[2].text
+
+
+def test_strategist_plan_returns_ordered_steps():
+    llm = StubLLM("1. [recon] nmap -p- 10.10.10.5\n2. [enumeration] enum web\n")
+    steps = StrategistAgent(llm).plan("10.10.10.5", "port 3000 open", "objective")
+    assert [s.phase for s in steps] == ["recon", "enumeration"]
+
+
+def _session_with_vault(vault_dir, target="10.10.10.5", plan_resp=None):
+    """An AssistSession backed by a real Blackboard vault (for persistence tests)."""
+    from brukal.blackboard import Blackboard
+    scope = load_scope(SCOPE)
+    kali = FakeKali()
+    ex = Executor(Gate(scope), kali, AuditLog(Path(vault_dir).parent / "a.jsonl"))
+    bb = Blackboard(vault_dir, scope)
+    llm = StubLLM(plan_resp or "1. [recon] nmap -sV 10.10.10.5\n2. [enumeration] enum web")
+    sess = AssistSession(target, ex, StrategistAgent(llm), blackboard=bb)
+    return sess, kali
+
+
+def test_session_persists_findings_and_plan_to_vault():
+    tmp = tempfile.mkdtemp()
+    try:
+        vault = Path(tmp) / "vault" / "10.10.10.5"
+        sess, kali = _session_with_vault(vault)
+        sess.make_plan()
+        d, r, _ = sess.run("nmap -sV 10.10.10.5")
+        assert d.verdict == "ALLOW"
+
+        # findings written to the shared markdown stream + a per-agent note
+        assert (vault / "findings.jsonl").exists()
+        assert (vault / "engagement.md").exists()
+        assert "shortest path" in (vault / "plan.md").read_text().lower()
+        agent_notes = list((vault / "agents" / "strategist").glob("*.md"))
+        assert agent_notes, "a per-agent finding note should be written"
+        # running the suggested first step advances the plan cursor
+        assert sess.plan_cursor == 1 and sess.plan[0].done
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_session_resumes_prior_findings_from_vault():
+    tmp = tempfile.mkdtemp()
+    try:
+        vault = Path(tmp) / "vault" / "10.10.10.5"
+        s1, _ = _session_with_vault(vault)
+        s1.make_plan()
+        s1.run("nmap -sV 10.10.10.5")           # produces a finding + advances plan
+        s1.note("22/tcp open ssh")
+
+        # a brand-new session on the same vault must remember the last one
+        s2, _ = _session_with_vault(vault)
+        assert s2.resumed >= 2                    # prior findings loaded
+        assert s2.plan and s2.plan[0].done        # completed step reloaded as done
+        assert s2.plan_cursor >= 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_authorise_host_scopes_to_a_single_ip():
+    from brukal.assist import _authorise_host, _vault_for
+    scope = load_scope(SCOPE)
+    narrowed = _authorise_host(scope, "10.129.51.168")
+    assert narrowed.contains_ip("10.129.51.168")
+    assert not narrowed.contains_ip("10.129.51.169")   # only the one /32
+    assert narrowed.allowlisted_tools == scope.allowlisted_tools
+    assert _vault_for("runs/vault", "10.129.51.168").name == "10.129.51.168"
