@@ -33,7 +33,21 @@ STRATEGIST_SYSTEM = (
     "MANUAL: <a step the operator does themselves — exploitation, a shell, cracking "
     "a hash, submitting a flag>   (optional)\n\n"
     "Give RUN for safe in-scope enumeration; give MANUAL for intrusive/interactive "
-    "work. Prefer ONE clear next step. A separate gate still rules on any RUN."
+    "work. Prefer ONE clear next step. A separate gate still rules on any RUN.\n\n"
+    "TACTICS — you run on a time budget, and any command that takes too long is "
+    "KILLED and yields nothing, so work FAST and TARGETED:\n"
+    "- First contact is a QUICK port scan, never a slow one. Use "
+    "`nmap -Pn -T4 --top-ports 100 <ip>` (targets drop ping, so ALWAYS -Pn). Do NOT "
+    "open with `nmap -A -p-`, `-sC -sV -p-`, or any all-65535-port/aggressive sweep — "
+    "it TIMES OUT and you learn nothing.\n"
+    "- Once you know the open ports, run ONE focused follow-up per service (e.g. "
+    "`nmap -sVC -p 22,80 <ip>`, a `gobuster`/`ffuf` dir scan on the exact web port, "
+    "`whatweb` on the web port).\n"
+    "- If the FINDINGS say a previous command TIMED OUT or returned nothing, do NOT "
+    "repeat it — choose a faster, narrower command.\n"
+    "- Use ONLY real installed tools (nmap, whatweb, gobuster, ffuf, nikto, curl, "
+    "smbclient, enum4linux, etc.). Never invent module paths, script files, or "
+    "`msfconsole -r <made-up-file>` — those don't exist and will be rejected."
 )
 
 
@@ -49,7 +63,11 @@ STRATEGIST_PLAN_SYSTEM = (
     "1. [phase] <concrete step naming the tool/technique>\n"
     "2. [phase] <...>\n"
     "Keep it to 3-7 steps. If findings already answer earlier steps, start the "
-    "plan from the next real move."
+    "plan from the next real move.\n\n"
+    "TACTICS: step 1 is ALWAYS a FAST targeted port scan "
+    "(`nmap -Pn -T4 --top-ports 100 <ip>`), never `nmap -A -p-` or a full/aggressive "
+    "all-port sweep (those TIME OUT). Later steps do focused per-service enumeration. "
+    "One real, installed tool per step; never invent module/script file paths."
 )
 
 

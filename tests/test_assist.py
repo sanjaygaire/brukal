@@ -101,6 +101,29 @@ def test_suggested_command_still_goes_through_the_gate():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_timeout_produces_learnable_feedback_note():
+    # A command that times out in the cage must be recorded as an actionable
+    # lesson ("TIMED OUT ... use a faster command"), not a bare verdict, so a weak
+    # model course-corrects on the next turn.
+    from brukal.kali import ExecResult
+
+    class TimeoutKali:
+        executed: list = []
+        def run(self, command):
+            return ExecResult(command, 124, "", "timed out")
+
+    scope = load_scope(SCOPE)
+    tmp = tempfile.mkdtemp()
+    try:
+        ex = Executor(Gate(scope), TimeoutKali(), AuditLog(Path(tmp) / "a.jsonl"))
+        sess = AssistSession("10.10.10.5", ex, StrategistAgent(StubLLM("")))
+        d, r, _ = sess.run("nmap -sV 10.10.10.5")           # ALLOWs, then times out
+        assert d.verdict == "ALLOW" and r is not None       # it ran, just timed out
+        assert any("TIMED OUT" in n and "faster" in n.lower() for n in sess.notes)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_parse_plan_reads_numbered_steps_with_phase():
     from brukal.agents.strategist import parse_plan
     steps = parse_plan("Here's the route:\n"

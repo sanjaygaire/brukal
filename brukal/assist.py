@@ -45,6 +45,21 @@ _HIGHLIGHTS = [
 ]
 
 
+def _outcome_feedback(decision, result, raw: str) -> str:
+    """Digest an executed command's outcome into a note the strategist can learn
+    from — a timeout or empty result becomes an explicit 'do it differently' cue."""
+    timed_out = (getattr(result, "returncode", 0) == 124
+                 or "timed out" in (getattr(result, "stderr", "") or "").lower())
+    if timed_out:
+        return (f"{decision.verdict}: TIMED OUT — the command was too slow and got "
+                f"killed with no result. Use a FASTER, more targeted command "
+                f"(fewer ports, drop -A/-p-).")
+    if not raw:
+        return (f"{decision.verdict}: (no output — this returned nothing useful; "
+                f"try a different tool or target)")
+    return f"{decision.verdict}: {raw[:800]}"
+
+
 def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
     """Pull the lines from raw tool output that a pentester actually cares about.
     Returns (tag, line) pairs — open ports, web paths, creds, hashes, CVEs, ..."""
@@ -154,14 +169,22 @@ class AssistSession:
             raw = (result.stdout or "").strip()
             new_hl = highlight_findings(raw)
             self.highlights.extend(h for h in new_hl if h not in self.highlights)
-            self.notes.append(f"[ran] {command}\n{decision.verdict}: {raw[:800] or '(no output)'}")
+            # Turn a failure into an actionable LESSON the model sees next turn, so a
+            # weak model course-corrects instead of repeating a bad move.
+            feedback = _outcome_feedback(decision, result, raw)
+            self.notes.append(f"[ran] {command}\n{feedback}")
             summary = ("; ".join(f"{t}: {l}" for t, l in new_hl[:6])
-                       or (raw[:200] or "(no output)"))
+                       or feedback[:200])
             self._persist_finding("ran", command, decision.verdict, summary, new_hl)
             self._advance_plan()       # this step is done; move to the next
         else:
+            # Blocked by the gate — tell the model WHY and what to do instead.
+            hint = ("that target/tool is out of scope or not allowed — stay on the "
+                    "authorised host and use an allowlisted tool"
+                    if decision.layer.startswith("hard")
+                    else "this needs sign-off; a lighter, more targeted command may pass")
             self.notes.append(f"[ran] {command}\nNOT RUN — {decision.verdict} "
-                              f"({decision.layer}: {decision.reason})")
+                              f"({decision.layer}: {decision.reason}). {hint}")
             self._persist_finding("blocked", command, decision.verdict,
                                   f"{decision.layer}: {decision.reason}", [])
         return decision, result, new_hl
