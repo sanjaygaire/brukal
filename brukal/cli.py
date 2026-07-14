@@ -207,6 +207,44 @@ def _cmd_auto(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
+def _cmd_web(args) -> int:
+    # Send ONE governed web request (crafted method/headers/body) through the
+    # web gate + audit. The web analogue of `brukal exec`.
+    from brukal.web import DockerHttpWebCage, GovernedBrowser, HttpWebCage, WebAction
+    scope = load_scope(args.scope)
+    if args.host:                       # authorise a vhost at scope time (deliberate)
+        scope = scope.with_host(args.host)
+    headers = {}
+    for h in (args.header or []):
+        if ":" in h:
+            k, v = h.split(":", 1)
+            headers[k.strip()] = v.strip()
+    audit = AuditLog(args.audit)
+    # Default: route through the cage (reaches VPN/HTB targets). --local sends from
+    # this host (only for host-reachable targets).
+    if args.local:
+        cage = HttpWebCage()
+    else:
+        from brukal.web import ensure_cage_vhosts
+        ensure_cage_vhosts(scope, args.container)   # so vhosts like nexus.htb resolve
+        cage = DockerHttpWebCage(container=args.container)
+    browser = GovernedBrowser(scope, cage, audit)
+    action = WebAction(kind="request", url=args.url, method=args.method.upper(),
+                       headers=headers, body=args.body or "")
+    decision, result = browser.run(action, agent="operator")
+
+    print(f"\n  verdict : {decision.verdict}")
+    print(f"  reason  : {decision.reason}")
+    print(f"  layer   : {decision.layer}")
+    if result is not None:
+        print(f"  status  : {result.status}   {result.url}")
+        if result.body:
+            print("  --- body (first 2000 bytes) ---")
+            print("  " + result.body[:2000].replace("\n", "\n  ").rstrip())
+    print()
+    return 0 if result is not None else 1
+
+
 def _cmd_lessons(args) -> int:
     # Inspect / add to Brukal's cross-session learned lessons.
     from pathlib import Path
@@ -397,6 +435,19 @@ def main(argv: list[str] | None = None) -> int:
     pev = sub.add_parser("eval",
                          help="capability eval: governed vs ungated (steps-to-foothold)")
     pev.set_defaults(func=_cmd_eval)
+
+    pw = sub.add_parser("web", help="send one governed web request (crafted method/headers/body)")
+    pw.add_argument("url", help="target URL (host must be in scope or authorised via --host)")
+    pw.add_argument("--method", default="GET")
+    pw.add_argument("--header", action="append", help="'Key: Value' (repeatable)")
+    pw.add_argument("--body", default="")
+    pw.add_argument("--host", help="authorise this vhost at scope time (e.g. nexus.htb)")
+    pw.add_argument("--local", action="store_true",
+                    help="send from this host instead of the cage (host-reachable targets only)")
+    pw.add_argument("--container", default="brukal-kali")
+    pw.add_argument("--scope", default="scope.json")
+    pw.add_argument("--audit", default="runs/audit.jsonl")
+    pw.set_defaults(func=_cmd_web)
 
     pl = sub.add_parser("lessons", help="view / add Brukal's cross-session learned lessons")
     pl.add_argument("search", nargs="?", help="filter lessons by keyword/tag")

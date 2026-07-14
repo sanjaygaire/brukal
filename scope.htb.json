@@ -1,7 +1,10 @@
 {
-  "engagement": "brukal-htb",
+  "engagement": "brukal-htb-nexus",
   "authorized_cidrs": [
-    "10.129.51.168/32"
+    "10.129.234.54/32"
+  ],
+  "authorized_hosts": [
+    "nexus.htb"
   ],
   "allowlisted_tools": [
     "nmap", "masscan", "dirb", "gobuster", "ffuf", "feroxbuster", "wfuzz",

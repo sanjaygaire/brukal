@@ -26,6 +26,11 @@ class Scope:
     authorized_networks: tuple  # tuple of ipaddress network objects
     allowlisted_tools: frozenset
     rate_limit_per_min: int
+    # Explicitly authorised hostnames (e.g. a HTB vhost like "nexus.htb"). Set at
+    # scope time by the operator — NEVER resolved from DNS at runtime, so the scope
+    # check stays deterministic and untrickable (a hostile DNS answer can't widen
+    # scope). A web target is in scope iff its host is here OR its IP is in a CIDR.
+    authorized_hosts: frozenset = frozenset()
 
     def contains_ip(self, ip_text: str) -> bool:
         """True only if ip_text is a valid IP inside an authorised network.
@@ -38,6 +43,32 @@ class Scope:
         except ValueError:
             return False
         return any(ip in net for net in self.authorized_networks)
+
+    def contains_host(self, host: str) -> bool:
+        """True if `host` is an explicitly authorised hostname, or an in-scope IP.
+        Deterministic set/CIDR membership only — no DNS. Fail-closed on anything
+        empty or unrecognised."""
+        h = (host or "").strip().lower()
+        if not h:
+            return False
+        # strip a :port if present (host:port)
+        if h.count(":") == 1 and not h.replace(":", "").isalpha():
+            h = h.split(":", 1)[0]
+        if h in self.authorized_hosts:
+            return True
+        return self.contains_ip(h)
+
+    def with_host(self, host: str) -> "Scope":
+        """Return a NEW scope with one hostname added. This is a scope-TIME
+        authorisation (like `brukal target`), not a runtime widen — the running
+        Scope object stays immutable; callers install the returned scope before
+        the engagement, exactly as they would a fresh scope."""
+        h = (host or "").strip().lower()
+        return Scope(engagement=self.engagement,
+                     authorized_networks=self.authorized_networks,
+                     allowlisted_tools=self.allowlisted_tools,
+                     rate_limit_per_min=self.rate_limit_per_min,
+                     authorized_hosts=self.authorized_hosts | ({h} if h else set()))
 
     def tool_allowed(self, tool: str) -> bool:
         return tool in self.allowlisted_tools
@@ -61,4 +92,6 @@ def load_scope(path: str | Path) -> Scope:
         authorized_networks=tuple(nets),
         allowlisted_tools=frozenset(data["allowlisted_tools"]),
         rate_limit_per_min=int(data.get("rate_limit_per_min", 30)),
+        authorized_hosts=frozenset(h.strip().lower()
+                                   for h in data.get("authorized_hosts", []) if h.strip()),
     )
