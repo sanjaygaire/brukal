@@ -45,6 +45,9 @@ _HIGHLIGHTS = [
 ]
 
 
+# Open web-service ports in an nmap highlight line ("80/tcp open http ...").
+_WEB_PORT_RE = re.compile(r"(\d{1,5})/tcp\s+open\s+(\S+)", re.I)
+
 # Services / technologies worth pulling a red-team playbook for, mined from the
 # highlights so skill retrieval follows what we've actually discovered on the box.
 _TECH_HINTS = re.compile(
@@ -106,6 +109,7 @@ class AssistSession:
         self.plan_cursor = 0           # index of the step we're working on
         self.last = None               # last Suggestion (the top-ranked one)
         self.option_list: list = []    # last ranked list of next-move options
+        self._rendered: set = set()    # web URLs already auto-rendered (reflex de-dup)
         self.resumed = 0               # how many prior findings we loaded
         if blackboard is not None:
             self._load_memory()
@@ -257,6 +261,41 @@ class AssistSession:
             self.lessons.learn_from_outcome(command, decision, result, tech)
         return decision, result, new_hl
 
+    def web_urls_from_findings(self) -> list[str]:
+        """Deterministically pull web-service URLs out of the findings — open
+        http/https ports (nmap) and web-server fingerprints — so a browser render
+        can be triggered automatically the moment a web surface appears."""
+        urls: list[str] = []
+        for _tag, line in self.highlights:
+            for m in _WEB_PORT_RE.finditer(line):
+                port, svc = m.group(1), m.group(2).lower()
+                if "http" not in svc and svc not in ("https", "ssl/http", "http-alt",
+                                                     "http-proxy", "www"):
+                    continue
+                https = ("https" in svc or "ssl" in svc or port in ("443", "8443"))
+                scheme = "https" if https else "http"
+                if (not https and port == "80") or (https and port == "443"):
+                    urls.append(f"{scheme}://{self.target}/")
+                else:
+                    urls.append(f"{scheme}://{self.target}:{port}/")
+        seen, out = set(), []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def auto_web_action(self) -> str | None:
+        """If a web service has been found but not yet rendered, return the WEB
+        render action for it — the 'web port open → look at the site with the real
+        browser' reflex. Deterministic; still governed when run."""
+        if self.browser is None:
+            return None
+        for url in self.web_urls_from_findings():
+            if url not in self._rendered:
+                return f"render {url}"
+        return None
+
     def run_web(self, web_text: str):
         """Run a WEB action through the GOVERNED BROWSER (same gate + audit as a
         shell command, but it renders JS and can tamper requests). Records the
@@ -274,6 +313,8 @@ class AssistSession:
     def _absorb_web(self, action, decision, result):
         """Fold one WEB outcome into session state (main-thread counterpart to the
         thread-safe browser.run, used by the parallel runner)."""
+        if action is not None and action.kind in ("navigate", "get") and action.url:
+            self._rendered.add(action.url)     # don't auto-render the same page twice
         new_hl: list[tuple[str, str]] = []
         if result is not None:
             body = (result.body or "").strip()
@@ -1130,6 +1171,11 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
                   f"  [grey62]\\[{st.index}][/] [cyan]{(st.phase or '').upper():<12}[/] "
                   f"[{_VERDICT_COLOUR.get(v, 'white')}]{v:<9}[/] "
                   f"{(st.command or '')[:70]}\n        [grey70]{st.summary[:100]}[/]")
+
+    if not session.objectives:              # steer the autonomous hunt toward the goal
+        session.add_objective(f"Enumerate {target}; examine any web service with the "
+                              f"browser; find a way to a foothold (SSH/FTP/web) and "
+                              f"capture the user and root flags.")
 
     loop = GroundedLoop(session, max_steps=max_steps, observer=observer)
 

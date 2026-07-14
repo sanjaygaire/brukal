@@ -138,6 +138,25 @@ def test_ensure_cage_vhosts_guards():
     assert len(single.authorized_networks) == 1 and single.authorized_networks[0].num_addresses == 1
 
 
+def test_broad_allowlist_mode_safe_runs_dangerous_asks_human(tmp_path):
+    import json
+
+    from brukal import Gate
+    from brukal.scope import load_scope
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.10.10.0/24"],
+                             "allowlisted_tools": "all"}))
+    scope = load_scope(str(p))
+    assert scope.broad_tools and scope.tool_allowed("any-kali-tool")
+    g = Gate(scope)
+    T = "10.10.10.5"
+    assert g.check("nmap -sV 10.10.10.5", T).verdict == "ALLOW"       # safe enum -> auto
+    assert g.check("feroxbuster -u http://10.10.10.5", T).verdict == "ALLOW"
+    assert g.check("hydra -l a -P w ssh://10.10.10.5", T).verdict == "ESCALATE"  # attack -> human
+    assert g.check("some-unknown-tool 10.10.10.5", T).verdict == "ESCALATE"       # unknown -> human
+    assert g.check("nmap -sV 8.8.8.8", "8.8.8.8").verdict == "DENY"   # scope still absolute
+
+
 def test_parse_web_action_grammar():
     from brukal.web import parse_web_action
     assert parse_web_action("get http://nexus.htb/admin").kind == "get"

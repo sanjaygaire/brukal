@@ -48,14 +48,25 @@ _TRUST_SCALE = 2  # a fully-distrusted agent (trust=0) adds +2 to every score
 # Tools that observe but do not change target state. Traffic *volume* is a
 # blast-radius concern (handled below), not a reversibility one.
 _READ_ONLY_TOOLS = frozenset(
-    {"nmap", "gobuster", "nikto", "whatweb", "curl", "wget", "dig", "host", "dnsutils",
-     # read-only enumeration tools. Write-capable ones (smbclient, redis-cli,
-     # ldapsearch-with-writes) are deliberately left out, so they score as
-     # "unknown" and the soft layer escalates them.
-     "ffuf", "feroxbuster", "wafw00f", "dirb", "wfuzz",
-     "dnsrecon", "dnsenum", "fierce", "sslscan", "sslyze",
-     "smbmap", "enum4linux", "enum4linux-ng", "nbtscan", "snmpwalk", "onesixtyone",
-     "searchsploit", "hashid", "hash-identifier"}
+    {  # --- read-only enumeration across the Kali arsenal. These ALLOW on a single
+       # host. Write-capable / interactive ones are deliberately absent, so they
+       # score "unknown" and the soft layer escalates them to a human.
+     "nmap", "masscan", "curl", "wget", "ping", "fping", "arp-scan", "netdiscover",
+     # web content / vuln enumeration
+     "gobuster", "ffuf", "feroxbuster", "dirb", "dirsearch", "wfuzz", "gau",
+     "nikto", "whatweb", "wafw00f", "nuclei", "wpscan", "joomscan", "droopescan",
+     "httpx", "waybackurls", "katana", "hakrawler", "cewl",
+     # dns / osint recon
+     "dig", "host", "nslookup", "whois", "dnsrecon", "dnsenum", "fierce",
+     "dnsx", "subfinder", "sublist3r", "amass", "assetfinder", "theharvester",
+     # smb / netbios / rpc (read-only surface)
+     "smbmap", "enum4linux", "enum4linux-ng", "nbtscan", "rpcclient", "nmblookup",
+     # snmp / ldap / other services (read)
+     "snmpwalk", "snmp-check", "onesixtyone", "ldapsearch", "showmount",
+     # tls / ssh posture
+     "sslscan", "sslyze", "testssl", "testssl.sh", "ssh-audit",
+     # local lookups
+     "searchsploit", "hashid", "hash-identifier", "hashcat-utils", "dnsutils"}
 )
 
 # Tools that actively ATTACK a target (brute force, exploitation, cracking,
@@ -64,14 +75,22 @@ _READ_ONLY_TOOLS = frozenset(
 # single host and refuses them (DENY) once the blast radius widens. Capability
 # grows; the safety boundary does not.
 _ATTACK_TOOLS = frozenset(
-    {"hydra", "medusa", "ncrack", "patator",          # credential brute force
-     "sqlmap", "wpscan", "nuclei", "masscan",         # active web / mass probing
-     "crackmapexec", "netexec", "nxc", "kerbrute", "responder", "evil-winrm",
+    {"hydra", "medusa", "ncrack", "patator", "crowbar", "brutespray",  # credential brute force
+     "sqlmap", "commix", "nosqlmap", "tplmap",        # active injection/exploitation
+     "crackmapexec", "netexec", "nxc", "kerbrute", "responder", "mitm6", "evil-winrm",
      "impacket-secretsdump", "impacket-psexec", "impacket-smbexec",
      "impacket-wmiexec", "impacket-getuserspns", "impacket-getnpusers",
+     "impacket-ntlmrelayx", "smbexec", "wmiexec", "psexec",
      "john", "hashcat",                               # offline cracking
-     "msfconsole", "msfvenom", "metasploit",          # exploitation framework
-     "nc", "ncat", "netcat", "socat"}                 # shells / transfer
+     "msfconsole", "msfvenom", "metasploit", "msf",   # exploitation framework
+     "setoolkit", "beef", "beef-xss",                 # social eng / xss framework
+     "aircrack-ng", "reaver", "wifite", "bully",      # wireless attack
+     "ettercap", "bettercap", "arpspoof", "dsniff",   # mitm / sniffing attack
+     "hping3", "slowhttptest", "slowloris", "t50",    # flood / dos
+     "sshpass",                                       # scripted auth
+     "ftp", "tftp", "rsh", "rlogin",                  # interactive access (smbclient
+                                                      # left "unknown" -> still escalates)
+     "nc", "ncat", "netcat", "socat", "chisel", "ligolo"}  # shells / pivots / transfer
 )
 
 # Signals that an action WRITES / ATTACKS remote state -> irreversible.

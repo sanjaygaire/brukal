@@ -6,20 +6,7 @@
   "authorized_hosts": [
     "nexus.htb"
   ],
-  "allowlisted_tools": [
-    "nmap", "masscan", "dirb", "gobuster", "ffuf", "feroxbuster", "wfuzz",
-    "nikto", "whatweb", "wafw00f", "nuclei", "curl", "wget",
-    "dig", "dnsrecon", "dnsenum", "fierce",
-    "sslscan", "sslyze",
-    "smbclient", "smbmap", "enum4linux", "enum4linux-ng", "nbtscan",
-    "snmpwalk", "onesixtyone", "ldapsearch", "redis-cli",
-    "hydra", "medusa", "ncrack", "patator",
-    "sqlmap", "wpscan",
-    "john", "hashcat", "hashid", "hash-identifier", "searchsploit",
-    "crackmapexec", "netexec", "kerbrute", "responder", "evil-winrm",
-    "impacket-secretsdump", "impacket-psexec", "impacket-smbexec",
-    "impacket-wmiexec", "impacket-GetUserSPNs", "impacket-GetNPUsers",
-    "nc", "ncat", "netcat", "socat"
-  ],
+  "allowlisted_tools": "all",
+  "_allowlist_note": "broad mode: every Kali tool passes the allowlist; the risk layer runs read-only enumeration automatically and ESCALATES attack/irreversible or unrecognised tools to a human. Scope is still absolute.",
   "rate_limit_per_min": 60
 }

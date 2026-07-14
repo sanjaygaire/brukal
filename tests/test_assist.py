@@ -170,6 +170,29 @@ def test_strategist_parses_web_field():
     assert s.command is None
 
 
+def test_auto_web_action_reflex_on_open_web_port():
+    from brukal import FakeWebCage, GovernedBrowser
+    tmp = tempfile.mkdtemp()
+    try:
+        scope = load_scope(SCOPE)                       # authorises 10.10.10.0/24
+        audit = AuditLog(Path(tmp) / "a.jsonl")
+        ex = Executor(Gate(scope), FakeKali(), audit)
+        browser = GovernedBrowser(scope, FakeWebCage(responses={"10.10.10.5": "<h1>App</h1>"}),
+                                  audit)
+        sess = AssistSession("10.10.10.5", ex, StrategistAgent(StubLLM("")), browser=browser)
+
+        assert sess.auto_web_action() is None           # nothing found yet
+        sess.highlights.append(("open port", "80/tcp open  http    nginx 1.24.0"))
+        assert sess.auto_web_action() == "render http://10.10.10.5/"   # reflex fires
+        sess.run_web("render http://10.10.10.5/")
+        assert sess.auto_web_action() is None           # not rendered twice
+        # an https service maps to https + its port
+        sess.highlights.append(("open port", "8443/tcp open  ssl/http"))
+        assert sess.auto_web_action() == "render https://10.10.10.5:8443/"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_run_web_routes_through_the_governed_browser():
     from brukal import FakeWebCage, GovernedBrowser
     tmp = tempfile.mkdtemp()

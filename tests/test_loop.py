@@ -193,6 +193,36 @@ def test_sig_collapses_near_duplicates():
     assert _sig("curl http://x/a") != _sig("curl http://x/b")   # path distinguishes
 
 
+def test_loop_reflex_auto_renders_a_web_service():
+    # a web port in the findings triggers an automatic governed Chrome render
+    # BEFORE the model is asked — 'web port open -> look at the site'.
+    import tempfile as _tf
+
+    from brukal import AuditLog as _AL
+    from brukal import Executor as _Ex
+    from brukal import FakeKali as _FK
+    from brukal import FakeWebCage, Gate as _G, GovernedBrowser, load_scope as _ls
+    from brukal.agents import StrategistAgent as _SA
+    from brukal.assist import AssistSession as _AS
+
+    tmp = _tf.mkdtemp()
+    scope = _ls(SCOPE)
+    audit = _AL(f"{tmp}/a.jsonl")
+    ex = _Ex(_G(scope), _FK(), audit)
+    browser = GovernedBrowser(scope, FakeWebCage(responses={"10.10.10.5": "<title>Box</title>"}),
+                              audit)
+    brain = SeqLLM(["1. [recon] scan",
+                    _adv("hand off", manual="exploit the app")])   # model has nothing to run
+    sess = _AS("10.10.10.5", ex, _SA(brain), browser=browser)
+    sess.highlights.append(("open port", "80/tcp open http nginx"))   # a web service is known
+    loop = GroundedLoop(sess, max_steps=4)
+    sess.make_plan()
+    result = loop.run()
+    # the FIRST step is the automatic web render (reflex), not a model proposal
+    assert result.steps[0].command == "WEB: render http://10.10.10.5/"
+    assert result.steps[0].executed
+
+
 def test_norm_cmd_collapses_whitespace():
     assert _norm_cmd("  nmap   -sV   10.0.0.1 ") == "nmap -sV 10.0.0.1"
     assert _norm_cmd(None) == ""

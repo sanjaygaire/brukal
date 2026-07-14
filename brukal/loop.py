@@ -137,6 +137,27 @@ class GroundedLoop:
         self._emit("start", target=self.session.target, budget=self.max_steps)
 
         while len(self.steps) < self.max_steps:
+            # REFLEX: the moment a web service is found, look at the site with the
+            # real browser (Chrome) — deterministic, still governed. This runs
+            # before asking the model, so the rendered page feeds the next decision.
+            reflex = self.session.auto_web_action()
+            if reflex is not None:
+                decision, result, highlights = self.session.run_web(reflex)
+                step = LoopStep(
+                    index=len(self.steps) + 1, phase="enumeration",
+                    goal="look at the discovered web service (auto Chrome render)",
+                    rationale="a web port is open — rendering the site to see what it hosts",
+                    command=f"WEB: {reflex}",
+                    verdict=(decision.verdict if decision else "NOOP"),
+                    executed=(result is not None),
+                    summary=self._summarise(decision, result, highlights) if decision
+                    else "render could not run",
+                    highlights=list(highlights))
+                self.steps.append(step)
+                self._emit("step", step=step)
+                if result is not None:
+                    continue                     # re-plan with the rendered page in hand
+
             suggestion = self.session.advise()
 
             # The next action is a shell RUN or a WEB action (both governed). No
@@ -203,5 +224,6 @@ class GroundedLoop:
             return f"{decision.verdict} — {decision.layer}: {decision.reason}"
         if highlights:
             return "; ".join(f"{tag}: {line}" for tag, line in highlights[:4])
-        raw = (result.stdout or "").strip()
-        return (raw.splitlines()[0][:160] if raw else "(no output)")
+        # shell results carry .stdout; web results carry .body
+        raw = (getattr(result, "stdout", None) or getattr(result, "body", "") or "").strip()
+        return (raw.splitlines()[0][:160] if raw else (getattr(result, "note", "") or "(no output)"))

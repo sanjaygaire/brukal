@@ -71,7 +71,17 @@ class Scope:
                      authorized_hosts=self.authorized_hosts | ({h} if h else set()))
 
     def tool_allowed(self, tool: str) -> bool:
-        return tool in self.allowlisted_tools
+        """True if the tool passes the ALLOWLIST layer. `"*"` in the allowlist means
+        'broad mode': every tool passes this hard check, and the SOFT risk layer
+        decides — read-only enumeration ALLOWs, while attack/irreversible or
+        unrecognised tools ESCALATE to a human (and widen-blast ones DENY). Scope is
+        still absolute; broad mode only moves the tool decision from a fixed list to
+        'safe runs, dangerous asks a human'."""
+        return "*" in self.allowlisted_tools or tool in self.allowlisted_tools
+
+    @property
+    def broad_tools(self) -> bool:
+        return "*" in self.allowlisted_tools
 
 
 def load_scope(path: str | Path) -> Scope:
@@ -87,10 +97,20 @@ def load_scope(path: str | Path) -> Scope:
         # strict=False lets you write a host address like 10.10.10.5/24
         nets.append(ipaddress.ip_network(cidr, strict=False))
 
+    # allowlisted_tools may be a list, or the string "all" / "*" for broad mode
+    # (every tool passes the allowlist; the risk layer + human sign-off govern the
+    # dangerous ones). A list may itself contain "*" to the same effect.
+    raw_tools = data["allowlisted_tools"]
+    if isinstance(raw_tools, str):
+        tools = frozenset({"*"}) if raw_tools.strip().lower() in ("all", "*") \
+            else frozenset({raw_tools})
+    else:
+        tools = frozenset(raw_tools)
+
     return Scope(
         engagement=str(data["engagement"]),
         authorized_networks=tuple(nets),
-        allowlisted_tools=frozenset(data["allowlisted_tools"]),
+        allowlisted_tools=tools,
         rate_limit_per_min=int(data.get("rate_limit_per_min", 30)),
         authorized_hosts=frozenset(h.strip().lower()
                                    for h in data.get("authorized_hosts", []) if h.strip()),
