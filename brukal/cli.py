@@ -196,6 +196,17 @@ def _cmd_solve(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
+def _cmd_auto(args) -> int:
+    # Headless grounded agentic loop: Brukal drives the safe in-scope steps
+    # itself and hands back on a manual/escalation step, a stall, or the budget.
+    from brukal.assist import run_auto
+    return run_auto(
+        args.target, fake=args.fake, yes_authorised=args.yes_authorised,
+        scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
+        container=args.container, max_steps=args.max_steps,
+        model=args.model, provider=args.provider, base_url=args.base_url)
+
+
 def _cmd_shell(args) -> int:
     from brukal.session import run_shell
     return run_shell(
@@ -333,6 +344,25 @@ def main(argv: list[str] | None = None) -> int:
                      help="anthropic (default) | ollama | openai | openrouter | ...")
     psv.add_argument("--base-url", default=None)
     psv.set_defaults(func=_cmd_solve)
+
+    pa = sub.add_parser("auto",
+                        help="autonomous grounded loop — Brukal drives the safe steps itself")
+    pa.add_argument("target", nargs="?", help="target IP (omit to be prompted)")
+    pa.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
+    pa.add_argument("--yes-authorised", action="store_true",
+                    help="confirm you are authorised (skips the live-run prompt)")
+    pa.add_argument("--scope", default="scope.json")
+    pa.add_argument("--audit", default="runs/audit.jsonl")
+    pa.add_argument("--vault", default="runs/vault",
+                    help="Obsidian vault root for saved findings (per-target subfolder)")
+    pa.add_argument("--container", default="brukal-kali")
+    pa.add_argument("--max-steps", type=int, default=20,
+                    help="hand back to you after this many autonomous turns")
+    pa.add_argument("--model", default=None)
+    pa.add_argument("--provider", default=None,
+                    help="anthropic (default) | ollama | openai | openrouter | ...")
+    pa.add_argument("--base-url", default=None)
+    pa.set_defaults(func=_cmd_auto)
 
     psh = sub.add_parser("shell", help="open a governed interactive shell in the cage")
     psh.add_argument("target", help="in-scope host to work on")

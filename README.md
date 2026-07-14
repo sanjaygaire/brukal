@@ -241,6 +241,31 @@ brukal solve 172.20.0.3 --yes-authorised --scope runs/juice.json \
     --provider ollama --model qwen2.5     # flags skip the model prompt
 ```
 
+### Autonomous grounded loop (`brukal auto`)
+
+`brukal auto <target>` is the same engine without the menu: Brukal **drives the
+safe, in-scope enumeration by itself** and hands back cleanly when it needs you.
+It is *grounded* — every next step is reasoned only from the **real, gate-executed
+tool output**, never a claimed result — which shuts down the two classic failure
+modes of autonomous LLM pentesters:
+
+- **No hallucinated success.** A step counts as progress only if a command
+  actually ran through the gate. A boast in the model's prose can stop the loop
+  (safe) but can never advance it (that needs a real, in-scope, approved run).
+- **No aimless spinning.** A re-proposed command, or a run of gate-blocked
+  proposals, ends the loop as `stalled` instead of looping forever.
+
+It runs until it hits a **manual** step (intrusive exploitation — your job), an
+**escalation** (needs your sign-off — it never self-approves), a **stall**, or the
+`--max-steps` budget, then prints a summary and points you to `brukal solve` to
+carry on. Governance is unchanged: every command still goes through the one gate,
+and nothing out of scope ever executes.
+
+```bash
+brukal auto 10.10.10.5 --yes-authorised --scope scope.htb.json --max-steps 15
+brukal auto --fake                          # try the whole loop with no Docker
+```
+
 ### Governed interactive shell (`brukal shell`)
 
 When you do the hands-on exploitation, you no longer have to leave Brukal to do

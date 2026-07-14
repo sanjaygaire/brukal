@@ -18,6 +18,7 @@ from .blackboard import Blackboard, render_scope
 from .orchestrator import Orchestrator
 from .trust import TrustModel
 from .skills import SkillLibrary, Skill, install_pack
+from .loop import GroundedLoop, LoopStep, LoopResult
 from .experiment import ExperimentResult, run_all, render
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "Blackboard", "render_scope", "Orchestrator",
     "TrustModel",
     "SkillLibrary", "Skill", "install_pack",
+    "GroundedLoop", "LoopStep", "LoopResult",
     "ExperimentResult", "run_all", "render",
 ]

@@ -682,9 +682,14 @@ def _vault_for(vault_root, target: str) -> Path:
     return Path(vault_root) / safe
 
 
-def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
-              audit_path="runs/audit.jsonl", vault_path="runs/vault",
-              container="brukal-kali", model=None, provider=None, base_url=None) -> int:
+def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
+                     vault_path, container, model, provider, base_url,
+                     console, holder):
+    """Shared setup for `solve` and `auto`: resolve the target, authorise scope,
+    take the live-run sign-off, pick the brain, and build a grounded
+    AssistSession wired to the governed executor + per-target vault.
+
+    Returns (session, audit, target, cage) on success, or an int exit code."""
     try:
         from .agents.strategist import StrategistAgent
         from .blackboard import Blackboard
@@ -694,14 +699,6 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
     except ImportError as e:
         print(f"Agent dependencies missing ({e}). Install: pip install \"brukal[agents]\"")
         return 2
-
-    # A rich console (menu UI + spinner-aware approver), or plain fallback.
-    holder: dict = {"status": None}
-    try:
-        from rich.console import Console
-        console = Console()
-    except ImportError:
-        console = None
 
     # 1) The target — ask for it if it wasn't given on the command line.
     if not target:
@@ -736,9 +733,6 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
     if provider is None and not os.environ.get("BRUKAL_PROVIDER"):
         provider, model, base_url = choose_brain(console)
 
-    # 5) How to work the plan — manual (approve each step) or auto (run safe steps).
-    auto = choose_run_mode(console)
-
     audit = AuditLog(audit_path)
     approver = _rich_approver(console, holder) if console is not None else interactive_approver
 
@@ -753,12 +747,37 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
         print("Set a key, or choose Ollama (free, local) when asked.")
         return 2
 
-    # 6) Per-target Obsidian vault → persistence + resume across sessions.
+    # Per-target Obsidian vault → persistence + resume across sessions.
     vault_dir = _vault_for(vault_path, target)
     blackboard = Blackboard(vault_dir, session_scope)
     session = AssistSession(target, executor, strategist,
                             skills=SkillLibrary(), blackboard=blackboard)
     cage = "fake" if fake else "docker:" + container
+    return session, audit, target, cage
+
+
+def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
+              audit_path="runs/audit.jsonl", vault_path="runs/vault",
+              container="brukal-kali", model=None, provider=None, base_url=None) -> int:
+    # A rich console (menu UI + spinner-aware approver), or plain fallback.
+    holder: dict = {"status": None}
+    try:
+        from rich.console import Console
+        console = Console()
+    except ImportError:
+        console = None
+
+    prep = _prepare_session(
+        target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
+        audit_path=audit_path, vault_path=vault_path, container=container,
+        model=model, provider=provider, base_url=base_url,
+        console=console, holder=holder)
+    if isinstance(prep, int):
+        return prep
+    session, audit, target, cage = prep
+
+    # How to work the plan — manual (approve each step) or auto (run safe steps).
+    auto = choose_run_mode(console)
 
     try:
         if console is not None:
@@ -775,6 +794,92 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
               "`ollama serve`) and the cage is up. Set BRUKAL_DEBUG=1 for the trace.")
         return 1
 
-    print(f"\n  session recorded to {audit_path}  ·  notes in {vault_dir}"
+    print(f"\n  session recorded to {audit_path}  ·  notes in {_session_vault(session)}"
           f"  ·  chain intact: {audit.verify()}\n")
+    return 0
+
+
+def _session_vault(session):
+    """The vault directory a session persists to (for the closing summary line)."""
+    return getattr(getattr(session, "blackboard", None), "root", "runs/vault")
+
+
+def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
+             audit_path="runs/audit.jsonl", vault_path="runs/vault",
+             container="brukal-kali", model=None, provider=None, base_url=None,
+             max_steps=20) -> int:
+    """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
+    in-scope enumeration and hands back cleanly on a manual/escalation step, a
+    stall, or the step budget. Every command still goes through the gate; nothing
+    out of scope runs. This is the engine `solve --auto` wraps, without a UI."""
+    from .loop import GroundedLoop
+
+    holder: dict = {"status": None}
+    try:
+        from rich.console import Console
+        console = Console()
+    except ImportError:
+        console = None
+
+    prep = _prepare_session(
+        target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
+        audit_path=audit_path, vault_path=vault_path, container=container,
+        model=model, provider=provider, base_url=base_url,
+        console=console, holder=holder)
+    if isinstance(prep, int):
+        return prep
+    session, audit, target, cage = prep
+
+    _emit(console, f"\n  brukal auto — target {target}   cage={cage}   "
+                   f"budget={max_steps} steps",
+          f"\n  [bold cyan]brukal auto[/] — target [bold]{target}[/]   "
+          f"cage={cage}   budget={max_steps} steps")
+    if session.resumed:
+        _emit(console, f"  resumed — loaded {session.resumed} prior finding(s).")
+
+    def observer(kind, payload):
+        if kind == "step":
+            st = payload["step"]
+            v = st.verdict or "-"
+            _emit(console,
+                  f"  [{st.index}] {(st.phase or '').upper():<12} {v:<9} "
+                  f"{(st.command or '')[:70]}\n        {st.summary[:100]}",
+                  f"  [grey62]\\[{st.index}][/] [cyan]{(st.phase or '').upper():<12}[/] "
+                  f"[{_VERDICT_COLOUR.get(v, 'white')}]{v:<9}[/] "
+                  f"{(st.command or '')[:70]}\n        [grey70]{st.summary[:100]}[/]")
+
+    loop = GroundedLoop(session, max_steps=max_steps, observer=observer)
+
+    try:
+        if not session.plan:
+            session.make_plan()             # lay out the route before driving it
+        result = loop.run()
+    except KeyboardInterrupt:
+        print("\n  paused.")
+        return 0
+    except Exception as e:
+        if os.environ.get("BRUKAL_DEBUG"):
+            raise
+        print(f"\n  ⚠ model/cage error: {e}")
+        print("  Check the model is reachable (key set, or Ollama running) and the "
+              "cage is up. Set BRUKAL_DEBUG=1 for the trace.")
+        return 1
+
+    handoff = {
+        "manual": "the next step is yours (intrusive/interactive exploitation)",
+        "escalation": "a step needs your sign-off (ESCALATE)",
+        "stalled": "no safe next step — over to you",
+        "exhausted": "hit the step budget",
+        "done": "nothing left to safely automate",
+    }.get(result.stop_reason, result.stop_reason)
+    _emit(console,
+          f"\n  ⏹ stopped: {handoff}\n     {result.stop_detail}\n"
+          f"  ran {result.executed} command(s), {result.blocked} blocked · "
+          f"continue in: brukal solve {target}\n"
+          f"  session recorded to {audit_path} · chain intact: {audit.verify()}\n",
+          f"\n  [bold yellow]⏹ stopped:[/] {handoff}\n     [grey70]{result.stop_detail}[/]\n"
+          f"  ran [bold]{result.executed}[/] command(s), {result.blocked} blocked · "
+          f"continue in: [cyan]brukal solve {target}[/]\n"
+          f"  session recorded to {audit_path} · chain intact: "
+          f"[green]{audit.verify()}[/]\n")
     return 0
