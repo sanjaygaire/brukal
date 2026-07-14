@@ -377,6 +377,32 @@ def test_plain_loop_custom_command_still_gated():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_run_options_parallel_runs_safe_and_skips_unsafe():
+    # fan-out: safe (ALLOW) options run concurrently; an out-of-scope one is skipped
+    # (not run in a worker), and everything is absorbed into session state.
+    from brukal.agents.strategist import Suggestion
+    tmp = tempfile.mkdtemp()
+    try:
+        scope = load_scope(SCOPE)
+        kali = FakeKali()
+        ex = Executor(Gate(scope), kali, AuditLog(Path(tmp) / "a.jsonl"))
+        sess = AssistSession("10.10.10.5", ex, StrategistAgent(StubLLM("")))
+        opts = [
+            Suggestion("", "nmap -sV 10.10.10.5", "10.10.10.5", None),      # ALLOW
+            Suggestion("", "whatweb http://10.10.10.5", "10.10.10.5", None),  # ALLOW
+            Suggestion("", "nmap -sV 8.8.8.8", "8.8.8.8", None),           # out of scope
+        ]
+        results = sess.run_options_parallel(opts)
+        ran = sorted(kali.executed)
+        assert ran == ["nmap -sV 10.10.10.5", "whatweb http://10.10.10.5"]
+        # the out-of-scope one was skipped (never executed), reported with a verdict
+        labels = {label: (d.verdict if d else None) for label, d, r, _ in results}
+        assert labels["nmap -sV 8.8.8.8"] == "DENY"
+        assert any("[ran] nmap -sV 10.10.10.5" in n for n in sess.notes)   # absorbed
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_auto_mode_runs_the_safe_step_by_itself():
     import io
     tmp = tempfile.mkdtemp()

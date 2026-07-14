@@ -221,6 +221,13 @@ class AssistSession:
         results. Returns (decision, result, new_highlights)."""
         decision, result = self.executor.run(command, target or self.target,
                                              agent="strategist")
+        return self._absorb_shell(command, decision, result)
+
+    def _absorb_shell(self, command, decision, result):
+        """Fold one shell outcome into session state (notes/highlights/lessons/
+        vault). Split out from `run` so the parallel runner can EXECUTE in worker
+        threads (thread-safe backends) and ABSORB here on the main thread only —
+        keeping session state single-threaded."""
         new_hl: list[tuple[str, str]] = []
         if result is not None:
             raw = (result.stdout or "").strip()
@@ -262,6 +269,11 @@ class AssistSession:
             self.notes.append(f"[web] {web_text}\nNOT RUN — {why}")
             return None, None, []
         decision, result = self.browser.run(action, agent="strategist")
+        return self._absorb_web(action, decision, result)
+
+    def _absorb_web(self, action, decision, result):
+        """Fold one WEB outcome into session state (main-thread counterpart to the
+        thread-safe browser.run, used by the parallel runner)."""
         new_hl: list[tuple[str, str]] = []
         if result is not None:
             body = (result.body or "").strip()
@@ -282,6 +294,59 @@ class AssistSession:
             tech = sorted({m.lower() for _t, ln in new_hl for m in _TECH_HINTS.findall(ln)})
             self.lessons.learn_from_outcome(action.describe(), decision, result, tech)
         return decision, result, new_hl
+
+    def run_options_parallel(self, options, max_workers: int = 4):
+        """Fan out: run the SAFE (gate-ALLOW) enumeration options CONCURRENTLY —
+        the 'main agent dispatches sub-tasks in parallel' idea, inside solve/auto.
+        Only actions the gate would ALLOW run in parallel (escalations/denials are
+        left for sequential handling, since they need approval / are unproductive).
+        Executes in worker threads (thread-safe backends + locked audit), then
+        absorbs every outcome on THIS thread, so session state stays single-threaded.
+        Returns a list of (label, decision, result, highlights); skipped options are
+        reported with decision=None."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from .web import check_web, parse_web_action
+
+        runnable, skipped = [], []
+        for o in options:
+            if o.command:
+                d = self.executor._gate.check(o.command, self.target, "strategist")
+                (runnable if d.verdict == "ALLOW" else skipped).append(
+                    ("shell", o.command, o.command, d))
+            elif o.web and self.browser is not None:
+                a = parse_web_action(o.web)
+                if a is None:
+                    continue
+                d = check_web(a, self.browser._scope, self.browser.current_url, "strategist")
+                (runnable if d.verdict == "ALLOW" else skipped).append(
+                    ("web", o.web, a, d))
+
+        results = []
+        if runnable:
+            def _exec(kind, payload):
+                if kind == "shell":
+                    return self.executor.run(payload, self.target, agent="strategist")
+                return self.browser.run(payload, agent="strategist")
+
+            raw = {}
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futs = {pool.submit(_exec, kind, payload): (kind, label)
+                        for kind, label, payload, _d in runnable}
+                for f in as_completed(futs):
+                    raw[futs[f]] = f.result()
+            # absorb sequentially on the main thread (session state single-threaded)
+            for (kind, label), (decision, result) in raw.items():
+                if kind == "shell":
+                    d, r, hl = self._absorb_shell(label, decision, result)
+                else:
+                    d, r, hl = self._absorb_web(parse_web_action(label), decision, result)
+                results.append((label, d, r, hl))
+
+        for kind, label, _payload, d in skipped:
+            results.append((label, d, None, []))    # e.g. ESCALATE/DENY -> handle sequentially
+        self.option_list = []
+        return results
 
     def note(self, text: str):
         self.notes.append(f"[note] {text}")
@@ -522,6 +587,7 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
 
         actions = [("c", "type your own command (gated)"),
                    ("i", "give an instruction / re-plan the options"),
+                   ("p", "run all the SAFE options in PARALLEL"),
                    ("a", f"switch to {'MANUAL' if flags['auto'] else 'AUTO'} mode"),
                    ("t", "add a note"), ("m", "record a manual step you did"),
                    ("o", "add an objective"), ("k", "search skill playbooks"),
@@ -553,6 +619,15 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
                                default="")
             with con.status("[cyan]re-planning the options…", spinner="dots"):
                 session.advise_options(instr, n=3)
+        elif choice == "p":
+            with con.status("[cyan]running the safe options in parallel…", spinner="dots") as st:
+                holder["status"] = st
+                batch = session.run_options_parallel(session.option_list)
+                holder["status"] = None
+            for label, d, r, _hl in batch:
+                v = d.verdict if d is not None else "SKIP"
+                colour = _VERDICT_COLOUR.get(v, "grey50")
+                con.print(Text.assemble(("  → ", ""), (v, f"bold {colour}"), (f"  {label}", "white")))
         elif choice == "a":
             flags["auto"] = not flags["auto"]; auto_steps = 0
             con.print(f"  mode → [bold]{'AUTO' if flags['auto'] else 'MANUAL'}[/]")
@@ -574,7 +649,8 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
 
 _HELP = """  pick a NUMBER to take that move, or type your own:
     <cmd>  run any command (through the gate)      ask <text> / <text>  steer the options
-    note <text>   manual <text>   plan   auto   manual-mode   skills <topic>   verify   quit
+    p  run all the SAFE options in PARALLEL        note <text>   manual <text>
+    plan   auto   manual-mode   skills <topic>   verify   quit
     (`auto` runs the safe steps itself; risky/irreversible moves still pause for your y/N)"""
 
 
@@ -695,6 +771,14 @@ def _plain_loop(session, audit, target, cage, auto=False):
             flags["auto"] = False; print("  mode → MANUAL")
         elif raw == "verify":
             print("  audit chain intact:", audit.verify())
+        elif raw in ("p", "par", "parallel"):
+            print("  running the safe options in parallel…")
+            for label, d, r, _hl in session.run_options_parallel(session.option_list):
+                v = d.verdict if d is not None else "SKIP"
+                print(f"    [{v}] {label}")
+                if r is not None and (r.stdout if hasattr(r, 'stdout') else getattr(r, 'body', '')):
+                    body = getattr(r, 'stdout', None) or getattr(r, 'body', '') or ''
+                    print(f"        {body.strip()[:120]}")
         elif raw == "plan":
             print("  re-planning the route…")
             session.make_plan(); _show_plan_plain(session); session.option_list = []
