@@ -14,6 +14,34 @@ Risk-Constrained Action Gating."*
 > govern each agent in proportion to how reliable it has proven to be, and you
 > get autonomy you can actually account for.
 
+**How Brukal compares to PentestGPT, XBOW, Burp, and Metasploit → [COMPARISON.md](COMPARISON.md).**
+
+---
+
+## What Brukal can do
+
+- **Governed autonomous hunting.** It runs the whole engagement — recon,
+  enumeration, and exploitation — itself, but every action passes the deterministic
+  scope gate first: safe steps run automatically, irreversible/attack actions
+  (reverse shells, `sqlmap --dump`, credential attacks) **escalate for one-tap
+  human sign-off**, out-of-scope actions are **denied by construction**.
+- **You steer with options, not prompts.** Each turn it offers a *ranked list* of
+  next moves — pick a number, type your own gated command, or give an instruction
+  and it re-plans. (`brukal solve`)
+- **Runs on any model, including free + local.** Claude, **Groq (free 70B)**,
+  OpenAI/OpenRouter/DeepSeek/GLM, or a local Ollama model — the guarantees live in
+  the code around the model, so a weak model is *contained*, not trusted.
+- **Learns over time.** A cross-session lessons store turns real outcomes into
+  guidance for the next engagement (`brukal lessons`).
+- **Parallel multi-agent.** A main agent fans independent tasks out to sub-agents
+  that run concurrently — with the tamper-evident audit chain staying valid under
+  concurrency.
+- **Governed web testing.** Drive a real headless browser and craft/tamper HTTP
+  requests, scope-checked by host (incl. vhosts like `nexus.htb`) and logged
+  (`brukal web`, `brukal solve` WEB actions).
+- **A verifiable receipt for everything.** Every decision + result is written to a
+  SHA-256 hash-chained log you can re-verify (`brukal verify`).
+
 ---
 
 ## Headline results
@@ -300,6 +328,32 @@ brukal auto 10.10.10.5 --yes-authorised --scope scope.htb.json --max-steps 15
 brukal auto --fake                          # try the whole loop with no Docker
 ```
 
+### Governed web testing (`brukal web`, WEB actions)
+
+Web work — render a JS app, craft or tamper an HTTP request, fill a field with a
+payload, follow a redirect to a vhost — goes through the **same** gate as shell
+commands: the action's **host** must be in scope (an IP, or an explicitly
+authorised hostname like `nexus.htb`, set at scope time — never DNS-resolved at
+runtime), the scheme must be http/https, and every action is logged.
+
+```bash
+# a governed request, routed through the cage (reaches HTB over the VPN):
+brukal web http://nexus.htb/ --scope scope.htb.json
+
+# render with a REAL headless browser (JS executed) inside the cage:
+brukal web http://nexus.htb/ --chrome --scope scope.htb.json
+
+# craft / tamper a request (headers + body are attack payloads, NOT sanitised):
+brukal web http://nexus.htb/api --method PUT \
+    --header "X-Forwarded-For: 127.0.0.1" --body '{"admin":true}' --scope scope.htb.json
+```
+
+Inside `brukal solve`/`auto` the strategist proposes **`WEB:` actions**
+(`get`/`render`/`request`/`fill`/`click`/`screenshot`/`intercept`) that route
+through the governed browser automatically — an out-of-scope web action is denied
+exactly like a shell command. Only *scope* and *scheme* are enforced; a SQLi/XSS
+payload goes straight through, because that is the attack.
+
 ### Governed interactive shell (`brukal shell`)
 
 When you do the hands-on exploitation, you no longer have to leave Brukal to do
@@ -354,13 +408,15 @@ read-only while running:
 {
   "engagement": "brukal-lab-01",
   "authorized_cidrs": ["10.10.10.0/24", "127.0.0.1/32"],
+  "authorized_hosts": ["nexus.htb"],
   "allowlisted_tools": ["nmap", "gobuster", "nikto", "whatweb", "curl", "dig"],
   "rate_limit_per_min": 30
 }
 ```
 
-Keep `allowlisted_tools` in sync with the tools installed in
-`docker/Dockerfile.kali`.
+`authorized_hosts` (optional) authorises web vhosts by name for the web surface —
+matched deterministically, never DNS-resolved at runtime. Keep `allowlisted_tools`
+in sync with the tools installed in `docker/Dockerfile.kali`.
 
 ---
 
@@ -376,22 +432,24 @@ brukal/
 ├── audit.py          # SHA-256 hash-chained, tamper-evident log
 ├── trust.py          # adaptive per-agent trust T_i  (feeds only the soft layer)
 ├── schema.py         # the Action Request the model must emit
-├── llm.py            # thin Anthropic client (agents propose text only)
-├── orchestrator.py   # sequential multi-agent driver
+├── llm.py            # provider-agnostic client (Claude / Groq / Ollama / OpenAI-compat)
+├── orchestrator.py   # multi-agent driver — sequential + ParallelOrchestrator
 ├── blackboard.py     # Obsidian-vault shared memory (digests, scoped reads)
 ├── tasktree.py       # the Pentesting Task Tree
 ├── assist.py         # human-assisted solver (`brukal solve`) + `brukal auto`
+├── loop.py           # the grounded agentic loop (autonomous, gate-governed)
 ├── skills.py         # static red-team playbooks (untrusted reference)
 ├── lessons.py        # cross-session learned lessons (Brukal's own experience)
-├── loop.py           # the grounded agentic loop (autonomous, gate-governed)
+├── web.py            # governed web surface: WebAction, check_web, GovernedBrowser
+├── chrome.py         # Chrome/CDP backend — headless browser, request tamper
 ├── session.py        # governed interactive shell (`brukal shell`)
 ├── experiment.py     # the four-metric governance benchmark harness
 ├── eval.py           # the capability eval (steps-to-foothold, governed vs ungated)
 └── agents/           # recon · exploit · verify · strategist
-tests/                # 97 tests — the invariants, in code
-docker/               # the Kali cage (Dockerfile + compose)
-run_experiments.py · run_eval.py · run_engagement.py · run_recon.py · brukal_cli.py
-HOW_IT_WORKS.md · CODE_WALKTHROUGH.md · BUILD_ROADMAP.md · SECURITY.md
+tests/                # 140 tests — the invariants, in code
+docker/               # the Kali cage (Dockerfile + compose, chromium + VPN)
+run_experiments.py · run_eval.py · run_engagement.py · run_recon.py
+HOW_IT_WORKS.md · CODE_WALKTHROUGH.md · BUILD_ROADMAP.md · COMPARISON.md · SECURITY.md
 ```
 
 ---
