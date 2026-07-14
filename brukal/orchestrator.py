@@ -90,8 +90,10 @@ class Orchestrator:
 
             # Knowledge layer: prepend the most relevant playbook as untrusted
             # reference (guidance only — the gate still rules on what it proposes).
+            # Key the lookup off the task AND the findings so far, so the playbook
+            # tracks the services/tech actually discovered, not just the task title.
             if self._skills is not None:
-                reference = self._skills.context_for(task.description)
+                reference = self._skills.context_for(f"{task.description} {context}"[:600])
                 if reference:
                     context = f"{reference}\n\n{context}" if context else reference
 

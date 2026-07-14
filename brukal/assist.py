@@ -45,6 +45,16 @@ _HIGHLIGHTS = [
 ]
 
 
+# Services / technologies worth pulling a red-team playbook for, mined from the
+# highlights so skill retrieval follows what we've actually discovered on the box.
+_TECH_HINTS = re.compile(
+    r"\b(http|https|ssh|ftp|smtp|smb|nfs|rpc|snmp|dns|ldap|kerberos|rdp|winrm|"
+    r"nginx|apache|tomcat|iis|jetty|node|express|php|jsp|aspx|python|ruby|"
+    r"mysql|mssql|postgres|postgresql|oracle|redis|mongodb|memcached|elastic|"
+    r"wordpress|drupal|joomla|jenkins|gitlab|jira|confluence|struts|spring|"
+    r"api|graphql|jwt|oauth|saml|upload|login|admin|cms|webdav|cgi)\b", re.I)
+
+
 def _outcome_feedback(decision, result, raw: str) -> str:
     """Digest an executed command's outcome into a note the strategist can learn
     from — a timeout or empty result becomes an explicit 'do it differently' cue."""
@@ -111,11 +121,32 @@ class AssistSession:
 
     # -- planning (the shortest path, made visible) ------------------------- #
 
+    def _skill_focus(self, extra: str = "") -> str:
+        """Build the query used to pull red-team playbooks from the LIVE state, not
+        a fixed string. Keys off the current phase + the services/tech we've actually
+        discovered (nginx, ssh, http, mysql, …), mined from the highlights and the
+        objectives — NOT the raw objective prose, whose generic words ("find", "path")
+        spuriously match unrelated playbooks. This is what makes the skill library
+        track the engagement and inform each decision instead of returning the same
+        irrelevant playbook every turn (or nothing at all for a bare IP)."""
+        phase = ""
+        if self.last is not None and self.last.phase:
+            phase = self.last.phase
+        elif self._current_step() is not None:
+            phase = self._current_step().phase or ""
+        # Mine service/tech terms from what we've seen + the objectives + the ask.
+        corpus = " ".join(line for _tag, line in self.highlights[-12:])
+        corpus += " " + " ".join(self.objectives) + " " + extra
+        tech = sorted({m.lower() for m in _TECH_HINTS.findall(corpus)})
+        terms = ([extra] if extra else []) + ([phase] if phase else []) + tech
+        if not tech:                        # nothing found yet -> steer to recon packs
+            terms += ["reconnaissance", "enumeration", "port", "scan", "service"]
+        return " ".join(terms).strip() or self.target
+
     def make_plan(self):
         """Ask the strategist for the shortest-path plan, keep completed steps
         marked, and persist it so a human can watch (and edit) the route."""
-        focus = " ".join(self.objectives) or self.target
-        ref = self.skills.context_for(focus) if self.skills else ""
+        ref = self.skills.context_for(self._skill_focus()) if self.skills else ""
         new = self.strategist.plan(self.target, self._state(),
                                    self._objectives_text(), ref)
         done = self.plan_cursor                    # preserve progress across a re-plan
@@ -150,8 +181,7 @@ class AssistSession:
         return "\n".join(lines)
 
     def advise(self, question: str = ""):
-        focus = question or " ".join(self.objectives) or self.target
-        ref = self.skills.context_for(focus) if self.skills else ""
+        ref = self.skills.context_for(self._skill_focus(question)) if self.skills else ""
         self.last = self.strategist.advise(
             self.target, self._state(), question, ref, self._objectives_text(),
             self._plan_text())

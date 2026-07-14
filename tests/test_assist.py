@@ -112,6 +112,31 @@ def test_suggested_command_still_goes_through_the_gate():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_skill_focus_tracks_discovered_tech_not_static_string():
+    # The query that pulls red-team playbooks must follow the LIVE state: recon
+    # defaults before findings, then the actual services once discovered — and it
+    # must NOT be dominated by the raw objective prose.
+    scope = load_scope(SCOPE)
+    tmp = tempfile.mkdtemp()
+    try:
+        from brukal.skills import SkillLibrary
+        ex = Executor(Gate(scope), FakeKali(), AuditLog(Path(tmp) / "a.jsonl"))
+        sess = AssistSession("10.129.234.54", ex, StrategistAgent(StubLLM("")),
+                             skills=SkillLibrary())
+        sess.add_objective("find the path to a foothold and the user flag")
+        # before any findings -> recon-oriented default query (never empty/just the IP)
+        early = sess._skill_focus()
+        assert "reconnaissance" in early and "10.129" not in early
+        # after discovering services -> the query names the actual tech
+        sess.highlights += [("open port", "80/tcp open http nginx 1.24.0"),
+                            ("open port", "22/tcp open ssh OpenSSH 9.6p1")]
+        focus = sess._skill_focus()
+        assert "nginx" in focus and "http" in focus and "ssh" in focus
+        assert "reconnaissance" not in focus       # defaults drop out once tech is known
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_timeout_produces_learnable_feedback_note():
     # A command that times out in the cage must be recorded as an actionable
     # lesson ("TIMED OUT ... use a faster command"), not a bare verdict, so a weak
