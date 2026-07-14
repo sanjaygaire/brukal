@@ -1,6 +1,8 @@
 # --- Brukal runtime artifacts (never commit engagement data) ---
 runs/                      # audit logs + run outputs
 vault/                     # Obsidian blackboard written during a run
+docker/vault/*             # cage-mounted vault + cross-session lessons (engagement data)
+!docker/vault/.gitkeep
 *.audit.jsonl
 audit.jsonl
 results*.json              # experiment-harness dumps

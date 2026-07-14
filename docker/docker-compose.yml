@@ -30,6 +30,11 @@ services:
       - /dev/net/tun
     volumes:
       - ./vpn:/vpn:ro
+      # The Obsidian vault + cross-session lessons live here, bind-mounted so they
+      # persist across container restarts and are visible to both the cage and the
+      # host (open ./docker/vault in Obsidian). Point Brukal at it with
+      # `--vault docker/vault`; the shared lessons file is docker/vault/lessons.jsonl.
+      - ./vault:/vault
     # No published ports: nothing inbound. The only way in is `docker exec`,
     # which the executor uses for approved commands.
 

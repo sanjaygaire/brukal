@@ -207,6 +207,27 @@ def _cmd_auto(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
+def _cmd_lessons(args) -> int:
+    # Inspect / add to Brukal's cross-session learned lessons.
+    from pathlib import Path
+
+    from brukal.lessons import LessonStore
+    store = LessonStore(Path(args.vault) / "lessons.jsonl")
+    if args.add:
+        tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
+        store.add(args.add, tags, kind=args.kind)
+        print(f"  learned: {args.add}  {tags}")
+        return 0
+    items = store.retrieve(args.search, 50) if args.search else store._lessons
+    if not items:
+        print("  no lessons yet — Brukal learns as it hunts.")
+        return 0
+    print(f"  {len(items)} lesson(s):")
+    for l in sorted(items, key=lambda x: -x.hits):
+        print(f"    [{l.kind:>7}] (x{l.hits}) {l.text}   {l.tags}")
+    return 0
+
+
 def _cmd_eval(args) -> int:
     # Capability evaluation: governed vs ungated on scripted boxes — steps-to-
     # foothold + scope violations. No infra, no key (deterministic).
@@ -376,6 +397,14 @@ def main(argv: list[str] | None = None) -> int:
     pev = sub.add_parser("eval",
                          help="capability eval: governed vs ungated (steps-to-foothold)")
     pev.set_defaults(func=_cmd_eval)
+
+    pl = sub.add_parser("lessons", help="view / add Brukal's cross-session learned lessons")
+    pl.add_argument("search", nargs="?", help="filter lessons by keyword/tag")
+    pl.add_argument("--vault", default="runs/vault", help="vault root holding lessons.jsonl")
+    pl.add_argument("--add", help="manually record a lesson")
+    pl.add_argument("--tags", help="comma-separated tags for --add")
+    pl.add_argument("--kind", default="tactic", choices=["pitfall", "tactic", "win"])
+    pl.set_defaults(func=_cmd_lessons)
 
     psh = sub.add_parser("shell", help="open a governed interactive shell in the cage")
     psh.add_argument("target", help="in-scope host to work on")

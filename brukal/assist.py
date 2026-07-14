@@ -90,12 +90,14 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
 
 
 class AssistSession:
-    def __init__(self, target, executor, strategist, skills=None, blackboard=None):
+    def __init__(self, target, executor, strategist, skills=None, blackboard=None,
+                 lessons=None):
         self.target = target
         self.executor = executor
         self.strategist = strategist
         self.skills = skills
         self.blackboard = blackboard   # Obsidian-backed persistence (optional)
+        self.lessons = lessons         # cross-session LessonStore (optional)
         self.notes: list[str] = []     # observations: command results, manual reports, notes
         self.highlights: list[tuple[str, str]] = []   # accumulated key results
         self.objectives: list[str] = []               # what the box is asking (HTB tasks)
@@ -144,10 +146,20 @@ class AssistSession:
             terms += ["reconnaissance", "enumeration", "port", "scan", "service"]
         return " ".join(terms).strip() or self.target
 
+    def _reference(self, focus: str) -> str:
+        """The guidance block fed to the strategist: Brukal's own LEARNED LESSONS
+        first (trusted experience), then the untrusted red-team skill packs."""
+        parts = []
+        if self.lessons is not None:
+            parts.append(self.lessons.context_for(focus))
+        if self.skills is not None:
+            parts.append(self.skills.context_for(focus))
+        return "\n\n".join(p for p in parts if p)
+
     def make_plan(self):
         """Ask the strategist for the shortest-path plan, keep completed steps
         marked, and persist it so a human can watch (and edit) the route."""
-        ref = self.skills.context_for(self._skill_focus()) if self.skills else ""
+        ref = self._reference(self._skill_focus())
         new = self.strategist.plan(self.target, self._state(),
                                    self._objectives_text(), ref)
         done = self.plan_cursor                    # preserve progress across a re-plan
@@ -182,7 +194,7 @@ class AssistSession:
         return "\n".join(lines)
 
     def advise(self, question: str = ""):
-        ref = self.skills.context_for(self._skill_focus(question)) if self.skills else ""
+        ref = self._reference(self._skill_focus(question))
         self.last = self.strategist.advise(
             self.target, self._state(), question, ref, self._objectives_text(),
             self._plan_text())
@@ -191,7 +203,7 @@ class AssistSession:
     def advise_options(self, question: str = "", n: int = 3):
         """Ask for a RANKED list of next moves so the operator can pick one, tweak
         it, or give their own instruction. Falls back to a single-item list."""
-        ref = self.skills.context_for(self._skill_focus(question)) if self.skills else ""
+        ref = self._reference(self._skill_focus(question))
         opts = self.strategist.options(
             self.target, self._state(), question, ref, self._objectives_text(),
             self._plan_text(), n=n)
@@ -231,6 +243,10 @@ class AssistSession:
                               f"({decision.layer}: {decision.reason}). {hint}")
             self._persist_finding("blocked", command, decision.verdict,
                                   f"{decision.layer}: {decision.reason}", [])
+        # Learn from this outcome for FUTURE engagements (cross-session memory).
+        if self.lessons is not None:
+            tech = sorted({m.lower() for _t, ln in new_hl for m in _TECH_HINTS.findall(ln)})
+            self.lessons.learn_from_outcome(command, decision, result, tech)
         return decision, result, new_hl
 
     def note(self, text: str):
@@ -875,8 +891,12 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     # Per-target Obsidian vault → persistence + resume across sessions.
     vault_dir = _vault_for(vault_path, target)
     blackboard = Blackboard(vault_dir, session_scope)
-    session = AssistSession(target, executor, strategist,
-                            skills=SkillLibrary(), blackboard=blackboard)
+    # Cross-session lessons live at the VAULT ROOT (shared across every target), so
+    # Brukal carries what it learned from one box to the next.
+    from .lessons import LessonStore
+    lessons = LessonStore(Path(vault_path) / "lessons.jsonl")
+    session = AssistSession(target, executor, strategist, skills=SkillLibrary(),
+                            blackboard=blackboard, lessons=lessons)
     cage = "fake" if fake else "docker:" + container
     return session, audit, target, cage
 

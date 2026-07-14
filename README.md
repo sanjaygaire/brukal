@@ -381,6 +381,8 @@ brukal/
 ├── blackboard.py     # Obsidian-vault shared memory (digests, scoped reads)
 ├── tasktree.py       # the Pentesting Task Tree
 ├── assist.py         # human-assisted solver (`brukal solve`) + `brukal auto`
+├── skills.py         # static red-team playbooks (untrusted reference)
+├── lessons.py        # cross-session learned lessons (Brukal's own experience)
 ├── loop.py           # the grounded agentic loop (autonomous, gate-governed)
 ├── session.py        # governed interactive shell (`brukal shell`)
 ├── experiment.py     # the four-metric governance benchmark harness
