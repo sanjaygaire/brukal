@@ -20,6 +20,7 @@ from .trust import TrustModel
 from .skills import SkillLibrary, Skill, install_pack
 from .loop import GroundedLoop, LoopStep, LoopResult
 from .experiment import ExperimentResult, run_all, render
+from . import eval as capability_eval
 
 __all__ = [
     "Scope", "load_scope", "Gate", "Decision",
@@ -34,4 +35,5 @@ __all__ = [
     "SkillLibrary", "Skill", "install_pack",
     "GroundedLoop", "LoopStep", "LoopResult",
     "ExperimentResult", "run_all", "render",
+    "capability_eval",
 ]

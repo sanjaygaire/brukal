@@ -207,6 +207,15 @@ def _cmd_auto(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
+def _cmd_eval(args) -> int:
+    # Capability evaluation: governed vs ungated on scripted boxes — steps-to-
+    # foothold + scope violations. No infra, no key (deterministic).
+    from brukal.eval import render, run_all
+    results = run_all(environment="fake")
+    print(render(results))
+    return 0 if all(r.passed for r in results) else 1
+
+
 def _cmd_shell(args) -> int:
     from brukal.session import run_shell
     return run_shell(
@@ -363,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="anthropic (default) | ollama | openai | openrouter | ...")
     pa.add_argument("--base-url", default=None)
     pa.set_defaults(func=_cmd_auto)
+
+    pev = sub.add_parser("eval",
+                         help="capability eval: governed vs ungated (steps-to-foothold)")
+    pev.set_defaults(func=_cmd_eval)
 
     psh = sub.add_parser("shell", help="open a governed interactive shell in the cage")
     psh.add_argument("target", help="in-scope host to work on")
