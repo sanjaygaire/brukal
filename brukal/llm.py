@@ -79,6 +79,11 @@ class _OpenAICompatBackend:
         req = urllib.request.Request(
             self.url, data=body, method="POST",
             headers={"Content-Type": "application/json",
+                     "Accept": "application/json",
+                     # A real User-Agent is required: some providers (Groq,
+                     # OpenRouter) sit behind Cloudflare, which blocks the default
+                     # "Python-urllib/x.y" signature with HTTP 403 (error 1010).
+                     "User-Agent": "Brukal/1.0 (+https://github.com/sanjaygaire/brukal)",
                      "Authorization": f"Bearer {self.api_key}"})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
