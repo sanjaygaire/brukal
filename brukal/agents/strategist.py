@@ -47,7 +47,14 @@ STRATEGIST_SYSTEM = (
     "repeat it — choose a faster, narrower command.\n"
     "- Use ONLY real installed tools (nmap, whatweb, gobuster, ffuf, nikto, curl, "
     "smbclient, enum4linux, etc.). Never invent module paths, script files, or "
-    "`msfconsole -r <made-up-file>` — those don't exist and will be rejected."
+    "`msfconsole -r <made-up-file>` — those don't exist and will be rejected.\n"
+    "- A RUN command is ONE tool run directly, with NO shell features: no pipes '|', "
+    "redirects '> < >>', chaining '; && ||', backticks or $(...), and no '-o file' "
+    "output redirection — the cage runs a single program and shell metacharacters "
+    "are rejected as injection.\n"
+    "- Gaining ACCESS is not enumeration: ssh, logging in, running an exploit, "
+    "spawning a shell, cracking a hash — put these under MANUAL for the operator, "
+    "never RUN. RUN is for read-only enumeration only."
 )
 
 
@@ -165,6 +172,7 @@ def _parse(text: str, default_target: str) -> Suggestion:
         command = command.strip().strip("`\"'").strip()
         if " (" in command:
             command = command[:command.index(" (")].strip()
+        command = command.strip("`\"'").strip()   # re-peel: the paren trim can re-expose a backtick
         command = command or None
     if manual and manual.lower() in ("none", "n/a", "-"):
         manual = None

@@ -73,7 +73,9 @@ def test_strategist_strips_wrapping_backticks():
     # survive into the command (it would be denied as shell injection, as seen live
     # against Nexus). Both wrapped and trailing-only forms must come out clean.
     for raw in ("RUN: `curl -I http://10.129.234.54`",
-                "RUN: curl -I http://10.129.234.54` "):
+                "RUN: curl -I http://10.129.234.54` ",
+                # a trailing "(note)" AFTER the backtick must not re-expose it
+                "RUN: curl -I http://10.129.234.54` (to grab headers)"):
         s = StrategistAgent(StubLLM(raw)).advise("10.129.234.54", "")
         assert s.command == "curl -I http://10.129.234.54"
         assert "`" not in s.command
