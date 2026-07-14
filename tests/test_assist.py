@@ -276,6 +276,78 @@ class SeqLLM:
         return r
 
 
+_OPTIONS_REPLY = (
+    "OPTION: scan services\nPHASE: recon\nGOAL: fingerprint the services\n"
+    "REASONING: 22/80 open.\nRUN: nmap -sV 10.10.10.5\n"
+    "---\n"
+    "OPTION: brute ssh\nPHASE: exploitation\nGOAL: get ssh creds\n"
+    "REASONING: try creds.\nRUN: hydra -l root -P rockyou.txt ssh://10.10.10.5")
+
+
+def test_strategist_options_parses_ranked_list():
+    from brukal.agents.strategist import StrategistAgent
+    opts = StrategistAgent(StubLLM(_OPTIONS_REPLY)).options("10.10.10.5", "ports open")
+    assert len(opts) == 2
+    assert opts[0].command == "nmap -sV 10.10.10.5" and opts[0].phase == "recon"
+    assert opts[1].command.startswith("hydra") and opts[1].phase == "exploitation"
+
+
+def test_advise_options_falls_back_to_single_when_unformatted():
+    # a model that ignores the ranked format still yields one usable option
+    sess = AssistSession("10.10.10.5", None,
+                         StrategistAgent(StubLLM("RUN: nmap -sV 10.10.10.5")))
+    opts = sess.advise_options()
+    assert len(opts) == 1 and opts[0].command == "nmap -sV 10.10.10.5"
+    assert sess.last is opts[0]
+
+
+def test_plain_loop_option_pick_runs_through_gate():
+    import io
+    tmp = tempfile.mkdtemp()
+    try:
+        from brukal.assist import _plain_loop
+        scope = load_scope(SCOPE)
+        kali = FakeKali()
+        audit = AuditLog(Path(tmp) / "a.jsonl")
+        ex = Executor(Gate(scope), kali, audit)
+        sess = AssistSession("10.10.10.5", ex,
+                             StrategistAgent(SeqLLM(["1. [recon] scan", _OPTIONS_REPLY])))
+        old = sys.stdin
+        sys.stdin = io.StringIO("1\nquit\n")           # pick option 1 (the nmap)
+        try:
+            _plain_loop(sess, audit, "10.10.10.5", "fake")
+        finally:
+            sys.stdin = old
+        assert kali.executed == ["nmap -sV 10.10.10.5"]   # option ran via the gate
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_plain_loop_custom_command_still_gated():
+    # typing your own command runs it through the gate; out-of-scope is denied.
+    import io
+    tmp = tempfile.mkdtemp()
+    try:
+        from brukal.assist import _plain_loop, _looks_like_command
+        assert _looks_like_command("nmap -sV 10.10.10.5")
+        assert not _looks_like_command("focus on the web app")   # instruction, not cmd
+        scope = load_scope(SCOPE)
+        kali = FakeKali()
+        audit = AuditLog(Path(tmp) / "a.jsonl")
+        ex = Executor(Gate(scope), kali, audit)
+        sess = AssistSession("10.10.10.5", ex,
+                             StrategistAgent(SeqLLM(["1. [recon] scan", _OPTIONS_REPLY])))
+        old = sys.stdin
+        sys.stdin = io.StringIO("nmap -sV 8.8.8.8\nquit\n")   # custom, out-of-scope
+        try:
+            _plain_loop(sess, audit, "10.10.10.5", "fake")
+        finally:
+            sys.stdin = old
+        assert kali.executed == []                      # out-of-scope custom cmd denied
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_auto_mode_runs_the_safe_step_by_itself():
     import io
     tmp = tempfile.mkdtemp()

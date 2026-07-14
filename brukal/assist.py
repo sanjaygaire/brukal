@@ -101,7 +101,8 @@ class AssistSession:
         self.objectives: list[str] = []               # what the box is asking (HTB tasks)
         self.plan: list = []           # list[PlanStep] — the shortest-path plan
         self.plan_cursor = 0           # index of the step we're working on
-        self.last = None               # last Suggestion
+        self.last = None               # last Suggestion (the top-ranked one)
+        self.option_list: list = []    # last ranked list of next-move options
         self.resumed = 0               # how many prior findings we loaded
         if blackboard is not None:
             self._load_memory()
@@ -186,6 +187,19 @@ class AssistSession:
             self.target, self._state(), question, ref, self._objectives_text(),
             self._plan_text())
         return self.last
+
+    def advise_options(self, question: str = "", n: int = 3):
+        """Ask for a RANKED list of next moves so the operator can pick one, tweak
+        it, or give their own instruction. Falls back to a single-item list."""
+        ref = self.skills.context_for(self._skill_focus(question)) if self.skills else ""
+        opts = self.strategist.options(
+            self.target, self._state(), question, ref, self._objectives_text(),
+            self._plan_text(), n=n)
+        if not opts:                       # never leave the operator with nothing
+            opts = [self.advise(question)]
+        self.option_list = opts
+        self.last = opts[0]
+        return opts
 
     # -- doing / recording (persisted to the vault) ------------------------- #
 
@@ -510,9 +524,55 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
             break
 
 
-_HELP = """  commands: next/<enter>  run  run <cmd>  note <text>  manual <text>
-            ask <question>  plan  auto  manual-mode  skills <topic>  verify  help  quit
-            (`auto` runs safe steps itself; `manual` goes back to approving each)"""
+_HELP = """  pick a NUMBER to take that move, or type your own:
+    <cmd>  run any command (through the gate)      ask <text> / <text>  steer the options
+    note <text>   manual <text>   plan   auto   manual-mode   skills <topic>   verify   quit
+    (`auto` runs the safe steps itself; risky/irreversible moves still pause for your y/N)"""
+
+
+def _looks_like_command(text: str) -> bool:
+    """Heuristic: does the operator's free text look like a command to RUN (vs an
+    instruction to steer with)? First token is a known/allowlisted-ish tool name."""
+    first = (text.split() or [""])[0].lower()
+    return bool(re.match(r"^[a-z][a-z0-9._-]*$", first)) and first in _COMMON_TOOLS
+
+
+_COMMON_TOOLS = frozenset({
+    "nmap", "masscan", "gobuster", "ffuf", "feroxbuster", "dirb", "wfuzz", "nikto",
+    "whatweb", "wafw00f", "nuclei", "curl", "wget", "dig", "host", "dnsrecon",
+    "sslscan", "smbclient", "smbmap", "enum4linux", "enum4linux-ng", "nbtscan",
+    "snmpwalk", "ldapsearch", "redis-cli", "hydra", "medusa", "ncrack", "sqlmap",
+    "wpscan", "john", "hashcat", "searchsploit", "crackmapexec", "netexec", "nxc",
+    "kerbrute", "evil-winrm", "nc", "ncat", "netcat", "socat", "ssh", "ping"})
+
+
+def _print_options(opts):
+    print("\n  NEXT MOVES — pick a number, or type your own command/instruction:")
+    for i, o in enumerate(opts, 1):
+        tag = f"[{o.phase}] " if o.phase else ""
+        label = o.goal or (o.rationale or "").splitlines()[0][:70] or "next move"
+        print(f"    [{i}] {tag}{label}")
+        if o.command:
+            print(f"         RUN: {o.command}")
+        elif o.manual:
+            print(f"         MANUAL (you): {o.manual}")
+    print("    [type a command to run it · type an instruction to re-plan · help · quit]")
+
+
+def _report(d, r):
+    print(f"  -> {d.verdict}" +
+          (f"\n{(r.stdout or '').rstrip()}" if r is not None else f" ({d.layer}: {d.reason})"))
+
+
+def _take_option(session, opt):
+    """Execute a chosen option: a RUN goes through the gate; a MANUAL is recorded."""
+    if opt.command:
+        d, r, _ = session.run(opt.command)
+        _report(d, r)
+    elif opt.manual:
+        session.manual(opt.manual)
+        print(f"  recorded manual step: {opt.manual}")
+    session.option_list = []          # regenerate from the new findings next turn
 
 
 def _show_plan_plain(session):
@@ -534,21 +594,21 @@ def _plain_loop(session, audit, target, cage, auto=False):
         print("  planning the route…")
         session.make_plan()
     _show_plan_plain(session)
-    _print_suggestion(session.advise())
     flags = {"auto": auto}
     auto_steps = 0
+    if flags["auto"]:
+        session.advise()                    # seed the top move for the auto branch
     while True:
-        # AUTO: run the safe suggested step, pausing on manual/cap/Ctrl-C.
+        # AUTO: run the safe top move itself, pausing on manual/cap/Ctrl-C.
         if flags["auto"]:
             s = session.last
             if s and s.command and auto_steps < _AUTO_CAP:
                 print(f"  [auto] running: {s.command}")
                 try:
                     d, r, _ = session.run(s.command)
-                    print(f"  -> {d.verdict}" +
-                          (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer})"))
+                    _report(d, r)
                     auto_steps += 1
-                    _print_suggestion(session.advise())
+                    session.advise()
                     continue
                 except KeyboardInterrupt:
                     print("\n  paused — manual mode.")
@@ -556,45 +616,50 @@ def _plain_loop(session, audit, target, cage, auto=False):
             else:
                 print("  [auto] paused — over to you (type `auto` to resume).")
                 flags["auto"] = False
+
+        # MANUAL: present a ranked list of moves; the operator picks one, runs their
+        # own command, or gives an instruction to re-plan the options.
+        if not session.option_list:
+            print("  thinking of the best moves…")
+            session.advise_options(n=3)
+        _print_options(session.option_list)
         try:
             raw = input("  brukal> ").strip()
         except (EOFError, KeyboardInterrupt):
             print(); break
-        if not raw or raw in ("next", "n"):
-            _print_suggestion(session.advise())
+
+        if raw.isdigit() and 1 <= int(raw) <= len(session.option_list):
+            _take_option(session, session.option_list[int(raw) - 1])
+        elif raw == "" and session.option_list:
+            _take_option(session, session.option_list[0])       # enter = top move
         elif raw in ("quit", "exit", "q"):
             break
         elif raw in ("help", "?"):
             print(_HELP)
         elif raw == "auto":
-            flags["auto"] = True; auto_steps = 0; print("  mode → AUTO")
+            flags["auto"] = True; auto_steps = 0; session.advise(); print("  mode → AUTO")
         elif raw in ("manual-mode", "manual_mode"):
             flags["auto"] = False; print("  mode → MANUAL")
         elif raw == "verify":
             print("  audit chain intact:", audit.verify())
         elif raw == "plan":
             print("  re-planning the route…")
-            session.make_plan(); _show_plan_plain(session)
-        elif raw == "run":
-            if session.last and session.last.command:
-                d, r, _ = session.run(session.last.command)
-                print(f"  -> {d.verdict}" + (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer})"))
-            else:
-                print("  (no suggested command; use `run <command>`)")
-        elif raw.startswith("run "):
-            d, r, _ = session.run(raw[4:].strip())
-            print(f"  -> {d.verdict}" + (f"\n{(r.stdout or '').rstrip()}" if r else f" ({d.layer}: {d.reason})"))
+            session.make_plan(); _show_plan_plain(session); session.option_list = []
         elif raw.startswith("note "):
-            session.note(raw[5:].strip()); print("  noted.")
+            session.note(raw[5:].strip()); session.option_list = []; print("  noted.")
         elif raw.startswith("manual "):
-            session.manual(raw[7:].strip()); print("  recorded.")
-        elif raw.startswith("ask "):
-            _print_suggestion(session.advise(raw[4:].strip()))
+            session.manual(raw[7:].strip()); session.option_list = []; print("  recorded.")
         elif raw.startswith("skills "):
             for s in (session.skills.retrieve(raw[7:].strip(), 4) if session.skills else []):
                 print(f"    [{s.category}] {s.name}")
+        elif raw.startswith("run "):
+            d, r, _ = session.run(raw[4:].strip()); _report(d, r); session.option_list = []
+        elif raw.startswith("ask "):
+            session.advise_options(raw[4:].strip(), n=3)         # explicit steer
+        elif _looks_like_command(raw):
+            d, r, _ = session.run(raw); _report(d, r); session.option_list = []   # custom command
         else:
-            print("  unknown command — type `help`.")
+            session.advise_options(raw, n=3)     # free text = an instruction to steer
 
 
 def _print_suggestion(s):

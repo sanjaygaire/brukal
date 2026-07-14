@@ -52,9 +52,29 @@ STRATEGIST_SYSTEM = (
     "redirects '> < >>', chaining '; && ||', backticks or $(...), and no '-o file' "
     "output redirection — the cage runs a single program and shell metacharacters "
     "are rejected as injection.\n"
-    "- Gaining ACCESS is not enumeration: ssh, logging in, running an exploit, "
-    "spawning a shell, cracking a hash — put these under MANUAL for the operator, "
-    "never RUN. RUN is for read-only enumeration only."
+    "- Brukal HUNTS AUTONOMOUSLY end to end. Propose the next concrete action as a "
+    "RUN command, INCLUDING exploitation: credential attacks (hydra/ncrack/medusa), "
+    "sqlmap, known-CVE exploits, nuclei templates, impacket, catching data. The gate "
+    "runs safe steps automatically and PAUSES risky/irreversible ones for the "
+    "operator's one-tap sign-off, so don't hold back — propose the real attack that "
+    "moves toward the flag. Use MANUAL ONLY for steps the cage truly cannot do as a "
+    "single non-interactive command: an interactive password/shell prompt (use "
+    "`brukal shell` or the governed session instead), a GUI/browser step, or human "
+    "judgement."
+)
+
+
+STRATEGIST_OPTIONS_SYSTEM = (
+    STRATEGIST_SYSTEM
+    + "\n\nBut instead of ONE next step, give the operator a RANKED SHORT LIST of "
+    "the best 2-4 next moves, BEST FIRST — genuinely different approaches, not the "
+    "same command reworded. Separate each option with a line containing only '---', "
+    "and start each with a one-line label:\n"
+    "OPTION: <short label of the move>\n"
+    "PHASE: ...\nGOAL: ...\nREASONING: ...\nRUN: <command>   (or)   MANUAL: <step>\n"
+    "---\n"
+    "OPTION: <next label>\n...\n"
+    "Rank by what most likely moves us toward the flag right now."
 )
 
 
@@ -157,6 +177,36 @@ def _field(text: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def parse_options(text: str, default_target: str, limit: int = 4) -> list[Suggestion]:
+    """Parse a ranked list of next-move options. Tolerant of models that use
+    '---' separators, 'OPTION:' markers, both, or neither (then it's one option)."""
+    text = text or ""
+    if re.search(r"(?im)^\s*OPTION\b", text):
+        chunks = re.split(r"(?im)^\s*OPTION\b\s*[:).\-]?\s*", text)
+    else:
+        chunks = re.split(r"(?m)^\s*-{3,}\s*$", text)
+    out: list[Suggestion] = []
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        s = _parse(chunk, default_target)
+        if not (s.command or s.manual):
+            continue                              # a block with no actionable move
+        if not s.goal:                            # use the option's label line as the goal
+            first = chunk.splitlines()[0].strip(" :-*`")
+            if first and not re.match(r"(?i)(phase|goal|reasoning|run|manual)\s*:", first):
+                s.goal = first[:80]
+        out.append(s)
+        if len(out) >= limit:
+            break
+    if not out:                                   # model ignored the format -> single move
+        single = _parse(text, default_target)
+        if single.command or single.manual or single.rationale:
+            out = [single]
+    return out
+
+
 def _parse(text: str, default_target: str) -> Suggestion:
     text = text or ""
     phase = _field(text, "PHASE")
@@ -204,8 +254,7 @@ class StrategistAgent:
         text = self._llm.propose(STRATEGIST_PLAN_SYSTEM, "\n\n".join(parts), max_tokens=500)
         return parse_plan(text)
 
-    def advise(self, target: str, findings: str, notes: str = "",
-               reference: str = "", objectives: str = "", plan: str = "") -> Suggestion:
+    def _context_parts(self, target, findings, notes, reference, objectives, plan):
         parts = [f"TARGET: {target}"]
         if objectives:
             parts.append(f"OBJECTIVES the box is asking us to answer:\n{objectives}")
@@ -217,6 +266,21 @@ class StrategistAgent:
             parts.append(f"OPERATOR JUST SAID:\n{notes}")
         if reference:
             parts.append(reference)               # untrusted skill reference, labelled
+        return parts
+
+    def options(self, target: str, findings: str, notes: str = "", reference: str = "",
+                objectives: str = "", plan: str = "", n: int = 3) -> list[Suggestion]:
+        """Return a RANKED list of the best next moves (best first), so the operator
+        can pick one, tweak it, or give their own instruction instead."""
+        parts = self._context_parts(target, findings, notes, reference, objectives, plan)
+        parts.append(f"Give me up to {n} ranked next-move options in the format.")
+        text = self._llm.propose(STRATEGIST_OPTIONS_SYSTEM, "\n\n".join(parts),
+                                 max_tokens=1000)
+        return parse_options(text, target, limit=n)
+
+    def advise(self, target: str, findings: str, notes: str = "",
+               reference: str = "", objectives: str = "", plan: str = "") -> Suggestion:
+        parts = self._context_parts(target, findings, notes, reference, objectives, plan)
         parts.append("Give me the next step in the template.")
         text = self._llm.propose(STRATEGIST_SYSTEM, "\n\n".join(parts), max_tokens=800)
         return _parse(text, target)
