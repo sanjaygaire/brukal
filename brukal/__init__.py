@@ -15,7 +15,7 @@ from .session import GovernedSession, open_session, run_shell
 from .risk import RiskProfile, assess
 from .tasktree import TaskTree, Task, TaskStatus
 from .blackboard import Blackboard, render_scope
-from .orchestrator import Orchestrator
+from .orchestrator import Orchestrator, ParallelOrchestrator
 from .trust import TrustModel
 from .skills import SkillLibrary, Skill, install_pack
 from .lessons import LessonStore, Lesson
@@ -34,7 +34,7 @@ __all__ = [
     "GovernedSession", "open_session", "run_shell",
     "RiskProfile", "assess",
     "TaskTree", "Task", "TaskStatus",
-    "Blackboard", "render_scope", "Orchestrator",
+    "Blackboard", "render_scope", "Orchestrator", "ParallelOrchestrator",
     "TrustModel",
     "SkillLibrary", "Skill", "install_pack",
     "LessonStore", "Lesson",

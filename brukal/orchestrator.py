@@ -129,3 +129,92 @@ class Orchestrator:
         self._bb.save_task_tree(self._tree.to_markdown())
         self._emit("end", executed=executed, failed=failed, blocked=blocked)
         return {"executed": executed, "failed": failed, "blocked": blocked}
+
+
+class ParallelOrchestrator(Orchestrator):
+    """The main agent dispatches independent tasks to run CONCURRENTLY.
+
+    Only the parallelisable, I/O-bound work runs in worker threads: each agent's
+    `run_task` (the LLM call + `executor.run` → docker exec). Everything that
+    touches SHARED MUTABLE STATE — reading a task's scoped context, digesting the
+    outcome, updating the task tree, trust, and the blackboard — happens on the
+    MAIN thread as results arrive. So the only cross-thread state is the audit log
+    and the gate's rate window, both of which are internally locked. The five
+    invariants hold under concurrency exactly as they do sequentially: agents get
+    the Executor (never the cage), the gate is unchanged, and the hash-chained
+    audit stays valid because every append is atomic.
+    """
+
+    def __init__(self, task_tree, agents: dict, blackboard, trust=None,
+                 skills=None, observer=None, max_workers: int = 4):
+        super().__init__(task_tree, agents, blackboard, trust, skills, observer)
+        self._max_workers = max(1, int(max_workers))
+
+    def _prepare_context(self, task) -> str:
+        context = self._bb.read_context(task.agent, task.target)
+        if self._skills is not None:
+            ref = self._skills.context_for(f"{task.description} {context}"[:600])
+            if ref:
+                context = f"{ref}\n\n{context}" if context else ref
+        return context
+
+    def _apply_outcome(self, task, request, outcome) -> str:
+        """Main-thread only: digest + fold into tree/trust/blackboard. Returns the
+        resulting task status."""
+        digest = self._digest(task, request, outcome)
+        if self._trust is not None:
+            self._trust.record_outcome(
+                task.agent, request_valid=(request is not None),
+                decision=(outcome[0] if outcome else None), executed=digest["executed"])
+            digest["trust"] = round(self._trust.of(task.agent), 3)
+        self._bb.write_finding(task.agent, digest)
+        self._tree.record_finding(task, digest)
+        status = TaskStatus.DONE if digest["executed"] else TaskStatus.FAILED
+        self._tree.mark(task, status)
+        self._emit("turn", task=task, decision=(outcome[0] if outcome else None),
+                   result=(outcome[1] if outcome else None))
+        return status
+
+    def run(self) -> dict:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        executed = failed = blocked = 0
+        self._emit("start")
+
+        while True:
+            batch = [t for t in self._tree.all_tasks()
+                     if t.status == TaskStatus.PENDING]
+            if not batch:
+                break
+
+            jobs = {}
+            with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+                for task in batch:                      # dispatch (main thread)
+                    agent = self._agents.get(task.agent)
+                    if agent is None:
+                        self._tree.mark(task, TaskStatus.BLOCKED)
+                        blocked += 1
+                        self._emit("turn", task=task, decision=None, result=None)
+                        continue
+                    self._tree.mark(task, TaskStatus.IN_PROGRESS)
+                    self._emit("task_start", task=task)
+                    context = self._prepare_context(task)     # scoped read (main thread)
+                    # ONLY run_task runs in the worker — the LLM + executor.run.
+                    jobs[pool.submit(agent.run_task, task.description, context)] = task
+
+                for fut in as_completed(jobs):              # collect (main thread)
+                    task = jobs[fut]
+                    try:
+                        request, outcome = fut.result()
+                    except Exception:
+                        request, outcome = None, None
+                    status = self._apply_outcome(task, request, outcome)
+                    if status == TaskStatus.DONE:
+                        executed += 1
+                    else:
+                        failed += 1
+
+        self._bb.save_task_tree(self._tree.to_markdown())
+        self._emit("end", executed=executed, failed=failed, blocked=blocked)
+        return {"executed": executed, "failed": failed, "blocked": blocked,
+                "parallel": True, "workers": self._max_workers}

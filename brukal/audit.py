@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -33,6 +34,11 @@ class AuditLog:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._last_hash = self._recover_last_hash()
+        # The hash chain is inherently sequential: read prev -> compute -> write ->
+        # update must be ONE atomic step, or two concurrent agents chain onto the
+        # same prev_hash and corrupt the chain. This lock is what makes the audit
+        # log safe under the parallel orchestrator (invariant 5 holds concurrently).
+        self._lock = threading.Lock()
 
     def _recover_last_hash(self) -> str:
         """On startup, read the last line so new records chain onto it."""
@@ -53,20 +59,21 @@ class AuditLog:
         """
         if is_dataclass(data):
             data = asdict(data)
-        record = {
-            "ts": time.time(),
-            "kind": kind,          # "decision" | "execution" | "note"
-            "data": data,
-            "prev_hash": self._last_hash,
-        }
-        payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        record["entry_hash"] = _hash(self._last_hash, payload)
+        with self._lock:
+            record = {
+                "ts": time.time(),
+                "kind": kind,          # "decision" | "execution" | "note"
+                "data": data,
+                "prev_hash": self._last_hash,
+            }
+            payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            record["entry_hash"] = _hash(self._last_hash, payload)
 
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, separators=(",", ":")) + "\n")
 
-        self._last_hash = record["entry_hash"]
-        return self._last_hash
+            self._last_hash = record["entry_hash"]
+            return self._last_hash
 
     def verify(self) -> bool:
         """Re-walk the file and confirm the hash chain is intact.

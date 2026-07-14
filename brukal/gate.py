@@ -88,6 +88,8 @@ class Gate:
         # None means every agent is fully trusted (T_i = 1.0), i.e. unchanged.
         self._trust = trust
         self._recent_allows: list[float] = []
+        import threading
+        self._rate_lock = threading.Lock()   # guards the rate window under parallelism
 
     # -- helpers ------------------------------------------------------------
 
@@ -97,8 +99,13 @@ class Gate:
     def _rate_ok(self) -> bool:
         """Sliding 60-second window. Fail-closed: at the limit, deny."""
         now = time.time()
-        self._recent_allows = [t for t in self._recent_allows if now - t < 60.0]
-        return len(self._recent_allows) < self.scope.rate_limit_per_min
+        with self._rate_lock:
+            self._recent_allows = [t for t in self._recent_allows if now - t < 60.0]
+            return len(self._recent_allows) < self.scope.rate_limit_per_min
+
+    def _note_allow(self) -> None:
+        with self._rate_lock:
+            self._recent_allows.append(time.time())
 
     # -- interactive-session gate -------------------------------------------
 
@@ -134,7 +141,7 @@ class Gate:
         if not self._rate_ok():
             return self._deny(line, target, agent, "rate limit exceeded",
                               "session:rate")
-        self._recent_allows.append(time.time())
+        self._note_allow()
 
         if _DESTRUCTIVE_RE.search(text):
             return Decision("ESCALATE", line, target, agent,
@@ -221,7 +228,7 @@ class Gate:
         # ALLOW and ESCALATE may both end in execution, so reserve a rate slot
         # for either (conservative: an escalation the human later declines has
         # still spent budget — fail toward less traffic, not more).
-        self._recent_allows.append(time.time())
+        self._note_allow()
 
         if profile.decision == "ESCALATE":
             return Decision("ESCALATE", command, target, agent,
