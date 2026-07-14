@@ -505,6 +505,12 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     print(_banner())                       # the welcome banner shows on every call
     if not getattr(args, "func", None):
+        # Bare `brukal` -> the guided step-by-step wizard (target -> brain -> tool
+        # policy -> auto/manual -> hunt). Non-interactive (piped) falls back to help.
+        import sys as _sys
+        if _sys.stdin.isatty():
+            from brukal.assist import run_wizard
+            return run_wizard()
         print(_quickstart())
         return 0
     return args.func(args)

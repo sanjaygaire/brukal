@@ -474,6 +474,110 @@ def _parse_saved_plan(text: str) -> list:
     return steps
 
 
+def _show_tool_policy(console, vhost=""):
+    """Show which tools run automatically vs which pause for a human — the broad
+    Kali policy: safe enumeration auto-runs, attack/irreversible/unknown ask you."""
+    from .risk import _ATTACK_TOOLS, _READ_ONLY_TOOLS
+    auto = ", ".join(sorted(_READ_ONLY_TOOLS)[:26]) + " …"
+    human = ", ".join(sorted(_ATTACK_TOOLS)[:24]) + " …"
+    if console is not None:
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        t = Table.grid(padding=(0, 2))
+        t.add_column(); t.add_column()
+        t.add_row(Text("✅ AUTO-RUN", style="bold green"),
+                  Text("safe read-only enumeration\n" + auto, style="grey70"))
+        t.add_row(Text("🔒 ASKS YOU", style="bold yellow"),
+                  Text("attack / irreversible / unknown tools — you approve (y/N)\n" + human,
+                       style="grey70"))
+        t.add_row(Text("🚫 DENIED", style="bold red"),
+                  Text("anything outside the authorised scope — always, by construction",
+                       style="grey70"))
+        console.print(Panel(t, title="[bold]tool policy — broad Kali mode[/]",
+                            border_style="cyan"))
+    else:
+        print("  AUTO-RUN (safe enum):", auto)
+        print("  ASKS YOU (attack/unknown):", human)
+        print("  DENIED: anything out of scope")
+
+
+def run_wizard(fake: bool = False, container: str = "brukal-kali") -> int:
+    """The guided `brukal` experience: ask the target, pick the brain, show the
+    tool policy + loaded playbooks, choose auto/manual, then hunt — all governed."""
+    import ipaddress
+    import json
+
+    try:
+        from rich.console import Console
+        console = Console()
+    except ImportError:
+        console = None
+
+    _emit(console, "\n  Let's set up a governed hunt — a few quick questions.\n",
+          "\n  [bold cyan]Let's set up a governed hunt[/] — a few quick questions.\n")
+
+    # 1) target
+    target = _ask(console, "  1) Target IP you are AUTHORISED to test").strip()
+    if not target:
+        print("  no target — bye."); return 1
+    try:
+        net = ipaddress.ip_network(f"{target}/32", strict=False)
+    except ValueError:
+        print(f"  '{target}' is not a valid IP."); return 1
+
+    # 2) optional web vhost (HTB boxes often route by hostname)
+    vhost = _ask(console, "  2) Known web vhost, e.g. nexus.htb (blank to skip)", "").strip()
+
+    # 3) the brain — all options (Claude / Ollama / Groq / OpenAI-compatible)
+    _emit(console, "  3) Choose the brain:")
+    provider, model, base_url = choose_brain(console)
+
+    # build a broad-mode scope for just this host (all tools; dangerous -> human)
+    Path("runs").mkdir(parents=True, exist_ok=True)
+    scope_path = "runs/wizard_scope.json"
+    Path(scope_path).write_text(json.dumps({
+        "engagement": f"brukal-hunt-{target}",
+        "authorized_cidrs": [str(net)],
+        "authorized_hosts": [vhost.lower()] if vhost else [],
+        "allowlisted_tools": "all",
+        "rate_limit_per_min": 60,
+    }, indent=2), encoding="utf-8")
+
+    # 4) show the tool policy (auto vs human) + the skill library
+    _emit(console, "\n  4) Tool policy for this hunt:")
+    _show_tool_policy(console, vhost)
+    try:
+        from .skills import SkillLibrary
+        lib = SkillLibrary()
+        hits = lib.retrieve(vhost or target, 3)
+        rel = ("; relevant: " + ", ".join(s.name for s in hits)) if hits else ""
+        _emit(console, f"  📚 {len(lib)} red-team playbooks loaded{rel} "
+                       f"(used automatically while hunting).")
+    except Exception:
+        pass
+
+    # 5) auto or manual
+    _emit(console, "\n  5) How should Brukal work?")
+    auto = choose_run_mode(console)
+
+    if not fake and not _confirm(console, f"\n  Ready. Confirm you are AUTHORISED to "
+                                          f"test {target}?"):
+        print("  aborted — authorisation not confirmed."); return 1
+
+    _emit(console, f"\n  🚀 hunting {target} — {'AUTO' if auto else 'MANUAL'} mode. "
+                   f"Dangerous steps will pause for your OK.\n",
+          f"\n  [bold green]🚀 hunting {target}[/] — {'AUTO' if auto else 'MANUAL'} mode. "
+          f"Dangerous steps will pause for your OK.\n")
+
+    common = dict(yes_authorised=True, scope_path=scope_path, fake=fake,
+                  container=container, provider=provider, model=model, base_url=base_url,
+                  vault_path="runs/vault")
+    if auto:
+        return run_auto(target, **common)
+    return run_solve(target, auto=False, **common)
+
+
 def _auto_approver(decision) -> bool:
     """Auto-mode approver: keep the hunt moving on REVERSIBLE escalations (an
     aggressive-but-read-only scan like `nmap -T4 --top-ports`), but PAUSE on
@@ -956,7 +1060,7 @@ def _ask(console, prompt: str, default: str = "") -> str:
             from rich.prompt import Prompt
             return Prompt.ask(prompt, default=default)
         return input(f"{prompt} ").strip() or default
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return default
 
 
@@ -1179,7 +1283,8 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
 
 def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
               audit_path="runs/audit.jsonl", vault_path="runs/vault",
-              container="brukal-kali", model=None, provider=None, base_url=None) -> int:
+              container="brukal-kali", model=None, provider=None, base_url=None,
+              auto=None) -> int:
     # A rich console (menu UI + spinner-aware approver), or plain fallback.
     holder: dict = {"status": None}
     try:
@@ -1198,7 +1303,8 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
     session, audit, target, cage = prep
 
     # How to work the plan — manual (approve each step) or auto (run safe steps).
-    auto = choose_run_mode(console)
+    if auto is None:
+        auto = choose_run_mode(console)
 
     try:
         if console is not None:

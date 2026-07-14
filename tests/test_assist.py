@@ -297,6 +297,17 @@ def test_session_resumes_prior_findings_from_vault():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_wizard_is_noninteractive_safe():
+    # piped/non-tty: the wizard must not hang — it gets an empty target and exits.
+    from brukal.assist import run_wizard
+    assert run_wizard(fake=True) == 1
+
+
+def test_tool_policy_panel_renders_without_console():
+    from brukal.assist import _show_tool_policy
+    _show_tool_policy(None)                 # plain-text branch must not raise
+
+
 def test_pickers_are_noninteractive_safe():
     # Under pytest stdin is not a tty: the brain picker falls back to defaults and
     # the mode picker to MANUAL — neither may block waiting for input.
