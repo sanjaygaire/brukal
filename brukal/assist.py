@@ -416,48 +416,24 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
         session.last = None   # regenerate advice from the new findings
 
     while True:
-        if session.last is None:
-            with con.status("[cyan]companion thinking…", spinner="dots"):
-                session.advise()
-        s = session.last
-
-        # objectives tracker
+        # objectives tracker + the plan, shown every turn
         if session.objectives:
             ot = Text()
             for o in session.objectives:
                 ot.append("? ", style="bold yellow"); ot.append(o + "\n")
             con.print(Panel(ot, title="objectives", border_style="yellow"))
-
-        # the plan (what we're trying to do and how) — shown every turn
         show_plan()
 
-        # the companion's reasoning: phase + goal + why
-        head = Text()
-        if s.phase:
-            pc = _PHASE_COLOUR.get(s.phase.lower(), "cyan")
-            head.append(f"[{s.phase.upper()}] ", style=f"bold {pc}")
-        if s.goal:
-            head.append(s.goal, style="bold white")
-        if head.plain:
-            head.append("\n\n")
-        head.append(s.rationale or "—", style="grey85")
-        if s.command:
-            head.append(f"\n\n▶ suggested command\n  {s.command}", style="green")
-        if s.manual:
-            head.append(f"\n\n✋ you do this (manual)\n  {s.manual}", style="yellow")
-        con.print(Panel(head, title="companion", border_style="cyan"))
-
-        if session.highlights:
-            _show_highlights(con, Panel, Text, session.highlights[-8:], "what we know so far")
-
-        # AUTO mode: run the suggested (safe) command without asking. Risky steps
-        # still hit the gate's escalation prompt; a manual/exploitation step, an
-        # empty suggestion, the step cap, or Ctrl-C hands control back to you.
+        # AUTO: take the single top move itself, pausing on manual/escalation/cap.
         if flags["auto"]:
+            if session.last is None:
+                with con.status("[cyan]companion thinking…", spinner="dots"):
+                    session.advise()
+            s = session.last
             if s.command and auto_steps < _AUTO_CAP:
-                con.print("[grey62]▶ auto — running the safe next step (Ctrl-C to pause)…[/]")
+                con.print(f"[grey62]▶ auto — running:[/] {s.command} [grey62](Ctrl-C to pause)[/]")
                 try:
-                    run_and_show(s.command)
+                    run_and_show(s.command); session.option_list = []
                     auto_steps += 1
                     continue
                 except KeyboardInterrupt:
@@ -465,62 +441,84 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
                     flags["auto"] = False
             else:
                 why = ("hit the auto-step limit" if auto_steps >= _AUTO_CAP
-                       else "the next step is yours (manual/exploitation)" if s.manual
+                       else "the next step is yours (manual)" if s.manual
                        else "no safe command to run")
                 con.print(f"[yellow]⏸ auto paused — {why}. Over to you.[/]")
                 flags["auto"] = False
 
-        options = [
-            ("1", f"Run suggested:  {s.command}" if s.command else "Run a command"),
-            ("2", "Run a different command"),
-            ("3", "Ask the companion something"),
-            ("r", "Re-plan the shortest path from what we know"),
-            ("a", f"Switch to {'MANUAL' if flags['auto'] else 'AUTO'} mode"),
-            ("4", "Add a note / paste tool output"),
-            ("5", "Record a manual step you did"),
-            ("6", "Add an objective the box is asking"),
-            ("7", "Search the skill playbooks"),
-            ("8", "Verify the audit chain"),
-            ("9", "Quit"),
-        ]
+        # MANUAL: present a RANKED list of moves — pick one, run your own, or steer.
+        if not session.option_list:
+            with con.status("[cyan]companion weighing the best moves…", spinner="dots"):
+                session.advise_options(n=3)
+        opts = session.option_list
+
+        body = Text()
+        for i, o in enumerate(opts, 1):
+            pc = _PHASE_COLOUR.get((o.phase or "").lower(), "cyan")
+            body.append(f"[{i}] ", style="bold cyan")
+            if o.phase:
+                body.append(f"{o.phase.upper()}  ", style=f"bold {pc}")
+            body.append(o.goal or (o.rationale or "")[:60] or "next move", style="white")
+            if o.command:
+                body.append(f"\n     RUN: {o.command}", style="green")
+            elif o.manual:
+                body.append(f"\n     MANUAL: {o.manual}", style="yellow")
+            if i < len(opts):
+                body.append("\n")
+        con.print(Panel(body, title="[bold]next moves — pick a number, or type your own[/]",
+                        border_style="cyan"))
+        if session.highlights:
+            _show_highlights(con, Panel, Text, session.highlights[-8:], "what we know so far")
+
+        actions = [("c", "type your own command (gated)"),
+                   ("i", "give an instruction / re-plan the options"),
+                   ("a", f"switch to {'MANUAL' if flags['auto'] else 'AUTO'} mode"),
+                   ("t", "add a note"), ("m", "record a manual step you did"),
+                   ("o", "add an objective"), ("k", "search skill playbooks"),
+                   ("v", "verify audit chain"), ("q", "quit")]
         grid = Table.grid(padding=(0, 2))
-        for key, label in options:
+        for key, label in actions:
             grid.add_row(Text(f"[{key}]", style="bold cyan"), Text(label))
         con.print(grid)
 
+        nums = [str(i) for i in range(1, len(opts) + 1)]
         try:
-            choice = Prompt.ask("  choose", choices=[k for k, _ in options], default="1")
+            choice = Prompt.ask("  pick a number or action",
+                                choices=nums + [k for k, _ in actions], default="1")
         except (EOFError, KeyboardInterrupt):
             break
-        if choice == "1":
-            run_and_show(s.command or Prompt.ask("  command"))
-        elif choice == "2":
-            run_and_show(Prompt.ask("  command"))
-        elif choice == "3":
-            q = Prompt.ask("  ask / focus (e.g. 'how do I answer objective 2?')", default="")
-            with con.status("[cyan]companion thinking…", spinner="dots"):
-                session.advise(q)
-        elif choice == "r":
-            with con.status("[cyan]re-planning the route…", spinner="dots"):
-                session.make_plan()
-            session.last = None
+
+        if choice in nums:
+            opt = opts[int(choice) - 1]
+            if opt.command:
+                run_and_show(opt.command)
+            elif opt.manual:
+                session.manual(opt.manual)
+                con.print(f"  [yellow]recorded manual:[/] {opt.manual}")
+            session.option_list = []
+        elif choice == "c":
+            run_and_show(Prompt.ask("  your command")); session.option_list = []
+        elif choice == "i":
+            instr = Prompt.ask("  your instruction (what should we try / focus on?)",
+                               default="")
+            with con.status("[cyan]re-planning the options…", spinner="dots"):
+                session.advise_options(instr, n=3)
         elif choice == "a":
-            flags["auto"] = not flags["auto"]
-            auto_steps = 0
+            flags["auto"] = not flags["auto"]; auto_steps = 0
             con.print(f"  mode → [bold]{'AUTO' if flags['auto'] else 'MANUAL'}[/]")
-        elif choice == "4":
-            session.note(Prompt.ask("  note / paste output")); session.last = None
-        elif choice == "5":
-            session.manual(Prompt.ask("  what you did")); session.last = None
-        elif choice == "6":
-            session.add_objective(Prompt.ask("  objective")); session.last = None
-        elif choice == "7":
+        elif choice == "t":
+            session.note(Prompt.ask("  note / paste output")); session.option_list = []
+        elif choice == "m":
+            session.manual(Prompt.ask("  what you did")); session.option_list = []
+        elif choice == "o":
+            session.add_objective(Prompt.ask("  objective")); session.option_list = []
+        elif choice == "k":
             for sk in (session.skills.retrieve(Prompt.ask("  topic"), 4)
                        if session.skills else []):
                 con.print(f"    [magenta]\\[{sk.category}][/] {sk.name}")
-        elif choice == "8":
+        elif choice == "v":
             con.print(f"  audit chain intact: [green]{audit.verify()}[/]")
-        elif choice == "9":
+        elif choice == "q":
             break
 
 
