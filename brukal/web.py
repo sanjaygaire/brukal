@@ -241,6 +241,55 @@ class DockerHttpWebCage:
 # the one door for web
 # --------------------------------------------------------------------------- #
 
+def parse_web_action(text: str) -> "WebAction | None":
+    """Parse a strategist `WEB:` line into a WebAction. Grammar (verb first):
+      navigate|get|render <url>      · request <METHOD> <url> [body]
+      fill <selector> <payload...>   · click <selector>   · eval <js...>
+      screenshot <url>               · intercept <url-pattern>
+    A bare http(s) URL is treated as `get`. Returns None if unparseable."""
+    toks = (text or "").strip().split()
+    if not toks:
+        return None
+    verb = toks[0].lower()
+    rest = toks[1:]
+    if verb in ("navigate", "get", "render", "screenshot", "intercept"):
+        return WebAction(kind={"render": "get"}.get(verb, verb), url=rest[0] if rest else "")
+    if verb == "eval":
+        return WebAction(kind="eval", expression=" ".join(rest))
+    if verb in ("click", "fill"):
+        return WebAction(kind=verb, selector=rest[0] if rest else "",
+                         value=" ".join(rest[1:]))
+    if verb == "request":
+        method = rest[0].upper() if rest else "GET"
+        url = rest[1] if len(rest) > 1 else ""
+        return WebAction(kind="request", url=url, method=method, body=" ".join(rest[2:]))
+    if verb.startswith("http://") or verb.startswith("https://"):
+        return WebAction(kind="get", url=verb)
+    return None
+
+
+class CompositeWebCage:
+    """One cage that routes each action to the backend that can do it: page
+    rendering (navigate/get/screenshot) to the Chrome cage, crafted requests to
+    the HTTP cage. Live interactive actions (click/fill/eval/intercept) need the
+    CDP backend — until that is wired live they return an explanatory note rather
+    than crashing the hunt."""
+
+    def __init__(self, render_cage, request_cage):
+        self._render = render_cage
+        self._request = request_cage
+
+    def run(self, action: WebAction) -> WebResult:
+        k = (action.kind or "").lower()
+        if k in ("navigate", "get", "screenshot"):
+            return self._render.run(action)
+        if k == "request":
+            return self._request.run(action)
+        return WebResult(url=action.url,
+                         note=f"'{k}' needs the live CDP browser (interactive) — "
+                              f"not wired live yet; use navigate/get/request/screenshot")
+
+
 def ensure_cage_vhosts(scope: Scope, container: str = "brukal-kali") -> list[str]:
     """Map the scope's authorised hostnames to the target IP inside the cage's
     /etc/hosts, so a vhost like `nexus.htb` actually resolves for cage-run web

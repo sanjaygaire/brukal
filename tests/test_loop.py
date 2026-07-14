@@ -153,9 +153,11 @@ def test_loop_stops_when_no_command_and_no_manual():
 
 
 def test_loop_respects_the_step_budget():
-    # A model that always proposes a fresh, safe command must still be bounded.
+    # A model that always proposes a fresh, DISTINCT safe command must still be
+    # bounded by the step budget (distinct URLs -> distinct signatures, so the
+    # near-duplicate guard doesn't fire first).
     responses = ["1. [recon] scan"] + [
-        _adv(f"scan {i}", run=f"nmap -sV -p {i} 10.10.10.5") for i in range(50)]
+        _adv(f"enum {i}", run=f"curl http://10.10.10.5/path{i}") for i in range(50)]
     loop, sess, kali, tmp = _loop(responses, max_steps=3)
     try:
         sess.make_plan()
@@ -164,6 +166,31 @@ def test_loop_respects_the_step_budget():
         assert result.executed == 3 and len(kali.executed) == 3
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_loop_stops_on_near_duplicate_variants():
+    # trivially-different scans of the SAME tool+target (the Nexus cycling) must be
+    # caught even though no two commands are identical.
+    loop, sess, kali, tmp = _loop([
+        "1. [recon] scan",
+        _adv("scan", run="nmap -sV -p 80 10.10.10.5"),
+        _adv("scan again", run="nmap -sVC -p 80 10.10.10.5"),
+        _adv("and again", run="nmap -sV -p 443 10.10.10.5"),
+    ], max_similar=2)
+    try:
+        sess.make_plan()
+        result = loop.run()
+        assert result.stop_reason == "stalled"
+        assert len(kali.executed) == 2          # 2 near-dups ran, the 3rd was stopped
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_sig_collapses_near_duplicates():
+    from brukal.loop import _sig
+    assert _sig("nmap -sV -p 80 10.10.10.5") == _sig("nmap -sVC -p 443 10.10.10.5")
+    assert _sig("nmap 10.10.10.5") != _sig("gobuster dir -u http://10.10.10.5")
+    assert _sig("curl http://x/a") != _sig("curl http://x/b")   # path distinguishes
 
 
 def test_norm_cmd_collapses_whitespace():

@@ -30,8 +30,18 @@ STRATEGIST_SYSTEM = (
     "step. Reference specific ports/services/findings. If an objective can now be "
     "answered, say so.>\n"
     "RUN: <one recon/enumeration command Brukal can run>   (optional)\n"
+    "WEB: <a governed browser action for web-app testing>   (optional)\n"
     "MANUAL: <a step the operator does themselves — exploitation, a shell, cracking "
     "a hash, submitting a flag>   (optional)\n\n"
+    "For WEB-APP work prefer a WEB action over a shell tool — it goes through the "
+    "same gate but renders JS and can tamper requests. WEB grammar (verb first):\n"
+    "  WEB: get <url>            fetch a URL (crafted request)\n"
+    "  WEB: render <url>         load with a REAL headless browser (JS executed)\n"
+    "  WEB: request <METHOD> <url> <body>   craft/tamper an HTTP request\n"
+    "  WEB: fill <css-selector> <payload>   type a payload into a field\n"
+    "  WEB: click <css-selector> · WEB: screenshot <url> · WEB: intercept <url>\n"
+    "Payloads (SQLi/XSS) go straight in — that is the attack; the gate only checks "
+    "the host is in scope.\n\n"
     "Give RUN for safe in-scope enumeration; give MANUAL for intrusive/interactive "
     "work. Prefer ONE clear next step. A separate gate still rules on any RUN.\n\n"
     "TACTICS — you run on a time budget, and any command that takes too long is "
@@ -108,11 +118,12 @@ class PlanStep:
 @dataclass
 class Suggestion:
     rationale: str            # the REASONING text (companion voice)
-    command: str | None       # a gated command Brukal can run, if any
+    command: str | None       # a gated shell command Brukal can run, if any
     target: str | None        # target for that command
     manual: str | None        # a manual step for the operator, if any
     phase: str = ""           # recon / enumeration / exploitation / ...
     goal: str = ""            # the concrete objective of this step
+    web: str | None = None    # a gated WEB action (navigate/get/request/fill/...), if any
 
 
 _PLAN_LINE = re.compile(r"^\s*\d+[.)]\s*(?:\[(?P<phase>[^\]]+)\]\s*)?(?P<text>.+?)\s*$")
@@ -214,6 +225,13 @@ def _parse(text: str, default_target: str) -> Suggestion:
     reasoning = _field(text, "REASONING")
     command = _field(text, "RUN") or None
     manual = _field(text, "MANUAL") or None
+    web = _field(text, "WEB") or None
+
+    if web:
+        web = web.strip().strip("`\"'").strip()
+        if " (" in web:
+            web = web[:web.index(" (")].strip()
+        web = web.strip("`\"'").strip() or None
 
     if command:                                   # strip a trailing "(why)" note
         # Peel wrapping whitespace AND quotes/backticks in any order — models often
@@ -229,12 +247,12 @@ def _parse(text: str, default_target: str) -> Suggestion:
 
     # Fall back to the whole reply as rationale if the model ignored the template.
     if not reasoning:
-        reasoning = re.sub(r"^(PHASE|GOAL|RUN|MANUAL)\s*:.*$", "", text,
+        reasoning = re.sub(r"^(PHASE|GOAL|RUN|MANUAL|WEB)\s*:.*$", "", text,
                            flags=re.M | re.I).strip() or text.strip()
 
     return Suggestion(rationale=reasoning, command=command,
                       target=default_target if command else None, manual=manual,
-                      phase=phase, goal=goal)
+                      phase=phase, goal=goal, web=web)
 
 
 class StrategistAgent:

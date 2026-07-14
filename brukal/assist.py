@@ -91,10 +91,11 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
 
 class AssistSession:
     def __init__(self, target, executor, strategist, skills=None, blackboard=None,
-                 lessons=None):
+                 lessons=None, browser=None):
         self.target = target
         self.executor = executor
         self.strategist = strategist
+        self.browser = browser         # optional GovernedBrowser for WEB actions
         self.skills = skills
         self.blackboard = blackboard   # Obsidian-backed persistence (optional)
         self.lessons = lessons         # cross-session LessonStore (optional)
@@ -247,6 +248,39 @@ class AssistSession:
         if self.lessons is not None:
             tech = sorted({m.lower() for _t, ln in new_hl for m in _TECH_HINTS.findall(ln)})
             self.lessons.learn_from_outcome(command, decision, result, tech)
+        return decision, result, new_hl
+
+    def run_web(self, web_text: str):
+        """Run a WEB action through the GOVERNED BROWSER (same gate + audit as a
+        shell command, but it renders JS and can tamper requests). Records the
+        outcome and learns from it exactly like `run`. Returns (decision, result,
+        new_highlights)."""
+        from .web import parse_web_action
+        action = parse_web_action(web_text)
+        if action is None or self.browser is None:
+            why = "no browser wired" if self.browser is None else "unparseable web action"
+            self.notes.append(f"[web] {web_text}\nNOT RUN — {why}")
+            return None, None, []
+        decision, result = self.browser.run(action, agent="strategist")
+        new_hl: list[tuple[str, str]] = []
+        if result is not None:
+            body = (result.body or "").strip()
+            new_hl = highlight_findings(body)
+            self.highlights.extend(h for h in new_hl if h not in self.highlights)
+            head = f"{decision.verdict}: {result.note or ''} status={result.status}".strip()
+            self.notes.append(f"[web] {action.describe()}\n{head}\n{body[:600]}")
+            summary = ("; ".join(f"{t}: {l}" for t, l in new_hl[:6])
+                       or f"{head} ({len(body)}B)")
+            self._persist_finding("web", action.describe(), decision.verdict, summary, new_hl)
+            self._advance_plan()
+        else:
+            self.notes.append(f"[web] {action.describe()}\nNOT RUN — {decision.verdict} "
+                              f"({decision.layer}: {decision.reason})")
+            self._persist_finding("web-blocked", action.describe(), decision.verdict,
+                                  f"{decision.layer}: {decision.reason}", [])
+        if self.lessons is not None:
+            tech = sorted({m.lower() for _t, ln in new_hl for m in _TECH_HINTS.findall(ln)})
+            self.lessons.learn_from_outcome(action.describe(), decision, result, tech)
         return decision, result, new_hl
 
     def note(self, text: str):
@@ -568,6 +602,8 @@ def _print_options(opts):
         print(f"    [{i}] {tag}{label}")
         if o.command:
             print(f"         RUN: {o.command}")
+        elif o.web:
+            print(f"         WEB: {o.web}")
         elif o.manual:
             print(f"         MANUAL (you): {o.manual}")
     print("    [type a command to run it · type an instruction to re-plan · help · quit]")
@@ -579,9 +615,12 @@ def _report(d, r):
 
 
 def _take_option(session, opt):
-    """Execute a chosen option: a RUN goes through the gate; a MANUAL is recorded."""
+    """Execute a chosen option: a RUN/WEB goes through the gate; a MANUAL is recorded."""
     if opt.command:
         d, r, _ = session.run(opt.command)
+        _report(d, r)
+    elif opt.web:
+        d, r, _ = session.run_web(opt.web)
         _report(d, r)
     elif opt.manual:
         session.manual(opt.manual)
@@ -895,8 +934,23 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     # Brukal carries what it learned from one box to the next.
     from .lessons import LessonStore
     lessons = LessonStore(Path(vault_path) / "lessons.jsonl")
+
+    # A GOVERNED BROWSER for WEB actions (same scope gate + audit). Fake cage in
+    # test mode; else render via headless Chromium + craft requests, both in-cage.
+    from .web import GovernedBrowser
+    if fake:
+        from .web import FakeWebCage
+        web_cage = FakeWebCage()
+    else:
+        from .chrome import DockerChromeCage
+        from .web import CompositeWebCage, DockerHttpWebCage, ensure_cage_vhosts
+        ensure_cage_vhosts(session_scope, container)
+        web_cage = CompositeWebCage(DockerChromeCage(container=container),
+                                    DockerHttpWebCage(container=container))
+    browser = GovernedBrowser(session_scope, web_cage, audit)
+
     session = AssistSession(target, executor, strategist, skills=SkillLibrary(),
-                            blackboard=blackboard, lessons=lessons)
+                            blackboard=blackboard, lessons=lessons, browser=browser)
     cage = "fake" if fake else "docker:" + container
     return session, audit, target, cage
 

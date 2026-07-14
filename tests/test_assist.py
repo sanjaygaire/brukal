@@ -162,6 +162,35 @@ def test_timeout_produces_learnable_feedback_note():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_strategist_parses_web_field():
+    llm = StubLLM("PHASE: exploitation\nGOAL: tamper the login\n"
+                  "REASONING: try SQLi.\nWEB: request POST http://nexus.htb/login u=admin")
+    s = StrategistAgent(llm).advise("nexus.htb", "login page found")
+    assert s.web == "request POST http://nexus.htb/login u=admin"
+    assert s.command is None
+
+
+def test_run_web_routes_through_the_governed_browser():
+    from brukal import FakeWebCage, GovernedBrowser
+    tmp = tempfile.mkdtemp()
+    try:
+        scope = load_scope(SCOPE).with_host("nexus.htb")
+        audit = AuditLog(Path(tmp) / "a.jsonl")
+        ex = Executor(Gate(scope), FakeKali(), audit)
+        cage = FakeWebCage(responses={"nexus.htb/flag": "HTB{web_flag}"})
+        browser = GovernedBrowser(scope, cage, audit)
+        sess = AssistSession("nexus.htb", ex, StrategistAgent(StubLLM("")), browser=browser)
+
+        d, r, hl = sess.run_web("get http://nexus.htb/flag")
+        assert d.verdict == "ALLOW" and r is not None and "HTB{" in r.body
+        # an out-of-scope WEB action is denied and never reaches the cage
+        d2, r2, _ = sess.run_web("get http://evil.com/")
+        assert d2.verdict == "DENY" and r2 is None
+        assert len(cage.actions) == 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_parse_plan_reads_numbered_steps_with_phase():
     from brukal.agents.strategist import parse_plan
     steps = parse_plan("Here's the route:\n"

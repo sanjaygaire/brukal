@@ -47,6 +47,20 @@ def _norm_cmd(command: str | None) -> str:
     return " ".join((command or "").split())
 
 
+def _sig(command: str | None) -> tuple:
+    """A coarse signature (tool + the host/URL/path-ish tokens, flags dropped) so
+    near-duplicate commands — `nmap -sV -p 80 X` vs `nmap -sVC -p 80 X` — collapse to
+    the same key. This is what stops a weak model cycling on trivially-different
+    scans of the same target (observed live on Nexus)."""
+    toks = _norm_cmd(command).split()
+    if not toks:
+        return ("", ())
+    tool = toks[0].lower()
+    targets = tuple(sorted(t for t in toks[1:]
+                           if ("." in t or "/" in t) and not t.startswith("-")))
+    return (tool, targets)
+
+
 @dataclass
 class LoopStep:
     """One turn of the loop: what the model proposed and what really happened."""
@@ -95,13 +109,15 @@ class GroundedLoop:
     """
 
     def __init__(self, session, *, max_steps: int = 20, max_stalls: int = 2,
-                 observer=None):
+                 max_similar: int = 2, observer=None):
         self.session = session
         self.max_steps = max_steps
         self.max_stalls = max_stalls
+        self.max_similar = max_similar        # how many near-duplicate moves to tolerate
         self._observer = observer
         self.steps: list[LoopStep] = []
         self._ran: set[str] = set()           # commands that have really executed
+        self._sig_counts: dict = {}           # near-duplicate signature -> count
         self._stalls = 0                      # consecutive blocked proposals
 
     def _emit(self, kind: str, **payload) -> None:
@@ -123,51 +139,61 @@ class GroundedLoop:
         while len(self.steps) < self.max_steps:
             suggestion = self.session.advise()
 
-            # No command to run: either the operator's move (MANUAL) or nothing
-            # left to safely automate. Either way, hand back — cleanly.
-            if not suggestion.command:
+            # The next action is a shell RUN or a WEB action (both governed). No
+            # action -> either the operator's move (MANUAL) or nothing left to do.
+            is_web = bool(suggestion.web and not suggestion.command)
+            action = suggestion.command or suggestion.web
+            if not action:
                 if suggestion.manual:
                     return self._finish("manual", suggestion.manual)
                 return self._finish("done", suggestion.goal or
                                     (suggestion.rationale or "").strip()[:160])
 
-            # Grounding guard: the model re-proposed something already executed.
-            # Real output didn't move it forward -> it is spinning, so stop.
-            if _norm_cmd(suggestion.command) in self._ran:
-                return self._finish(
-                    "stalled", f"re-proposed a command already run: {suggestion.command}")
+            # Grounding guard: exact repeat of something already executed = spinning.
+            if _norm_cmd(action) in self._ran:
+                return self._finish("stalled", f"re-proposed a command already run: {action}")
+            # Near-duplicate guard: too many trivially-different variants of the same
+            # tool+target (the Nexus cycling) -> stop instead of burning the budget.
+            sig = _sig(action)
+            if self._sig_counts.get(sig, 0) >= self.max_similar:
+                return self._finish("stalled",
+                                    f"cycling on near-duplicate `{sig[0]}` moves against the same target")
 
             # The one door: propose -> gate -> (maybe) run -> observe real output.
-            decision, result, highlights = self.session.run(suggestion.command)
+            if is_web:
+                decision, result, highlights = self.session.run_web(action)
+            else:
+                decision, result, highlights = self.session.run(action)
             executed = result is not None
+            verdict = decision.verdict if decision is not None else "NOOP"
             step = LoopStep(
                 index=len(self.steps) + 1,
                 phase=suggestion.phase, goal=suggestion.goal,
-                rationale=suggestion.rationale, command=suggestion.command,
-                verdict=decision.verdict, executed=executed,
-                summary=self._summarise(decision, result, highlights),
+                rationale=suggestion.rationale, command=action,
+                verdict=verdict, executed=executed,
+                summary=self._summarise(decision, result, highlights) if decision
+                else "web action could not run",
                 highlights=list(highlights),
             )
             self.steps.append(step)
             self._emit("step", step=step)
 
             if executed:
-                self._ran.add(_norm_cmd(suggestion.command))
+                self._ran.add(_norm_cmd(action))
+                self._sig_counts[sig] = self._sig_counts.get(sig, 0) + 1
                 self._stalls = 0
                 continue
 
-            # Not executed. An ESCALATE needs human sign-off — the loop never
-            # self-approves, so it pauses here. A DENY (scope/risk) is fed back to
-            # the model (it's now in the notes) to try a different move, but a run
-            # of blocks means it's stuck.
-            if decision.verdict == "ESCALATE":
-                return self._finish(
-                    "escalation", f"needs human sign-off: {suggestion.command}")
+            # Not executed. ESCALATE needs human sign-off — the loop never
+            # self-approves, so it pauses. A DENY/NOOP is fed back; a run of blocks
+            # means it's stuck.
+            if verdict == "ESCALATE":
+                return self._finish("escalation", f"needs human sign-off: {action}")
             self._stalls += 1
             if self._stalls > self.max_stalls:
-                return self._finish(
-                    "stalled",
-                    f"{self._stalls} blocked proposals in a row (last: {decision.reason})")
+                reason = decision.reason if decision is not None else "web action could not run"
+                return self._finish("stalled",
+                                    f"{self._stalls} blocked proposals in a row (last: {reason})")
 
         return self._finish("exhausted", f"reached the {self.max_steps}-step budget")
 

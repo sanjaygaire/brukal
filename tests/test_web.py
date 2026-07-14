@@ -138,6 +138,35 @@ def test_ensure_cage_vhosts_guards():
     assert len(single.authorized_networks) == 1 and single.authorized_networks[0].num_addresses == 1
 
 
+def test_parse_web_action_grammar():
+    from brukal.web import parse_web_action
+    assert parse_web_action("get http://nexus.htb/admin").kind == "get"
+    assert parse_web_action("render http://nexus.htb/").kind == "get"
+    assert parse_web_action("http://nexus.htb/").kind == "get"      # bare url
+    a = parse_web_action("request POST http://nexus.htb/login user=admin&p=x")
+    assert a.kind == "request" and a.method == "POST" and "user=admin" in a.body
+    f = parse_web_action("fill #user admin' OR '1'='1")
+    assert f.kind == "fill" and f.selector == "#user" and "OR '1'='1" in f.value
+    assert parse_web_action("") is None
+
+
+def test_composite_cage_routes_by_action_kind():
+    from brukal.web import CompositeWebCage, WebResult
+
+    class Render:
+        def run(self, a): return WebResult(note="render", url=a.url)
+
+    class Request:
+        def run(self, a): return WebResult(note="request", url=a.url)
+
+    cage = CompositeWebCage(Render(), Request())
+    assert cage.run(WebAction("navigate", url="http://x/")).note == "render"
+    assert cage.run(WebAction("get", url="http://x/")).note == "render"
+    assert cage.run(WebAction("request", url="http://x/")).note == "request"
+    # a live-interactive action returns an explanatory note, not a crash
+    assert "CDP" in cage.run(WebAction("fill", selector="#a")).note
+
+
 def test_web_rate_limit_denies_when_exceeded():
     tmp = tempfile.mkdtemp()
     scope = Scope("t", (), frozenset(), rate_limit_per_min=2,
