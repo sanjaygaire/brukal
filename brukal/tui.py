@@ -55,6 +55,11 @@ class Dashboard:
     def on_event(self, kind: str, payload: dict) -> None:
         if kind == "turn":
             self._log.append(self._turn_line(payload))
+        elif kind == "task_start":
+            task = payload.get("task")
+            agent = getattr(task, "agent", "?")
+            self._log.append(Text(f"  {agent:<8} ▶ started  ", style="bold cyan")
+                             .append(str(getattr(task, "description", ""))[:52], style="grey62"))
         elif kind == "end":
             self._counts = {k: payload.get(k, 0) for k in self._counts}
         if self._live is not None:

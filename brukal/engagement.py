@@ -45,7 +45,8 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
         scope_path: str = "scope.json", audit_path: str = "runs/audit.jsonl",
         vault_path: str = "runs/vault", container: str = "brukal-kali",
         model: str | None = None, approver=None, tui: bool = False,
-        provider: str | None = None, base_url: str | None = None) -> int:
+        provider: str | None = None, base_url: str | None = None,
+        parallel: bool = False, workers: int = 4) -> int:
     """Run the full engagement against `target`. Returns a process exit code."""
     try:
         from .agents import ExploitAgent, ReconAgent, VerifyAgent
@@ -113,8 +114,14 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
         "exploit": ExploitAgent(llm, executor),
         "verify": VerifyAgent(llm, executor),
     }
-    orch = Orchestrator(tree, agents, blackboard, trust=trust, skills=skills,
-                        observer=(dashboard.on_event if dashboard else None))
+    obs = dashboard.on_event if dashboard else None
+    if parallel:
+        from .orchestrator import ParallelOrchestrator
+        orch = ParallelOrchestrator(tree, agents, blackboard, trust=trust, skills=skills,
+                                    observer=obs, max_workers=workers)
+    else:
+        orch = Orchestrator(tree, agents, blackboard, trust=trust, skills=skills,
+                            observer=obs)
 
     if dashboard is not None:
         summary = dashboard.run(orch.run)

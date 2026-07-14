@@ -182,7 +182,8 @@ def _cmd_run(args) -> int:
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
         container=args.container, model=args.model, tui=args.tui,
-        provider=args.provider, base_url=args.base_url)
+        provider=args.provider, base_url=args.base_url,
+        parallel=args.parallel, workers=args.workers)
 
 
 def _cmd_solve(args) -> int:
@@ -394,6 +395,9 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--yes-authorised", action="store_true",
                     help="confirm you are authorised (required for a live run)")
     pr.add_argument("--tui", action="store_true", help="live dashboard")
+    pr.add_argument("--parallel", action="store_true",
+                    help="dispatch independent tasks to agents concurrently")
+    pr.add_argument("--workers", type=int, default=4, help="parallel worker count")
     pr.add_argument("--scope", default="scope.json")
     pr.add_argument("--audit", default="runs/audit.jsonl")
     pr.add_argument("--vault", default="runs/vault")
