@@ -142,6 +142,8 @@ class GroundedLoop:
             # before asking the model, so the rendered page feeds the next decision.
             reflex = self.session.auto_web_action()
             if reflex is not None:
+                self._emit("running", action=f"WEB: {reflex}", web=True,
+                           note="auto-render (web service found)")
                 decision, result, highlights = self.session.run_web(reflex)
                 step = LoopStep(
                     index=len(self.steps) + 1, phase="enumeration",
@@ -158,6 +160,7 @@ class GroundedLoop:
                 if result is not None:
                     continue                     # re-plan with the rendered page in hand
 
+            self._emit("thinking")
             suggestion = self.session.advise()
 
             # The next action is a shell RUN or a WEB action (both governed). No
@@ -181,6 +184,8 @@ class GroundedLoop:
                                     f"cycling on near-duplicate `{sig[0]}` moves against the same target")
 
             # The one door: propose -> gate -> (maybe) run -> observe real output.
+            self._emit("running", action=action, web=is_web,
+                       phase=suggestion.phase, goal=suggestion.goal)
             if is_web:
                 decision, result, highlights = self.session.run_web(action)
             else:

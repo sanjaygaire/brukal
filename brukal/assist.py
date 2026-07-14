@@ -474,6 +474,99 @@ def _parse_saved_plan(text: str) -> list:
     return steps
 
 
+def _deny_all_auto(decision) -> bool:
+    """Auto-mode approver: never auto-approve. An ESCALATE pauses the loop and hands
+    back to the human (who approves interactively in `brukal solve`)."""
+    return False
+
+
+class _AutoLiveView:
+    """A live, animated terminal view of the autonomous hunt: a spinner that shows
+    what Brukal is doing right now (thinking / running a tool / rendering a site),
+    running tallies, and a scrolling step log with colour-coded verdicts. Uses rich
+    Live's background refresh so the spinner keeps moving during a blocking scan."""
+
+    def __init__(self, console, target, cage, budget, objective=""):
+        self.con = console
+        self.target = target
+        self.cage = cage
+        self.budget = budget
+        self.objective = objective
+        self.status = "starting…"
+        self.steps: list = []                 # (idx, phase, verdict, action, summary)
+        self.tally = {"ran": 0, "blocked": 0, "escalated": 0, "web": 0}
+        self._live = None
+
+    def set_status(self, text):
+        self.status = text
+        if self._live is not None:
+            self._live.update(self._render())
+
+    def _render(self):
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.spinner import Spinner
+        from rich.table import Table
+        from rich.text import Text
+
+        t = self.tally
+        header = Text.assemble(
+            ("🎯 ", ""), (self.target, "bold cyan"), (f"  ({self.cage})   ", "grey50"),
+            (f"{t['ran']} ran", "green"), (" · ", "grey42"),
+            (f"{t['escalated']} escalated", "yellow"), (" · ", "grey42"),
+            (f"{t['blocked']} blocked", "red"), (" · ", "grey42"),
+            (f"{t['web']} web", "magenta"),
+            (f"   step {len(self.steps)}/{self.budget}", "grey62"))
+        obj = Text(f"🏁 {self.objective}", style="grey58") if self.objective else Text("")
+        spin = Spinner("dots", text=Text(self.status, style="bold yellow"))
+
+        log = Table.grid(padding=(0, 1))
+        log.add_column(justify="right"); log.add_column(); log.add_column(); log.add_column()
+        for idx, phase, verdict, action, summ in self.steps[-9:]:
+            c = _VERDICT_COLOUR.get(verdict, "grey50")
+            log.add_row(Text(f"{idx}", style="grey42"),
+                        Text((phase or "").upper()[:5], style="cyan"),
+                        Text(f"{verdict:<9}", style=f"bold {c}"),
+                        Text(action[:58], style="white"))
+        body = Group(header, obj, Text(""), spin, Text(""), log)
+        return Panel(body, title="[bold cyan]brukal — governed autonomous hunt[/]",
+                     border_style="cyan")
+
+    def on(self, kind, payload):
+        if kind == "thinking":
+            self.status = "🧠 thinking… (planning the next move)"
+        elif kind == "running":
+            a = payload.get("action", "")
+            if payload.get("web"):
+                self.status = f"🌐 browser: {a[:56]}"
+            else:
+                tool = (a.split() or [""])[0]
+                self.status = f"⚙  running {tool} …  ({a[:48]})"
+        elif kind == "step":
+            s = payload["step"]
+            v = s.verdict or "-"
+            if s.executed:
+                self.tally["ran"] += 1
+                if (s.command or "").startswith("WEB:"):
+                    self.tally["web"] += 1
+            elif v == "ESCALATE":
+                self.tally["escalated"] += 1
+            else:
+                self.tally["blocked"] += 1
+            self.steps.append((s.index, s.phase, v, s.command or "", s.summary))
+            self.status = "observing the result…"
+        elif kind == "stop":
+            self.status = f"⏹ stopped: {payload.get('reason', '')}"
+        if self._live is not None:
+            self._live.update(self._render())
+
+    def start(self):
+        from rich.live import Live
+        self._live = Live(self._render(), console=self.con, refresh_per_second=10,
+                          transient=False)
+        return self._live
+
+
 def _rich_approver(con, holder):
     """Escalation sign-off that pauses the live spinner, prompts, then resumes."""
     from rich.panel import Panel
@@ -1153,6 +1246,10 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
+    # In headless auto, an ESCALATE cleanly PAUSES the hunt (the loop hands back)
+    # rather than prompting mid-live-view: dangerous/irreversible moves are approved
+    # interactively in `brukal solve`. Fail-closed keeps the invariant intact.
+    session.executor._approver = _deny_all_auto
 
     _emit(console, f"\n  brukal auto — target {target}   cage={cage}   "
                    f"budget={max_steps} steps",
@@ -1161,28 +1258,35 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     if session.resumed:
         _emit(console, f"  resumed — loaded {session.resumed} prior finding(s).")
 
-    def observer(kind, payload):
-        if kind == "step":
-            st = payload["step"]
-            v = st.verdict or "-"
-            _emit(console,
-                  f"  [{st.index}] {(st.phase or '').upper():<12} {v:<9} "
-                  f"{(st.command or '')[:70]}\n        {st.summary[:100]}",
-                  f"  [grey62]\\[{st.index}][/] [cyan]{(st.phase or '').upper():<12}[/] "
-                  f"[{_VERDICT_COLOUR.get(v, 'white')}]{v:<9}[/] "
-                  f"{(st.command or '')[:70]}\n        [grey70]{st.summary[:100]}[/]")
-
     if not session.objectives:              # steer the autonomous hunt toward the goal
         session.add_objective(f"Enumerate {target}; examine any web service with the "
                               f"browser; find a way to a foothold (SSH/FTP/web) and "
                               f"capture the user and root flags.")
 
+    view = _AutoLiveView(console, target, cage, max_steps,
+                         session.objectives[0] if session.objectives else "") \
+        if console is not None else None
+
+    def observer(kind, payload):
+        if view is not None:
+            view.on(kind, payload)
+        elif kind == "step":
+            st = payload["step"]
+            print(f"  [{st.index}] {(st.phase or '').upper():<12} {st.verdict or '-':<9} "
+                  f"{(st.command or '')[:70]}\n        {st.summary[:100]}")
+
     loop = GroundedLoop(session, max_steps=max_steps, observer=observer)
 
     try:
         if not session.plan:
+            if view is not None:
+                view.set_status("🗺  planning the route…")
             session.make_plan()             # lay out the route before driving it
-        result = loop.run()
+        if view is not None:
+            with view.start():
+                result = loop.run()
+        else:
+            result = loop.run()
     except KeyboardInterrupt:
         print("\n  paused.")
         return 0
