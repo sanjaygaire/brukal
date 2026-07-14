@@ -474,10 +474,14 @@ def _parse_saved_plan(text: str) -> list:
     return steps
 
 
-def _deny_all_auto(decision) -> bool:
-    """Auto-mode approver: never auto-approve. An ESCALATE pauses the loop and hands
-    back to the human (who approves interactively in `brukal solve`)."""
-    return False
+def _auto_approver(decision) -> bool:
+    """Auto-mode approver: keep the hunt moving on REVERSIBLE escalations (an
+    aggressive-but-read-only scan like `nmap -T4 --top-ports`), but PAUSE on
+    anything IRREVERSIBLE or unclassified — reverse shells, credential attacks,
+    `sqlmap --dump`, writes, unknown tools. That is 'safe/aggressive-but-reversible
+    runs itself; dangerous asks a human', which the operator approves in `brukal
+    solve`. Scope + audit are untouched; this only tunes the soft escalation."""
+    return getattr(decision, "reversibility", None) == "reversible"
 
 
 class _AutoLiveView:
@@ -1249,7 +1253,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # In headless auto, an ESCALATE cleanly PAUSES the hunt (the loop hands back)
     # rather than prompting mid-live-view: dangerous/irreversible moves are approved
     # interactively in `brukal solve`. Fail-closed keeps the invariant intact.
-    session.executor._approver = _deny_all_auto
+    session.executor._approver = _auto_approver
 
     _emit(console, f"\n  brukal auto — target {target}   cage={cage}   "
                    f"budget={max_steps} steps",
