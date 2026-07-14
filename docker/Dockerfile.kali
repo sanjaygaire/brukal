@@ -25,7 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         john hashcat hash-identifier exploitdb \
         crackmapexec impacket-scripts evil-winrm responder \
         netcat-traditional socat \
+        chromium \
     && rm -rf /var/lib/apt/lists/*
+# ^ chromium: headless browser for the governed web surface (brukal web --chrome,
+#   the Chrome/CDP backend) — renders JS apps + drives interactive web actions.
 
 # Least-privilege raw-socket scanning: grant the capability to the nmap binary
 # ONLY, so SYN/service/OS scans work without privileging the whole container.

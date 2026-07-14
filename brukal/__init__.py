@@ -21,6 +21,7 @@ from .skills import SkillLibrary, Skill, install_pack
 from .lessons import LessonStore, Lesson
 from .web import (WebAction, WebResult, GovernedBrowser, FakeWebCage, HttpWebCage,
                   DockerHttpWebCage, check_web, ensure_cage_vhosts)
+from .chrome import ChromeCage, DockerChromeCage, FakeCDP
 from .loop import GroundedLoop, LoopStep, LoopResult
 from .experiment import ExperimentResult, run_all, render
 from . import eval as capability_eval
@@ -39,6 +40,7 @@ __all__ = [
     "LessonStore", "Lesson",
     "WebAction", "WebResult", "GovernedBrowser", "FakeWebCage", "HttpWebCage",
     "DockerHttpWebCage", "check_web", "ensure_cage_vhosts",
+    "ChromeCage", "DockerChromeCage", "FakeCDP",
     "GroundedLoop", "LoopStep", "LoopResult",
     "ExperimentResult", "run_all", "render",
     "capability_eval",

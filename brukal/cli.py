@@ -224,13 +224,21 @@ def _cmd_web(args) -> int:
     # this host (only for host-reachable targets).
     if args.local:
         cage = HttpWebCage()
+    elif args.chrome:                               # render via real headless Chromium
+        from brukal.chrome import DockerChromeCage
+        from brukal.web import ensure_cage_vhosts
+        ensure_cage_vhosts(scope, args.container)
+        cage = DockerChromeCage(container=args.container)
     else:
         from brukal.web import ensure_cage_vhosts
         ensure_cage_vhosts(scope, args.container)   # so vhosts like nexus.htb resolve
         cage = DockerHttpWebCage(container=args.container)
     browser = GovernedBrowser(scope, cage, audit)
-    action = WebAction(kind="request", url=args.url, method=args.method.upper(),
-                       headers=headers, body=args.body or "")
+    if args.chrome:                                 # a browser render (js executed)
+        action = WebAction(kind="screenshot" if args.screenshot else "get", url=args.url)
+    else:
+        action = WebAction(kind="request", url=args.url, method=args.method.upper(),
+                           headers=headers, body=args.body or "")
     decision, result = browser.run(action, agent="operator")
 
     print(f"\n  verdict : {decision.verdict}")
@@ -444,6 +452,9 @@ def main(argv: list[str] | None = None) -> int:
     pw.add_argument("--host", help="authorise this vhost at scope time (e.g. nexus.htb)")
     pw.add_argument("--local", action="store_true",
                     help="send from this host instead of the cage (host-reachable targets only)")
+    pw.add_argument("--chrome", action="store_true",
+                    help="render the page with real headless Chromium (JS executed) in the cage")
+    pw.add_argument("--screenshot", action="store_true", help="with --chrome: capture a screenshot")
     pw.add_argument("--container", default="brukal-kali")
     pw.add_argument("--scope", default="scope.json")
     pw.add_argument("--audit", default="runs/audit.jsonl")
