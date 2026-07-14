@@ -186,13 +186,17 @@ extra dependency. You don't have to remember flags: **`brukal solve` just asks.*
 How should Brukal think? Pick the model it runs on:
   [1] Claude API (Anthropic) — best quality, needs an API key
   [2] Local model via Ollama — free, private, no key (e.g. qwen2.5)
-  [3] OpenAI-compatible API — OpenAI / OpenRouter / Groq / DeepSeek / GLM / LM Studio
-  [4] Advanced — type provider / model / base-url yourself
+  [3] Groq — FREE api key, very fast, strong models (e.g. llama-3.3-70b)
+  [4] Other OpenAI-compatible — OpenAI / OpenRouter / DeepSeek / GLM / LM Studio
+  [5] Advanced — type provider / model / base-url yourself
 ```
 
 Pick 1 and it prompts (hidden) for your key if it isn't already set; pick 2 and it
-asks which local model. To skip the prompt (e.g. in scripts), pass `--provider` /
-`--model` or set `BRUKAL_PROVIDER` / `BRUKAL_MODEL` and it uses those instead.
+asks which local model; pick **3 (Groq)** and it prompts (hidden) for a free
+`GROQ_API_KEY` (get one at [console.groq.com/keys](https://console.groq.com/keys))
+and defaults to `llama-3.3-70b-versatile` — a strong, fast, free brain. To skip the
+prompt (e.g. in scripts), pass `--provider` / `--model` or set `BRUKAL_PROVIDER` /
+`BRUKAL_MODEL` and it uses those instead.
 
 **Option A — Claude API (best quality).** Get a key from the Anthropic console and
 export it:
@@ -216,7 +220,16 @@ brukal solve <target> --provider ollama --model qwen2.5
 > Brukal at the Windows host IP: `--base-url http://<windows-ip>:11434/v1` (or
 > just install Ollama inside WSL).
 
-**Option C — other hosted providers.** Pick `[3]` and it asks for the provider and
+**Option C — Groq (free, fast, strong).** A free key runs a 70B model at near-instant
+speed — the best capability-per-effort for a hosted brain. Pick `[3]` (it prompts,
+hidden, for the key), or set it yourself:
+
+```bash
+export GROQ_API_KEY=gsk_...                 # free at https://console.groq.com/keys
+brukal solve <target> --provider groq --model llama-3.3-70b-versatile
+```
+
+**Option D — other hosted providers.** Pick `[4]` and it asks for the provider and
 key, or set them yourself:
 
 ```bash

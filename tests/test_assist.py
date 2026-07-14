@@ -253,6 +253,17 @@ def test_pickers_are_noninteractive_safe():
     assert choose_run_mode(None) is False
 
 
+def test_choose_brain_groq_option(monkeypatch):
+    # Groq is a first-class menu entry (option 3): pick it, get the groq provider
+    # and a strong default model, with GROQ_API_KEY prompted/ensured.
+    import brukal.assist as a
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.setattr(a.sys.stdin, "isatty", lambda: True)
+    answers = iter(["3", ""])          # choose Groq, accept the default model
+    monkeypatch.setattr(a, "_ask", lambda console, prompt, default="": next(answers, default))
+    assert a.choose_brain(None) == ("groq", "llama-3.3-70b-versatile", None)
+
+
 class SeqLLM:
     """Returns scripted responses in order, then repeats the last one."""
     def __init__(self, responses):

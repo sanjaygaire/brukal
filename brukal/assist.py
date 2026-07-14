@@ -662,8 +662,9 @@ def choose_brain(console):
     for k, label in (
         ("1", "Claude API (Anthropic) — best quality, needs an API key"),
         ("2", "Local model via Ollama — free, private, no key (e.g. qwen2.5)"),
-        ("3", "OpenAI-compatible API — OpenAI / OpenRouter / Groq / DeepSeek / GLM / LM Studio"),
-        ("4", "Advanced — type provider / model / base-url yourself"),
+        ("3", "Groq — FREE api key, very fast, strong models (e.g. llama-3.3-70b)"),
+        ("4", "Other OpenAI-compatible — OpenAI / OpenRouter / DeepSeek / GLM / LM Studio"),
+        ("5", "Advanced — type provider / model / base-url yourself"),
     ):
         _emit(console, f"    [{k}] {label}", f"    [cyan]\\[{k}][/] {label}")
     choice = (_ask(console, "  choose", "1") or "1").strip()
@@ -675,8 +676,16 @@ def choose_brain(console):
               "e.g. http://172.x.x.x:11434/v1, and start Ollama with OLLAMA_HOST=0.0.0.0)")
         return "ollama", model, base or None
 
-    if choice == "3":                                        # OpenAI-compatible preset
-        prov = (_ask(console, "  provider (openai/openrouter/groq/deepseek/glm/lmstudio)",
+    if choice == "3":                                        # Groq (free, fast)
+        _emit(console, "  Get a free key at console.groq.com/keys (starts with gsk_).")
+        default_model = "llama-3.3-70b-versatile"
+        model = (_ask(console, "  Groq model", default_model) or default_model).strip()
+        if not _ensure_key_env("GROQ_API_KEY", "Groq API key (GROQ_API_KEY)"):
+            _emit(console, "  ⚠ no GROQ_API_KEY set — calls will fail until you provide it.")
+        return "groq", model, None
+
+    if choice == "4":                                        # other OpenAI-compatible preset
+        prov = (_ask(console, "  provider (openai/openrouter/deepseek/glm/lmstudio)",
                      "openai") or "openai").strip().lower()
         if prov not in _PRESETS:
             _emit(console, f"  unknown provider '{prov}', using openai.")
@@ -687,7 +696,7 @@ def choose_brain(console):
             _emit(console, f"  ⚠ no {key_env} set — calls will fail until you export it.")
         return prov, model, None
 
-    if choice == "4":                                        # advanced
+    if choice == "5":                                        # advanced
         prov = (_ask(console, "  provider", "openai") or "openai").strip().lower()
         model = (_ask(console, "  model (blank = provider default)", "") or "").strip() or None
         base = (_ask(console, "  base URL (blank = preset)", "") or "").strip() or None
