@@ -159,7 +159,10 @@ def _parse(text: str, default_target: str) -> Suggestion:
     manual = _field(text, "MANUAL") or None
 
     if command:                                   # strip a trailing "(why)" note
-        command = command.strip("`").strip('"').strip()
+        # Peel wrapping whitespace AND quotes/backticks in any order — models often
+        # emit `cmd` or "cmd" or `cmd ` (a trailing backtick after a space survives a
+        # naive strip("`") and then gets denied as injection, wasting a turn).
+        command = command.strip().strip("`\"'").strip()
         if " (" in command:
             command = command[:command.index(" (")].strip()
         command = command or None

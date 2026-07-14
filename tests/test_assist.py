@@ -68,6 +68,17 @@ def test_strategist_strips_trailing_parenthetical():
     assert s.command == "nmap -sV -p- 10.129.51.151"
 
 
+def test_strategist_strips_wrapping_backticks():
+    # qwen wraps commands in backticks; a trailing "` " (backtick + space) must not
+    # survive into the command (it would be denied as shell injection, as seen live
+    # against Nexus). Both wrapped and trailing-only forms must come out clean.
+    for raw in ("RUN: `curl -I http://10.129.234.54`",
+                "RUN: curl -I http://10.129.234.54` "):
+        s = StrategistAgent(StubLLM(raw)).advise("10.129.234.54", "")
+        assert s.command == "curl -I http://10.129.234.54"
+        assert "`" not in s.command
+
+
 def test_strategist_advice_only():
     s = StrategistAgent(StubLLM("Enumerate more before exploiting.")).advise("10.10.10.5", "")
     assert s.command is None and s.manual is None
