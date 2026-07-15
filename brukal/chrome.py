@@ -109,17 +109,11 @@ class ChromeCage:
             hdr = json.dumps(action.headers or {})
             body = _js_str(action.body) if action.body else "undefined"
             expr = (f"fetch({_js_str(action.url)},{{method:{_js_str(action.method or 'GET')},"
-                    f"headers:{hdr},body:{body}}}).then(r=>r.status+'\\n'+r.headers.get('content-type')"
-                    f"+'\\n\\n').then(h=>h).catch(e=>'ERR '+e)")
+                    f"headers:{hdr},body:{body}}}).then(r=>r.text()).catch(e=>'ERR '+e)")
             r = self._t.call("Runtime.evaluate",
                              {"expression": expr, "awaitPromise": True, "returnByValue": True})
-            # a fuller body fetch:
-            expr2 = (f"fetch({_js_str(action.url)},{{method:{_js_str(action.method or 'GET')},"
-                     f"headers:{hdr},body:{body}}}).then(r=>r.text()).catch(e=>'ERR '+e)")
-            r2 = self._t.call("Runtime.evaluate",
-                              {"expression": expr2, "awaitPromise": True, "returnByValue": True})
             return WebResult(status=200, url=action.url,
-                             body=str(r2.get("result", {}).get("value", "")),
+                             body=str(r.get("result", {}).get("value", "")),
                              note="fetch-in-page (session cookies)")
 
         if k == "screenshot":

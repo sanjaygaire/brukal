@@ -161,10 +161,37 @@ pip install -e ".[agents]"                            # installs the `brukal` co
 on your PATH. Add the `[tui]` extra for the live dashboard: `pip install -e ".[agents,tui]"`.
 (Prefer not to install? Every command also works as `python brukal_cli.py <cmd> …`.)
 
+## Commands
+
+Type `brukal` on its own (in a terminal) for the **guided wizard** — it walks you
+through target → brain → tool policy → auto/manual → hunt. Or use a subcommand
+directly:
+
+| Command | What it does |
+|---|---|
+| `brukal` | **Guided wizard**: asks the target, lets you pick the model, shows the tool policy (auto-run vs asks-you vs denied) + loaded playbooks, then auto or manual → hunts. |
+| `brukal target <ip\|cidr>` | Set the engagement scope. Validates, /32-normalises a host, confirms anything broader, logs it. `--add` to accumulate. |
+| `brukal solve [ip]` | **Interactive human-assisted hunt.** Ranked next-move options each turn — pick a number, type your own gated command (`c`), give an instruction to re-plan (`i`), or run safe options in parallel (`p`). Dangerous moves prompt `[y/N]`. Resumes from the vault. |
+| `brukal auto [ip]` | **Autonomous grounded loop** with the live animated view. Drives the safe (reversible) steps itself, auto-renders discovered web services in Chrome, and pauses on irreversible/attack steps for your sign-off. |
+| `brukal run <ip>` | The **multi-agent** engagement (recon · exploit · verify) over a task tree + blackboard. `--parallel [--workers N]` runs agents concurrently; `--tui` shows the live dashboard. |
+| `brukal web <url>` | Send **one governed web request** (crafted `--method`/`--header`/`--body`), routed through the cage. `--chrome` renders with a real headless browser; `--host` authorises a vhost. The web analogue of `exec`. |
+| `brukal shell <ip>` | Open a **governed interactive shell** in the cage — every line is gated + logged before it runs; state persists across lines. |
+| `brukal exec <cmd> <target>` | Propose **one shell command** through the gate by hand (verdict + output). |
+| `brukal lessons [search]` | View / add Brukal's **cross-session learned lessons** (`--add "…" --tags a,b`). |
+| `brukal skills [list\|search\|add]` | List / search / install offensive **skill playbooks** (the untrusted reference library). |
+| `brukal eval` | Run the **capability eval** (governed vs ungated, steps-to-foothold) — deterministic, no infra. |
+| `brukal verify` | Re-walk the audit log and confirm the **hash chain is intact**. |
+| `brukal hunt` | Older guided flow that runs the multi-agent engagement (kept for compatibility). |
+
+Common flags: `--scope <file>` (which scope.json), `--fake` (no Docker — dry-run
+the wiring), `--yes-authorised` (confirm authorisation for a live run),
+`--provider` / `--model` (Claude / Groq / Ollama / OpenAI-compatible),
+`--audit` / `--vault` (where to write). Add `-h` to any subcommand for its full options.
+
 ## Quickstart
 
 ```bash
-# 1. run the test suite (75 tests, no infra, no key needed)
+# 1. run the test suite (146 tests, no infra, no key needed)
 python -m pytest -q
 
 # 2. reproduce the benchmark metrics (fake cage)
