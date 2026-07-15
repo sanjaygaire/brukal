@@ -53,6 +53,12 @@ def _tool_of(command: str) -> str:
     return os.path.basename(parts[0]).lower() if parts else ""
 
 
+def _result_text(result) -> str:
+    """Output text of a result, whether a shell ExecResult (.stdout) or a web
+    WebResult (.body)."""
+    return getattr(result, "stdout", None) or getattr(result, "body", "") or ""
+
+
 class LessonStore:
     """A small, growing, retrievable store of learned lessons, JSONL-backed."""
 
@@ -124,7 +130,7 @@ class LessonStore:
             if timed_out and tool:
                 self.add(f"`{tool}` with broad options times out in the cage — run a "
                          f"faster, narrower variant first.", [tool, "timeout"], "pitfall")
-            elif (result.stdout or "").strip() and tech_tags and tool:
+            elif _result_text(result).strip() and tech_tags and tool:
                 self.add(f"`{tool}` was productive against {'/'.join(tech_tags[:3])}.",
                          [tool, *tech_tags], "win")
             return

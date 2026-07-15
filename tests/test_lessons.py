@@ -49,6 +49,15 @@ def test_learns_timeout_and_win():
     assert "gobuster" in win.text and "nginx" in win.tags
 
 
+def test_learns_from_a_web_result_without_stdout():
+    # a WebResult has .body (not .stdout) — learning from a web action must not crash
+    store = LessonStore(tempfile.mktemp())
+    web = SimpleNamespace(body="<title>Nexus</title>", status=200, note="")  # no .stdout
+    store.learn_from_outcome("get: http://nexus.htb/", _decision("ALLOW", "web:allow"),
+                             web, tech_tags=["nginx", "http"])
+    assert any(l.kind == "win" and "nginx" in l.tags for l in store._lessons)
+
+
 def test_retrieve_surfaces_relevant_lessons():
     store = LessonStore(tempfile.mktemp())
     store.learn_from_outcome("httpx http://x", _decision("DENY", "hard:allowlist"), None)
