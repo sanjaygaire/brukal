@@ -90,15 +90,21 @@ STRATEGIST_SYSTEM = (
 
 STRATEGIST_OPTIONS_SYSTEM = (
     STRATEGIST_SYSTEM
-    + "\n\nBut instead of ONE next step, give the operator a RANKED SHORT LIST of "
-    "the best 2-4 next moves, BEST FIRST — genuinely different approaches, not the "
-    "same command reworded. Separate each option with a line containing only '---', "
-    "and start each with a one-line label:\n"
+    + "\n\nYou are talking to the operator like a teammate at the keyboard, not a "
+    "command generator. FIRST, react to the MOST RECENT result in the findings: begin "
+    "your reply with a single line starting `READ:` — 1-2 plain-English sentences "
+    "saying what the last command actually told us (or, if it failed/timed out/returned "
+    "nothing, say so and why) and what that implies for the next move. Talk like a "
+    "human analyst, not a template.\n"
+    "THEN give a RANKED SHORT LIST of the best 2-4 next moves, BEST FIRST — genuinely "
+    "different approaches, not the same command reworded. Separate each option with a "
+    "line containing only '---', and start each with a one-line label:\n"
     "OPTION: <short label of the move>\n"
     "PHASE: ...\nGOAL: ...\nREASONING: ...\nRUN: <command>   (or)   MANUAL: <step>\n"
     "---\n"
     "OPTION: <next label>\n...\n"
-    "Rank by what most likely moves us toward the flag right now."
+    "Rank by what most likely moves us toward the flag right now. A RUN option must be "
+    "a real command to execute, never a placeholder like '(need to see the form first)'."
 )
 
 
@@ -202,6 +208,14 @@ def _field(text: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def parse_read(text: str) -> str:
+    """Extract the leading `READ:` line — the strategist's plain-English take on the
+    latest result (what just happened + what it implies), shown to the operator before
+    the options so the hunt reads like an analyst talking, not a command menu."""
+    read = _field(text or "", "READ")
+    return read.strip().strip("`*").strip()
+
+
 def parse_options(text: str, default_target: str, limit: int = 4) -> list[Suggestion]:
     """Parse a ranked list of next-move options. Tolerant of models that use
     '---' separators, 'OPTION:' markers, both, or neither (then it's one option)."""
@@ -272,6 +286,7 @@ def _parse(text: str, default_target: str) -> Suggestion:
 class StrategistAgent:
     def __init__(self, llm: LLMClient):
         self._llm = llm
+        self.last_read = ""      # the conversational "what just happened" from options()
 
     def plan(self, target: str, findings: str, objectives: str = "",
              reference: str = "") -> list[PlanStep]:
@@ -308,6 +323,7 @@ class StrategistAgent:
         parts.append(f"Give me up to {n} ranked next-move options in the format.")
         text = self._llm.propose(STRATEGIST_OPTIONS_SYSTEM, "\n\n".join(parts),
                                  max_tokens=1000)
+        self.last_read = parse_read(text)     # the "what just happened" line, shown first
         return parse_options(text, target, limit=n)
 
     def advise(self, target: str, findings: str, notes: str = "",

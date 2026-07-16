@@ -809,6 +809,10 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
                 session.advise_options(n=3)
         opts = session.option_list
 
+        read = getattr(session.strategist, "last_read", "") if session.strategist else ""
+        if read:
+            con.print(Text.assemble(("  🧠 Brukal: ", "bold cyan"), (read, "white")))
+
         body = Text()
         for i, o in enumerate(opts, 1):
             pc = _PHASE_COLOUR.get((o.phase or "").lower(), "cyan")
@@ -968,7 +972,13 @@ def _report(d, r):
     if out:
         for line in out.splitlines():
             print(f"     {line}")
-    elif rc == 0:
+    # On a failure/empty run, show stderr so the reason is visible (e.g. a wordlist
+    # that doesn't exist prints "no such file" to stderr — otherwise it looks silent).
+    err = stderr.rstrip()
+    if err and (not out or rc not in (0, None)):
+        for line in err.splitlines()[:8]:
+            print(f"     ! {line}")
+    elif not out and rc == 0:
         print("     (ran, no output)")
 
 
@@ -1064,8 +1074,11 @@ def _plain_loop(session, audit, target, cage, auto=False):
         # MANUAL: present a ranked list of moves; the operator picks one, runs their
         # own command, or gives an instruction to re-plan the options.
         if not session.option_list:
-            print("  thinking of the best moves…")
+            print("  thinking…")
             session.advise_options(n=3)
+        read = getattr(session.strategist, "last_read", "") if session.strategist else ""
+        if read:
+            print(f"\n  🧠 Brukal: {read}")     # conversational take on the last result
         _print_options(session.option_list)
         try:
             raw = input("  brukal> ").strip()

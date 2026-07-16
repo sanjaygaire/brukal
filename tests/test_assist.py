@@ -366,6 +366,22 @@ def test_print_options_survives_empty_goal_and_rationale():
     _print_options([opt])          # would raise IndexError before the fix
 
 
+def test_options_capture_conversational_read_before_the_moves():
+    # The strategist must lead with a plain-English READ of the last result (so the
+    # hunt reads like an analyst talking), and it must NOT bleed into the options.
+    from brukal.agents.strategist import StrategistAgent, parse_read
+    reply = ("READ: gobuster returned nothing and exited 1 — the wordlist path is "
+             "wrong, so no dirs were actually tested. Let me fingerprint the app.\n"
+             "OPTION: fingerprint\nRUN: whatweb http://10.10.10.5/\n---\n"
+             "OPTION: ssh version\nRUN: nmap -sV -p 22 10.10.10.5")
+    assert parse_read(reply).startswith("gobuster returned nothing")
+    ag = StrategistAgent(StubLLM(reply))
+    opts = ag.options("10.10.10.5", "findings")
+    assert ag.last_read.startswith("gobuster returned nothing")   # captured
+    assert [o.command for o in opts] == ["whatweb http://10.10.10.5/",
+                                         "nmap -sV -p 22 10.10.10.5"]
+
+
 def test_advise_options_falls_back_to_single_when_unformatted():
     # a model that ignores the ranked format still yields one usable option
     sess = AssistSession("10.10.10.5", None,
