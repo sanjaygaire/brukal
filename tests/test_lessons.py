@@ -98,8 +98,16 @@ def test_session_learns_and_injects_into_context():
     class StubLLM:
         def propose(self, s, u, max_tokens=1024): return ""
 
-    scope = load_scope(Path(__file__).resolve().parents[1] / "scope.json")
+    import json
     tmp = tempfile.mkdtemp()
+    # A restricted scope built HERE, not the shipped scope.json (which is broad mode) —
+    # so the test owns the precondition "metasploit is not allowlisted" regardless of
+    # how the repo's default scope is configured.
+    scope_path = Path(tmp) / "scope.json"
+    scope_path.write_text(json.dumps({
+        "engagement": "test", "authorized_cidrs": ["10.10.10.0/24"],
+        "allowlisted_tools": ["nmap", "gobuster"], "rate_limit_per_min": 30}))
+    scope = load_scope(scope_path)
     try:
         store = LessonStore(Path(tmp) / "lessons.jsonl")
         ex = Executor(Gate(scope), FakeKali(), AuditLog(Path(tmp) / "a.jsonl"))
