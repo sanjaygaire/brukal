@@ -931,8 +931,28 @@ def _print_options(opts):
 
 
 def _report(d, r):
-    print(f"  -> {d.verdict}" +
-          (f"\n{(r.stdout or '').rstrip()}" if r is not None else f" ({d.layer}: {d.reason})"))
+    # Make the OUTCOME of a run visible, not just a raw dump: a timed-out command
+    # (returncode 124 / "timed out") otherwise prints only its startup banner and
+    # looks like it "did nothing". Always tell the operator what actually happened.
+    if r is None:
+        print(f"  -> {d.verdict}  ({d.layer}: {d.reason})")
+        return
+    rc = getattr(r, "returncode", 0)
+    out = (getattr(r, "stdout", "") or "").rstrip()
+    stderr = (getattr(r, "stderr", "") or "")
+    if rc == 124 or "timed out" in stderr.lower():
+        print(f"  -> {d.verdict}  ⏱ TIMED OUT — killed before it finished, so NO usable "
+              f"result. Re-run narrower: a small wordlist (not rockyou), fewer ports, "
+              f"or a single service.")
+    elif rc not in (0, None):
+        print(f"  -> {d.verdict}  (exit {rc})")
+    else:
+        print(f"  -> {d.verdict}")
+    if out:
+        for line in out.splitlines():
+            print(f"     {line}")
+    elif rc == 0:
+        print("     (ran, no output)")
 
 
 def _take_option(session, opt):
