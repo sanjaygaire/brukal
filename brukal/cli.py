@@ -193,7 +193,7 @@ def _cmd_solve(args) -> int:
     return run_solve(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
-        container=args.container,
+        container=args.container, hosts=args.host or (),
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
@@ -204,7 +204,7 @@ def _cmd_auto(args) -> int:
     return run_auto(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
-        container=args.container, max_steps=args.max_steps,
+        container=args.container, max_steps=args.max_steps, hosts=args.host or (),
         model=args.model, provider=args.provider, base_url=args.base_url,
         handoff_to_menu=not args.no_handoff)
 
@@ -420,6 +420,9 @@ def main(argv: list[str] | None = None) -> int:
     psv.add_argument("--vault", default="runs/vault",
                      help="Obsidian vault root for saved findings (per-target subfolder)")
     psv.add_argument("--container", default="brukal-kali")
+    psv.add_argument("--host", action="append", metavar="VHOST",
+                     help="authorise a web vhost at scope time (e.g. --host nexus.htb); "
+                          "repeatable. Lets the hunt render/request that vhost.")
     psv.add_argument("--model", default=None)
     psv.add_argument("--provider", default=None,
                      help="anthropic (default) | ollama | openai | openrouter | ...")
@@ -437,6 +440,9 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--vault", default="runs/vault",
                     help="Obsidian vault root for saved findings (per-target subfolder)")
     pa.add_argument("--container", default="brukal-kali")
+    pa.add_argument("--host", action="append", metavar="VHOST",
+                    help="authorise a web vhost at scope time (e.g. --host nexus.htb); "
+                         "repeatable. Lets auto render/request that vhost.")
     pa.add_argument("--max-steps", type=int, default=20,
                     help="hand back to you after this many autonomous turns")
     pa.add_argument("--no-handoff", action="store_true",

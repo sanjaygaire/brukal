@@ -1285,7 +1285,7 @@ def _vault_for(vault_root, target: str) -> Path:
 
 def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
                      vault_path, container, model, provider, base_url,
-                     console, holder):
+                     console, holder, hosts=()):
     """Shared setup for `solve` and `auto`: resolve the target, authorise scope,
     take the live-run sign-off, pick the brain, and build a grounded
     AssistSession wired to the governed executor + per-target vault.
@@ -1321,6 +1321,16 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
             return 2
         session_scope = _authorise_host(scope, target)
         yes_authorised = True          # explicitly authorising the host is the sign-off
+
+    # 2b) Pre-authorise any vhosts the operator named (--host nexus.htb). A deliberate
+    #     scope-time act: it lets auto-mode render vhost-gated web apps and Host-header
+    #     requests without a mid-hunt `host` command, and ensure_cage_vhosts (below)
+    #     maps each to the target IP in the cage so it actually resolves.
+    for h in hosts or ():
+        h = (h or "").strip().lower()
+        if h and not session_scope.contains_host(h):
+            session_scope = session_scope.with_host(h)
+            _emit(console, f"  ✓ authorised vhost {h} (scope-time).")
 
     # 3) Live-run sign-off (fake cage needs none). Confirm interactively if a
     #    tty is available; otherwise the --yes-authorised flag is required.
@@ -1379,7 +1389,7 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
 def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
               audit_path="runs/audit.jsonl", vault_path="runs/vault",
               container="brukal-kali", model=None, provider=None, base_url=None,
-              auto=None) -> int:
+              auto=None, hosts=()) -> int:
     # A rich console (menu UI + spinner-aware approver), or plain fallback.
     holder: dict = {"status": None}
     try:
@@ -1392,7 +1402,7 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
         target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
         audit_path=audit_path, vault_path=vault_path, container=container,
         model=model, provider=provider, base_url=base_url,
-        console=console, holder=holder)
+        console=console, holder=holder, hosts=hosts)
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
@@ -1429,7 +1439,7 @@ def _session_vault(session):
 def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
              audit_path="runs/audit.jsonl", vault_path="runs/vault",
              container="brukal-kali", model=None, provider=None, base_url=None,
-             max_steps=20, handoff_to_menu=True) -> int:
+             max_steps=20, handoff_to_menu=True, hosts=()) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
     in-scope enumeration. When it hands back (manual/escalation/stall/budget), and
     a human is present at a terminal, it drops straight into the interactive menu on
@@ -1450,7 +1460,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
         audit_path=audit_path, vault_path=vault_path, container=container,
         model=model, provider=provider, base_url=base_url,
-        console=console, holder=holder)
+        console=console, holder=holder, hosts=hosts)
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
