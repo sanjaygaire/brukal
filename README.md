@@ -346,13 +346,28 @@ modes of autonomous LLM pentesters:
 
 It runs until it hits a **manual** step (intrusive exploitation — your job), an
 **escalation** (needs your sign-off — it never self-approves), a **stall**, or the
-`--max-steps` budget, then prints a summary and points you to `brukal solve` to
-carry on. Governance is unchanged: every command still goes through the one gate,
-and nothing out of scope ever executes.
+`--max-steps` budget. Governance is unchanged: every command still goes through the
+one gate, and nothing out of scope ever executes.
+
+**Auto hands the wheel to you — it doesn't just quit.** When the loop stops because
+it has run out of *safe autonomous* moves (the weak-model case: a stall, or a
+manual/escalation step), and you're at a terminal, Brukal drops straight into the
+interactive menu **on the same session** — every finding, note, plan, and lesson
+intact — so you can supply the next insight (a vhost fuzz, an exploit) without
+re-launching. Pass `--no-handoff` (or set `BRUKAL_NO_HANDOFF=1`) to keep the old
+stop-and-exit behaviour; non-interactive runs (piped/CI) always just stop.
+
+**Every hunt ends with its brain spend.** A one-line token/cost tally is read from
+the model client and printed at the end, e.g.
+`brain spend — deepseek-chat: 12 call(s) · 48,300 in / 4,100 out tokens · ~$0.0176`.
+Local models (Ollama/LM Studio) show `cost: n/a`. Prices live in `_PRICING` at the
+top of `brukal/llm.py` — one dict to edit as rates change.
 
 ```bash
 brukal auto 10.10.10.5 --yes-authorised --scope scope.htb.json --max-steps 15
+brukal auto 10.10.10.5 --provider deepseek --model deepseek-chat   # cheap, strong brain
 brukal auto --fake                          # try the whole loop with no Docker
+brukal auto 10.10.10.5 --no-handoff         # stop and exit instead of the menu
 ```
 
 ### Governed web testing (`brukal web`, WEB actions)

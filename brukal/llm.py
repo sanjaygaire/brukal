@@ -54,16 +54,23 @@ _PRICING = {
     "claude-sonnet-5":   (3.00, 15.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5":  (1.00, 5.00),
-    # OpenAI-compatible clouds (approximate list prices; verify against your plan)
+    # OpenAI-compatible clouds (approximate list prices; verify against your plan).
+    # Substring match, so provider-prefixed ids like "deepseek/deepseek-chat" (via
+    # OpenRouter) fall through to the bare key below automatically.
     "deepseek-reasoner": (0.55, 2.19),
+    "deepseek-r1":       (0.55, 2.19),   # OpenRouter/other naming for the reasoner
     "deepseek-chat":     (0.27, 1.10),
     "glm-4.6":           (0.60, 2.20),
     "z-ai/glm-4.6":      (0.60, 2.20),
+    "kimi-k2":           (0.60, 2.50),
     "gpt-4o-mini":       (0.15, 0.60),
+    "gpt-4.1-mini":      (0.40, 1.60),
     "gpt-4o":            (2.50, 10.00),
     # Groq's hosted open models are free within the free tier -> priced at $0.
     "llama-3.1-8b-instant":     (0.0, 0.0),
     "llama-3.3-70b-versatile":  (0.0, 0.0),
+    "openai/gpt-oss-120b":      (0.0, 0.0),
+    "openai/gpt-oss-20b":       (0.0, 0.0),
 }
 
 
