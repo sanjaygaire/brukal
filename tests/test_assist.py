@@ -375,6 +375,29 @@ def test_advise_options_falls_back_to_single_when_unformatted():
     assert sess.last is opts[0]
 
 
+def test_authorise_vhost_is_scope_time_and_covers_web_and_shell():
+    # A vhost the operator authorises must become in-scope for BOTH the shell gate and
+    # the web browser — a deliberate scope-time act, generalisable to any lab with
+    # virtual hosts (not a Nexus special-case). Before: out of scope -> DENY.
+    from brukal.assist import _authorise_vhost
+    from brukal.web import FakeWebCage, GovernedBrowser, WebAction, check_web
+    tmp = tempfile.mkdtemp()
+    try:
+        scope = load_scope(SCOPE)
+        audit = AuditLog(Path(tmp) / "a.jsonl")
+        ex = Executor(Gate(scope), FakeKali(), audit)
+        br = GovernedBrowser(scope, FakeWebCage(), audit)
+        sess = AssistSession("10.10.10.5", ex, None, browser=br)
+
+        nav = WebAction(kind="navigate", url="http://vhost.lab/")
+        assert check_web(nav, br._scope).verdict == "DENY"       # before: out of scope
+        assert _authorise_vhost(sess, "vhost.lab") is True
+        assert check_web(nav, br._scope).verdict == "ALLOW"      # after: authorised
+        assert ex._gate.scope.contains_host("vhost.lab")         # shell gate too
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_plain_loop_option_pick_runs_through_gate():
     import io
     tmp = tempfile.mkdtemp()

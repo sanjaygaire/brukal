@@ -892,6 +892,7 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
 _HELP = """  pick a NUMBER to take that move, or type your own:
     <cmd>  run any command (through the gate)      ask <text> / <text>  steer the options
     p  run all the SAFE options in PARALLEL        note <text>   manual <text>
+    host <name>  authorise a vhost (e.g. host nexus.htb) so web/Host-header hits pass
     plan   auto   manual-mode   skills <topic>   verify   quit
     (`auto` runs the safe steps itself; risky/irreversible moves still pause for your y/N)"""
 
@@ -912,6 +913,16 @@ _COMMON_TOOLS = frozenset({
     "kerbrute", "evil-winrm", "nc", "ncat", "netcat", "socat", "ssh", "ping"})
 
 
+def _show_highlights_plain(hits, title="what Brukal found"):
+    """Plain-text version of the rich highlights panel — the 'what did that command
+    tell us' line, so a run visibly produces knowledge, not just raw text."""
+    if not hits:
+        return
+    print(f"  ★ {title}:")
+    for tag, line in hits:
+        print(f"      {tag:>11}  {line}")
+
+
 def _print_options(opts):
     print("\n  NEXT MOVES — pick a number, or type your own command/instruction:")
     for i, o in enumerate(opts, 1):
@@ -921,13 +932,19 @@ def _print_options(opts):
         first_line = next(iter((o.rationale or "").splitlines()), "")
         label = o.goal or first_line[:70] or "next move"
         print(f"    [{i}] {tag}{label}")
+        # Show WHY (the strategist's reasoning) so the operator sees Brukal thinking
+        # about the findings, not just a bare command list.
+        why = (o.rationale or "").strip()
+        if why and why != label:
+            print(f"         why: {why.splitlines()[0][:110]}")
         if o.command:
             print(f"         RUN: {o.command}")
         elif o.web:
             print(f"         WEB: {o.web}")
         elif o.manual:
             print(f"         MANUAL (you): {o.manual}")
-    print("    [type a command to run it · type an instruction to re-plan · help · quit]")
+    print("    [type a command to run it · type an instruction to re-plan · "
+          "host <name> to authorise a vhost · help · quit]")
 
 
 def _report(d, r):
@@ -955,14 +972,47 @@ def _report(d, r):
         print("     (ran, no output)")
 
 
+def _deny_hint(d):
+    """After a DENY, tell the operator how to unblock it when it's a fixable case
+    (an out-of-scope vhost they can authorise, or shell metacharacters to drop)."""
+    reason = (getattr(d, "reason", "") or "").lower()
+    if "out of scope" in reason or "out-of-scope host" in reason:
+        print("     ↪ if that host is a real vhost of your target, authorise it: "
+              "type  host <name>  (e.g.  host nexus.htb)")
+    elif "metacharacter" in reason or "injection" in reason:
+        print("     ↪ drop shell operators (| > 2>/dev/null && ;) — send the bare "
+              "command; output is captured for you.")
+
+
+def _authorise_vhost(session, name: str) -> bool:
+    """Operator authorises a virtual host (e.g. nexus.htb) for this session — a
+    deliberate scope-TIME act (same as `brukal target`/`brukal web --host`), NOT a
+    runtime widen by an agent. Installs a new Scope (with the vhost added) on both the
+    shell gate and the web browser, so subsequent web renders and Host-header requests
+    to that vhost pass the gate. Returns False if nothing to update."""
+    name = (name or "").strip().lower()
+    if not name:
+        return False
+    updated = False
+    gate = getattr(session.executor, "_gate", None)
+    if gate is not None:
+        gate.scope = gate.scope.with_host(name)
+        updated = True
+    if getattr(session, "browser", None) is not None:
+        session.browser._scope = session.browser._scope.with_host(name)
+        updated = True
+    return updated
+
+
 def _take_option(session, opt):
-    """Execute a chosen option: a RUN/WEB goes through the gate; a MANUAL is recorded."""
+    """Execute a chosen option: a RUN/WEB goes through the gate; a MANUAL is recorded.
+    Narrate the result so the operator sees Brukal *hunt* — run, learn, react."""
     if opt.command:
-        d, r, _ = session.run(opt.command)
-        _report(d, r)
+        d, r, hl = session.run(opt.command)
+        _report(d, r); _deny_hint(d); _show_highlights_plain(hl)
     elif opt.web:
-        d, r, _ = session.run_web(opt.web)
-        _report(d, r)
+        d, r, hl = session.run_web(opt.web)
+        _report(d, r); _deny_hint(d); _show_highlights_plain(hl)
     elif opt.manual:
         session.manual(opt.manual)
         print(f"  recorded manual step: {opt.manual}")
@@ -1047,6 +1097,13 @@ def _plain_loop(session, audit, target, cage, auto=False):
         elif raw == "plan":
             print("  re-planning the route…")
             session.make_plan(); _show_plan_plain(session); session.option_list = []
+        elif raw.split(None, 1)[0] in ("host", "scope", "authorise", "authorize") \
+                and len(raw.split(None, 1)) == 2:
+            name = raw.split(None, 1)[1].strip()
+            if _authorise_vhost(session, name):
+                print(f"  ✓ authorised vhost {name} (scope-time). It's now in scope for "
+                      f"web + shell against this target.")
+            session.option_list = []
         elif raw.startswith("note "):
             session.note(raw[5:].strip()); session.option_list = []; print("  noted.")
         elif raw.startswith("manual "):
@@ -1055,11 +1112,13 @@ def _plain_loop(session, audit, target, cage, auto=False):
             for s in (session.skills.retrieve(raw[7:].strip(), 4) if session.skills else []):
                 print(f"    [{s.category}] {s.name}")
         elif raw.startswith("run "):
-            d, r, _ = session.run(raw[4:].strip()); _report(d, r); session.option_list = []
+            d, r, hl = session.run(raw[4:].strip())
+            _report(d, r); _deny_hint(d); _show_highlights_plain(hl); session.option_list = []
         elif raw.startswith("ask "):
             session.advise_options(raw[4:].strip(), n=3)         # explicit steer
         elif _looks_like_command(raw):
-            d, r, _ = session.run(raw); _report(d, r); session.option_list = []   # custom command
+            d, r, hl = session.run(raw)                          # custom command
+            _report(d, r); _deny_hint(d); _show_highlights_plain(hl); session.option_list = []
         else:
             session.advise_options(raw, n=3)     # free text = an instruction to steer
 
