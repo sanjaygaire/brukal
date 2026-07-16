@@ -60,6 +60,7 @@ _PRICING = {
     "deepseek-reasoner": (0.55, 2.19),
     "deepseek-r1":       (0.55, 2.19),   # OpenRouter/other naming for the reasoner
     "deepseek-chat":     (0.27, 1.10),
+    "deepseek":          (0.27, 1.10),   # fallback for any other deepseek-* id (approx)
     "glm-4.6":           (0.60, 2.20),
     "z-ai/glm-4.6":      (0.60, 2.20),
     "kimi-k2":           (0.60, 2.50),

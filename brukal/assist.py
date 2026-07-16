@@ -916,7 +916,10 @@ def _print_options(opts):
     print("\n  NEXT MOVES — pick a number, or type your own command/instruction:")
     for i, o in enumerate(opts, 1):
         tag = f"[{o.phase}] " if o.phase else ""
-        label = o.goal or (o.rationale or "").splitlines()[0][:70] or "next move"
+        # next(iter(...), "") is empty-safe: an option with no goal AND no rationale
+        # (a weak/misbehaving model) must not IndexError on ""splitlines()[0].
+        first_line = next(iter((o.rationale or "").splitlines()), "")
+        label = o.goal or first_line[:70] or "next move"
         print(f"    [{i}] {tag}{label}")
         if o.command:
             print(f"         RUN: {o.command}")

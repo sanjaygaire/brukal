@@ -355,6 +355,17 @@ def test_strategist_options_parses_ranked_list():
     assert opts[1].command.startswith("hydra") and opts[1].phase == "exploitation"
 
 
+def test_print_options_survives_empty_goal_and_rationale():
+    # Regression: a weak/misbehaving model returned an option with no goal AND no
+    # rationale; _print_options did "".splitlines()[0] -> IndexError and crashed the
+    # manual menu. It must render (as "next move") without raising.
+    from brukal.agents.strategist import Suggestion
+    from brukal.assist import _print_options
+    opt = Suggestion(rationale="", command="gobuster dir -u http://x/",
+                     target="10.10.10.5", manual=None, phase="", goal="")
+    _print_options([opt])          # would raise IndexError before the fix
+
+
 def test_advise_options_falls_back_to_single_when_unformatted():
     # a model that ignores the ranked format still yields one usable option
     sess = AssistSession("10.10.10.5", None,
