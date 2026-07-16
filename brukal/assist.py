@@ -1077,6 +1077,19 @@ def _emit(console, plain: str, markup: str | None = None):
         print(plain)
 
 
+def _spend_line(session) -> str:
+    """One-line LLM token/cost tally for a finished hunt, read from the strategist's
+    client meter. Reachable because the strategist is the only thing that calls the
+    model, so its meter is the whole engagement's spend."""
+    try:
+        meter = session.strategist._llm.usage
+    except AttributeError:
+        return ""
+    if not meter.calls:
+        return "  brain: no model calls (fully deterministic run)"
+    return f"  brain spend — {meter.summary()}"
+
+
 def _ensure_key_env(var: str, label: str) -> bool:
     """Ensure an API-key env var is set; prompt (hidden) if interactive."""
     if os.environ.get(var):
@@ -1334,11 +1347,14 @@ def _session_vault(session):
 def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
              audit_path="runs/audit.jsonl", vault_path="runs/vault",
              container="brukal-kali", model=None, provider=None, base_url=None,
-             max_steps=20) -> int:
+             max_steps=20, handoff_to_menu=True) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
-    in-scope enumeration and hands back cleanly on a manual/escalation step, a
-    stall, or the step budget. Every command still goes through the gate; nothing
-    out of scope runs. This is the engine `solve --auto` wraps, without a UI."""
+    in-scope enumeration. When it hands back (manual/escalation/stall/budget), and
+    a human is present at a terminal, it drops straight into the interactive menu on
+    the SAME session — no state lost, no need to re-launch `brukal solve`. Every
+    command still goes through the gate; nothing out of scope runs. Set
+    handoff_to_menu=False (or BRUKAL_NO_HANDOFF=1) to keep the old stop-and-exit
+    behaviour. This is the engine `solve --auto` wraps, plus the live view."""
     from .loop import GroundedLoop
 
     holder: dict = {"status": None}
@@ -1415,14 +1431,55 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         "exhausted": "hit the step budget",
         "done": "nothing left to safely automate",
     }.get(result.stop_reason, result.stop_reason)
+    spend = _spend_line(session)
+
+    # Hand the wheel to the operator IN THE SAME SESSION when a human is present.
+    # Auto stops because it ran out of *safe autonomous* moves — not because the
+    # engagement is over. Dropping into the menu keeps every note/highlight/plan and
+    # lets the human supply the next insight (the vhost leap, an exploit) without
+    # re-launching. Skip only when non-interactive (piped/CI) or explicitly opted out.
+    to_menu = (handoff_to_menu and not os.environ.get("BRUKAL_NO_HANDOFF")
+               and sys.stdin.isatty())
+    if to_menu:
+        _emit(console,
+              f"\n  ⏹ auto handed back: {handoff}\n     {result.stop_detail}\n"
+              f"  ran {result.executed} command(s), {result.blocked} blocked · "
+              f"{spend}\n  ↪ switching to MANUAL — you drive now (same session; "
+              f"'q' to quit).\n",
+              f"\n  [bold yellow]⏹ auto handed back:[/] {handoff}\n"
+              f"     [grey70]{result.stop_detail}[/]\n"
+              f"  ran [bold]{result.executed}[/] command(s), {result.blocked} blocked · "
+              f"{spend}\n  [bold cyan]↪ switching to MANUAL[/] — you drive now "
+              f"(same session; 'q' to quit).\n")
+        # Restore the interactive approver (auto swapped in the auto one), so an
+        # ESCALATE the operator picks prompts y/N instead of auto-deciding.
+        from .engagement import interactive_approver
+        session.executor._approver = _rich_approver(console, holder) if console \
+            else interactive_approver
+        try:
+            if console is not None:
+                _menu_loop(session, audit, target, cage, console, holder, auto=False)
+            else:
+                _plain_loop(session, audit, target, cage, auto=False)
+        except KeyboardInterrupt:
+            print()
+        except Exception as e:
+            if os.environ.get("BRUKAL_DEBUG"):
+                raise
+            print(f"\n  ⚠ model/cage error: {e}")
+            return 1
+        print(f"\n  session recorded to {audit_path} · chain intact: {audit.verify()}\n")
+        return 0
+
     _emit(console,
           f"\n  ⏹ stopped: {handoff}\n     {result.stop_detail}\n"
           f"  ran {result.executed} command(s), {result.blocked} blocked · "
           f"continue in: brukal solve {target}\n"
-          f"  session recorded to {audit_path} · chain intact: {audit.verify()}\n",
+          f"  session recorded to {audit_path} · chain intact: {audit.verify()}\n"
+          f"{spend}\n",
           f"\n  [bold yellow]⏹ stopped:[/] {handoff}\n     [grey70]{result.stop_detail}[/]\n"
           f"  ran [bold]{result.executed}[/] command(s), {result.blocked} blocked · "
           f"continue in: [cyan]brukal solve {target}[/]\n"
           f"  session recorded to {audit_path} · chain intact: "
-          f"[green]{audit.verify()}[/]\n")
+          f"[green]{audit.verify()}[/]\n{spend}\n")
     return 0

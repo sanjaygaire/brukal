@@ -205,7 +205,8 @@ def _cmd_auto(args) -> int:
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
         container=args.container, max_steps=args.max_steps,
-        model=args.model, provider=args.provider, base_url=args.base_url)
+        model=args.model, provider=args.provider, base_url=args.base_url,
+        handoff_to_menu=not args.no_handoff)
 
 
 def _cmd_web(args) -> int:
@@ -438,6 +439,9 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--container", default="brukal-kali")
     pa.add_argument("--max-steps", type=int, default=20,
                     help="hand back to you after this many autonomous turns")
+    pa.add_argument("--no-handoff", action="store_true",
+                    help="when auto hands back, stop and exit instead of dropping "
+                         "into the manual menu on the same session")
     pa.add_argument("--model", default=None)
     pa.add_argument("--provider", default=None,
                     help="anthropic (default) | ollama | openai | openrouter | ...")
