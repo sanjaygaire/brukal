@@ -12,10 +12,49 @@ still goes through the gate. A suggestion is not a bypass.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
 from ..llm import LLMClient
+
+log = logging.getLogger(__name__)
+
+# Tool basenames used to recognise a shell-looking line during salvage extraction.
+# These are TOOL names (provider-agnostic), never model/provider names.
+_TOOLISH = frozenset({
+    "nmap", "masscan", "gobuster", "ffuf", "feroxbuster", "dirb", "wfuzz", "nikto",
+    "whatweb", "wafw00f", "nuclei", "curl", "wget", "dig", "host", "dnsrecon",
+    "dnsenum", "fierce", "sslscan", "smbclient", "smbmap", "enum4linux",
+    "enum4linux-ng", "nbtscan", "snmpwalk", "onesixtyone", "ldapsearch", "redis-cli",
+    "hydra", "medusa", "ncrack", "sqlmap", "wpscan", "john", "hashcat", "searchsploit",
+    "crackmapexec", "netexec", "nxc", "kerbrute", "evil-winrm", "nc", "ncat", "netcat",
+    "socat", "ssh", "ping", "python3", "php", "ruby", "perl"})
+
+_FENCE_RE = re.compile(r"```[a-zA-Z0-9]*\s*\n?(.+?)```", re.S)
+
+
+def _shell_ish(line: str) -> bool:
+    line = line.strip().strip("`$ ").strip()
+    if not line or line.startswith("#"):
+        return False
+    first = line.split()[0].lower().rsplit("/", 1)[-1]   # basename of a path-y tool
+    return first in _TOOLISH
+
+
+def _salvage_command(text: str) -> "str | None":
+    """Last-resort command extraction when the model gave no clean `RUN:` line — look
+    inside a fenced code block first, then for the first shell-looking line in prose.
+    Keeps a mis-formatted-but-usable reply from wasting the whole turn."""
+    m = _FENCE_RE.search(text or "")
+    if m:
+        for line in m.group(1).splitlines():
+            if _shell_ish(line):
+                return line.strip().strip("`$ ").strip()
+    for line in (text or "").splitlines():
+        if _shell_ish(line):
+            return line.strip().strip("`$ ").strip()
+    return None
 
 STRATEGIST_SYSTEM = (
     "You are a friendly, sharp penetration-testing companion guiding a human "
@@ -288,6 +327,18 @@ def _parse(text: str, default_target: str) -> Suggestion:
         command = command or None
     if manual and manual.lower() in ("none", "n/a", "-"):
         manual = None
+
+    # No clean RUN/WEB/MANUAL parsed -> try to salvage a command from a code fence or
+    # a shell-looking line before giving up. Only warn if the model clearly TRIED to
+    # propose an action (used a marker/fence) but we couldn't parse it — a deliberate
+    # advice-only reply is legitimate and stays quiet.
+    if command is None and manual is None and web is None:
+        salvaged = _salvage_command(text)
+        if salvaged:
+            command = salvaged
+        elif re.search(r"(?im)^\s*(RUN|WEB|MANUAL)\s*:|```", text):
+            log.warning("strategist: could not extract an action from model reply: %r",
+                        (text[:200] + "…") if len(text) > 200 else text)
 
     # Fall back to the whole reply as rationale if the model ignored the template.
     if not reasoning:

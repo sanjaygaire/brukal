@@ -22,8 +22,38 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 import urllib.error
 import urllib.request
+
+# Reasoning/thinking models wrap their private chain-of-thought in <think>...</think>
+# (or leave the answer empty and put it in a separate `reasoning_content` field). We
+# strip the think block and fall back to reasoning_content so the strategist parser
+# always sees the real answer, whatever the provider does.
+_THINK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.I | re.S)
+_LEAD_THINK_RE = re.compile(r"^\s*<think\b[^>]*>.*\Z", re.I | re.S)  # unclosed leading block
+
+
+def _strip_think(text: str) -> str:
+    """Remove <think>...</think> reasoning so only the model's actual answer remains.
+    If stripping would empty the text (the whole reply was one think block), keep the
+    original — something to parse beats nothing."""
+    if not text or "<think" not in text.lower():
+        return text or ""
+    stripped = _THINK_RE.sub("", text)
+    # an unclosed leading <think> (truncated reasoning) with no answer after it
+    if "<think" in stripped.lower() and "</think" not in stripped.lower():
+        stripped = _LEAD_THINK_RE.sub("", stripped)
+    stripped = stripped.strip()
+    return stripped or text.strip()
+
+
+def _retryable(err) -> bool:
+    """Transient network / server conditions worth retrying (not 4xx client errors)."""
+    if isinstance(err, urllib.error.HTTPError):
+        return err.code in (408, 409, 425, 429, 500, 502, 503, 504)
+    return isinstance(err, (urllib.error.URLError, TimeoutError, ConnectionError))
 
 # provider -> (base_url, api-key env var, default model). base_url None means the
 # caller must supply --base-url (a generic OpenAI-compatible endpoint).
@@ -143,14 +173,16 @@ class _AnthropicBackend:
             "output": getattr(u, "output_tokens", 0),
             "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
         } if u is not None else {}
-        return "".join(b.text for b in msg.content
+        text = "".join(b.text for b in msg.content
                        if getattr(b, "type", None) == "text")
+        return _strip_think(text)
 
 
 class _OpenAICompatBackend:
     """Any OpenAI chat-completions endpoint, via urllib (no dependency)."""
 
-    def __init__(self, model: str, base_url: str, api_key: str, timeout: int = 180):
+    def __init__(self, model: str, base_url: str, api_key: str, timeout: int = 180,
+                 retries: int = 3, backoff: float = 0.5):
         if not base_url:
             raise ValueError("no base_url — pass --base-url or BRUKAL_BASE_URL")
         if not model:
@@ -159,14 +191,13 @@ class _OpenAICompatBackend:
         self.model = model
         self.api_key = api_key or "not-needed"
         self.timeout = timeout
+        self.retries = retries        # total attempts on transient failures
+        self.backoff = backoff        # base seconds; exponential
         self.last_usage: dict = {}
 
-    def propose(self, system: str, user: str, max_tokens: int) -> str:
-        body = json.dumps({
-            "model": self.model, "max_tokens": max_tokens,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user}],
-        }).encode()
+    def _post(self, body: bytes) -> dict:
+        """POST once, retrying transient network/5xx/429 errors with backoff. A 4xx
+        (bad key, bad request) fails fast — retrying won't help."""
         req = urllib.request.Request(
             self.url, data=body, method="POST",
             headers={"Content-Type": "application/json",
@@ -176,14 +207,40 @@ class _OpenAICompatBackend:
                      # "Python-urllib/x.y" signature with HTTP 403 (error 1010).
                      "User-Agent": "Brukal/1.0 (+https://github.com/sanjaygaire/brukal)",
                      "Authorization": f"Bearer {self.api_key}"})
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:300]
-            raise RuntimeError(f"{self.url} -> HTTP {e.code}: {detail}") from None
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"cannot reach {self.url}: {e.reason}") from None
+        last = None
+        for attempt in range(max(1, self.retries)):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                if _retryable(e) and attempt < self.retries - 1:
+                    last = e; time.sleep(self.backoff * (2 ** attempt)); continue
+                detail = e.read().decode(errors="replace")[:300]
+                raise RuntimeError(f"{self.url} -> HTTP {e.code}: {detail}") from None
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                if attempt < self.retries - 1:
+                    last = e; time.sleep(self.backoff * (2 ** attempt)); continue
+                reason = getattr(e, "reason", e)
+                raise RuntimeError(f"cannot reach {self.url}: {reason}") from None
+        # Loop exhausted without returning (shouldn't happen, but fail loud).
+        raise RuntimeError(f"cannot reach {self.url}: {last}")
+
+    @staticmethod
+    def _message_text(message: dict) -> str:
+        """The model's answer text. Falls back to reasoning_content when a thinking
+        model leaves `content` empty and puts the answer in the reasoning field."""
+        content = (message.get("content") or "").strip()
+        if not content:
+            content = (message.get("reasoning_content") or "").strip()
+        return content
+
+    def propose(self, system: str, user: str, max_tokens: int) -> str:
+        body = json.dumps({
+            "model": self.model, "max_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+        }).encode()
+        data = self._post(body)
         u = data.get("usage") or {}
         self.last_usage = {
             "input": u.get("prompt_tokens", 0),
@@ -191,7 +248,8 @@ class _OpenAICompatBackend:
             # some OpenAI-compatible providers report cached input here
             "cache_read": (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
         }
-        return (data["choices"][0]["message"].get("content") or "")
+        message = (data.get("choices") or [{}])[0].get("message") or {}
+        return _strip_think(self._message_text(message))
 
 
 class LLMClient:
