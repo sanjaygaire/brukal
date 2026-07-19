@@ -231,6 +231,27 @@ brukal verify
 > network to `brukal_isolated` in `docker/docker-compose.yml` and keep the cage
 > off any internet-facing network.
 
+#### Kernel-enforced scope (cage egress lock)
+
+The Python gate enforces scope in software; the cage adds a **second, structural
+line of defence at the kernel**. At startup the cage's entrypoint reads the mounted
+`scope.json` and builds a default-drop **nftables** egress ruleset that allows
+output only to the authorised CIDRs (plus loopback, established flows, one pinned
+DNS resolver, and each `authorized_hosts` vhost resolved once at startup). Anything
+else is logged (`brukal-egress-drop`) and dropped — so **even a command that slips
+past the text gate cannot send a packet to a host outside scope.** It is
+**fail-closed**: a missing or unparseable scope installs a drop-all ruleset and the
+cage exits non-zero rather than coming up open.
+
+- Prove it (cage up): `docker/verify_egress.sh brukal-kali 8.8.8.8 <in-scope-ip:port>`
+  — asserts the out-of-scope host is dropped and the in-scope host is reachable.
+- **Scope changes require a cage restart.** The ruleset is built at startup and is
+  deliberately **not** runtime-widenable — that is the guarantee. After editing the
+  mounted scope, `docker compose -f docker/docker-compose.yml restart kali`.
+- Requires a host kernel with nftables and the `NET_ADMIN` cap (granted in compose).
+  On a kernel without nftables support, set `BRUKAL_EGRESS_LOCK=0` to fall back to
+  the software gate alone (you lose the kernel-enforced guarantee).
+
 ### Choosing the model (the brain)
 
 Agents talk to a model through one small `propose()` interface, so Brukal runs on

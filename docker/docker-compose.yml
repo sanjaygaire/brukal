@@ -35,6 +35,20 @@ services:
       # host (open ./docker/vault in Obsidian). Point Brukal at it with
       # `--vault docker/vault`; the shared lessons file is docker/vault/lessons.jsonl.
       - ./vault:/vault
+      # The active scope, read-only. The entrypoint builds the kernel egress lock
+      # from THIS file at startup. Changing scope => rebuild the ruleset => you MUST
+      # restart the cage (`docker compose ... restart kali`). That non-runtime-
+      # widenability is the point. Mount a different scope by editing this line
+      # (e.g. ../scope.htb.json) or override BRUKAL_SCOPE.
+      - ../scope.json:/scope.json:ro
+    environment:
+      # Egress lock on by default (fail-closed). Set to 0 only on a kernel without
+      # nftables support — you then fall back to the software gate alone.
+      - BRUKAL_EGRESS_LOCK=${BRUKAL_EGRESS_LOCK:-1}
+      # Which scope file inside the cage drives the ruleset, and the single DNS
+      # resolver egress is permitted to (blank => the container's default nameserver).
+      - BRUKAL_SCOPE=${BRUKAL_SCOPE:-/scope.json}
+      - BRUKAL_DNS=${BRUKAL_DNS:-}
     # No published ports: nothing inbound. The only way in is `docker exec`,
     # which the executor uses for approved commands.
 

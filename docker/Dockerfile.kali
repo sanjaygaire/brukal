@@ -13,7 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         dnsutils dnsrecon sslscan \
         smbclient smbmap enum4linux nbtscan snmp onesixtyone ldap-utils redis-tools \
         openvpn iproute2 libcap2-bin \
+        nftables python3 \
     && rm -rf /var/lib/apt/lists/*
+# ^ nftables: the entrypoint builds a scope-derived, default-drop egress ruleset
+#   at startup so the KERNEL enforces scope (a command that slips past the Python
+#   gate still cannot send a packet out of scope). python3: parses scope.json.
 
 # The wider offensive arsenal (brute force, web attack, cracking, exploitation
 # helpers, shells). These are ALLOWLISTED, but the risk layer marks them
