@@ -128,6 +128,22 @@ STRATEGIST_PLAN_SYSTEM = (
 )
 
 
+STRATEGIST_ANSWER_SYSTEM = (
+    "You are Brukal, a penetration-testing companion, answering the operator's "
+    "QUESTION about the engagement you are BOTH looking at right now — like a "
+    "teammate at the keyboard, the way Claude Code answers questions about a task.\n"
+    "Answer conversationally and concretely, grounded ONLY in the FINDINGS, KEY "
+    "RESULTS, and NOTES provided (these are the real, gate-executed results). Cite "
+    "the actual ports, services, versions, hosts, paths, and credentials that appear "
+    "there. Be specific and brief — a few sentences, not an essay.\n"
+    "If the findings do NOT contain the answer, SAY SO plainly ('we haven't found "
+    "that yet') and, if useful, name the one command that would find it — but do NOT "
+    "run anything and do NOT invent a result you have no evidence for. Never fabricate "
+    "a flag, a shell, or a credential. If asked 'why' you did something, explain your "
+    "reasoning from the findings. Plain prose; no rigid template."
+)
+
+
 @dataclass
 class PlanStep:
     text: str                 # the concrete step, e.g. "enumerate web on :3000 with feroxbuster"
@@ -325,6 +341,24 @@ class StrategistAgent:
                                  max_tokens=1000)
         self.last_read = parse_read(text)     # the "what just happened" line, shown first
         return parse_options(text, target, limit=n)
+
+    def answer(self, target: str, question: str, findings: str, highlights: str = "",
+               notes: str = "", plan: str = "", reference: str = "") -> str:
+        """Answer the operator's free-text QUESTION about the hunt, grounded in the
+        real findings — a conversational reply, not a move to run. Never fabricates
+        results it has no evidence for (the anti-hallucination rule holds here too)."""
+        parts = [f"TARGET: {target}"]
+        if plan:
+            parts.append(f"PLAN:\n{plan}")
+        if highlights:
+            parts.append(f"KEY RESULTS (what we've confirmed):\n{highlights}")
+        parts.append(f"FINDINGS / what we've done so far:\n"
+                     f"{findings or '(nothing yet — we just started)'}")
+        if reference:
+            parts.append(reference)
+        parts.append(f"OPERATOR'S QUESTION:\n{question}\n\nAnswer it directly.")
+        return self._llm.propose(STRATEGIST_ANSWER_SYSTEM, "\n\n".join(parts),
+                                 max_tokens=700).strip()
 
     def advise(self, target: str, findings: str, notes: str = "",
                reference: str = "", objectives: str = "", plan: str = "") -> Suggestion:

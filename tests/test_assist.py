@@ -355,6 +355,33 @@ def test_strategist_options_parses_ranked_list():
     assert opts[1].command.startswith("hydra") and opts[1].phase == "exploitation"
 
 
+def test_ask_answers_from_findings_and_detects_questions():
+    # Brukal can be asked ABOUT the hunt: the answer is built from the real findings
+    # (not a move to run), and question-vs-instruction detection is correct.
+    from brukal.assist import _looks_like_question
+
+    captured = {}
+
+    class StubLLM:
+        def propose(self, system, user, max_tokens=1024):
+            captured["system"] = system
+            captured["user"] = user
+            return "22/tcp (OpenSSH 9.6) and 80/tcp (nginx) are open; no foothold yet."
+
+    sess = AssistSession("10.10.10.5", None, StrategistAgent(StubLLM()))
+    sess.highlights = [("open port", "22/tcp open ssh OpenSSH 9.6")]
+    sess.notes = ["[ran] nmap -sV 10.10.10.5\n22/tcp ssh"]
+    ans = sess.ask("what ports are open?")
+    assert "OpenSSH" in ans                                  # grounded answer returned
+    assert "QUESTION" in captured["user"] and "OpenSSH" in captured["user"]  # findings fed in
+    assert "Brukal" in captured["system"]                   # the answer persona, not the move template
+
+    assert _looks_like_question("what did you find?")        # trailing '?'
+    assert _looks_like_question("why did you skip ssh")      # interrogative lead
+    assert not _looks_like_question("focus on the web app")  # an instruction
+    assert not _looks_like_question("nmap -sV 10.10.10.5")   # a command
+
+
 def test_print_options_survives_empty_goal_and_rationale():
     # Regression: a weak/misbehaving model returned an option with no goal AND no
     # rationale; _print_options did "".splitlines()[0] -> IndexError and crashed the

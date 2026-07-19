@@ -198,6 +198,17 @@ class AssistSession:
             lines.append(f"{i + 1}. [{mark}] {ph}{st.text}")
         return "\n".join(lines)
 
+    def _highlights_text(self) -> str:
+        return "\n".join(f"{t}: {l}" for t, l in self.highlights) if self.highlights else ""
+
+    def ask(self, question: str) -> str:
+        """Answer the operator's question about the hunt, grounded in real findings.
+        A conversational reply — runs nothing, changes no state."""
+        ref = self._reference(self._skill_focus(question))
+        return self.strategist.answer(
+            self.target, question, self._state(), self._highlights_text(),
+            plan=self._plan_text(), reference=ref)
+
     def advise(self, question: str = ""):
         ref = self._reference(self._skill_focus(question))
         self.last = self.strategist.advise(
@@ -832,6 +843,7 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
             _show_highlights(con, Panel, Text, session.highlights[-8:], "what we know so far")
 
         actions = [("c", "type your own command (gated)"),
+                   ("?", "ask Brukal about the hunt (what did you find? why?)"),
                    ("i", "give an instruction / re-plan the options"),
                    ("p", "run all the SAFE options in PARALLEL"),
                    ("a", f"switch to {'MANUAL' if flags['auto'] else 'AUTO'} mode"),
@@ -860,6 +872,12 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
             session.option_list = []
         elif choice == "c":
             run_and_show(Prompt.ask("  your command")); session.option_list = []
+        elif choice == "?":
+            q = Prompt.ask("  your question about the hunt", default="")
+            if q.strip():
+                with con.status("[cyan]Brukal is reviewing the findings…", spinner="dots"):
+                    ans = session.ask(q.strip())
+                con.print(Panel(ans, title="[bold cyan]🧠 Brukal[/]", border_style="cyan"))
         elif choice == "i":
             instr = Prompt.ask("  your instruction (what should we try / focus on?)",
                                default="")
@@ -894,11 +912,13 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
 
 
 _HELP = """  pick a NUMBER to take that move, or type your own:
-    <cmd>  run any command (through the gate)      ask <text> / <text>  steer the options
+    <cmd>  run any command (through the gate)      <instruction>  steer the options
+    ask <question>   ask Brukal about the hunt (e.g. "what did you find?", "why ssh?")
     p  run all the SAFE options in PARALLEL        note <text>   manual <text>
     host <name>  authorise a vhost (e.g. host nexus.htb) so web/Host-header hits pass
     plan   auto   manual-mode   skills <topic>   verify   quit
-    (`auto` runs the safe steps itself; risky/irreversible moves still pause for your y/N)"""
+    (a question — ending in '?' or starting with what/why/how… — is answered, not run;
+     `auto` runs the safe steps itself; risky/irreversible moves still pause for y/N)"""
 
 
 def _looks_like_command(text: str) -> bool:
@@ -906,6 +926,25 @@ def _looks_like_command(text: str) -> bool:
     instruction to steer with)? First token is a known/allowlisted-ish tool name."""
     first = (text.split() or [""])[0].lower()
     return bool(re.match(r"^[a-z][a-z0-9._-]*$", first)) and first in _COMMON_TOOLS
+
+
+_QUESTION_WORDS = frozenset({
+    "what", "whats", "why", "how", "where", "when", "which", "who", "whose",
+    "is", "are", "was", "were", "did", "does", "do", "can", "could", "should",
+    "would", "will", "has", "have", "tell", "explain", "show", "describe",
+    "summarise", "summarize", "recap"})
+
+
+def _looks_like_question(text: str) -> bool:
+    """Is the operator ASKING about the hunt (answer it) rather than instructing a
+    re-plan? A trailing '?' or a leading interrogative word means a question."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if t.endswith("?"):
+        return True
+    first = re.sub(r"[^a-z]", "", t.split()[0].lower())
+    return first in _QUESTION_WORDS
 
 
 _COMMON_TOOLS = frozenset({
@@ -1127,12 +1166,17 @@ def _plain_loop(session, audit, target, cage, auto=False):
         elif raw.startswith("run "):
             d, r, hl = session.run(raw[4:].strip())
             _report(d, r); _deny_hint(d); _show_highlights_plain(hl); session.option_list = []
-        elif raw.startswith("ask "):
-            session.advise_options(raw[4:].strip(), n=3)         # explicit steer
+        elif raw.startswith("ask ") or raw.startswith("? "):
+            q = raw.split(None, 1)[1].strip()                    # explicit question
+            print(f"\n  🧠 Brukal: {session.ask(q)}\n")
         elif _looks_like_command(raw):
             d, r, hl = session.run(raw)                          # custom command
             _report(d, r); _deny_hint(d); _show_highlights_plain(hl); session.option_list = []
+        elif _looks_like_question(raw):
+            # a question about the hunt -> answer it conversationally (runs nothing)
+            print(f"\n  🧠 Brukal: {session.ask(raw)}\n")
         else:
+            print("  re-planning around that…")
             session.advise_options(raw, n=3)     # free text = an instruction to steer
 
 
