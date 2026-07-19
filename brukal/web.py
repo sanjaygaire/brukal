@@ -160,11 +160,33 @@ class FakeWebCage:
         return WebResult(url=action.url, note=f"[fake {action.kind}] {action.describe()}")
 
 
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+
+
+class _NoAutoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do NOT auto-follow redirects. urllib normally chases a 3xx transparently —
+    which means an in-scope host that 302s to an out-of-scope host would be reached
+    with NO second scope check (a real escape). Returning None from redirect_request
+    makes urllib raise the 3xx as an HTTPError instead, so the cage can surface the
+    Location and require the caller to resubmit the next hop as a fresh, gated
+    WebAction through check_web()."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# One opener, shared: build_opener installs default handlers plus ours, so the
+# no-follow behaviour applies to every HttpWebCage request.
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoAutoRedirect)
+
+
 class HttpWebCage:
     """Real crafted-HTTP-request backend (the interception/replay/tamper primitive):
     sends an arbitrary method/headers/body to an in-scope URL and returns the real
-    response. Browser-only actions (navigate/click/fill/intercept) raise until the
-    Chrome/CDP backend lands — use FakeWebCage or the Chrome backend for those."""
+    response. Redirects are NOT auto-followed — a 3xx is surfaced with its Location so
+    the next hop is re-checked by the gate (no cross-scope redirect escape). Browser-
+    only actions (navigate/click/fill/intercept) raise until the Chrome/CDP backend
+    lands — use FakeWebCage or the Chrome backend for those."""
 
     def __init__(self, timeout: int = 20, max_body: int = 20000):
         self.timeout = timeout
@@ -179,11 +201,19 @@ class HttpWebCage:
         req = urllib.request.Request(action.url, data=data, method=method,
                                      headers=action.headers or {})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with _NO_REDIRECT_OPENER.open(req, timeout=self.timeout) as resp:
                 body = resp.read(self.max_body).decode(errors="replace")
                 return WebResult(status=resp.status, url=resp.geturl(), body=body,
                                  headers=dict(resp.headers))
         except urllib.error.HTTPError as e:
+            if e.code in _REDIRECT_CODES:
+                loc = (e.headers.get("Location") if e.headers else "") or ""
+                # DO NOT follow. Surface the Location; the caller must resubmit it as a
+                # new gated action so the redirect target is scope-checked.
+                return WebResult(status=e.code, url=action.url,
+                                 headers=dict(e.headers or {}),
+                                 note=f"redirect NOT followed -> {loc} "
+                                      f"(resubmit as a new gated action to re-check scope)")
             body = e.read(self.max_body).decode(errors="replace")
             return WebResult(status=e.code, url=action.url, body=body,
                              headers=dict(e.headers or {}), note="http error")
@@ -198,16 +228,25 @@ class DockerHttpWebCage:
     (never a shell string), so there is no shell-injection surface even though the
     URL/headers/body are attacker-controlled payloads."""
 
+    # NB: a no-follow redirect handler (class NR) is installed so a 3xx to an
+    # out-of-scope host is surfaced, never chased — same guarantee as HttpWebCage.
     _SCRIPT = (
         "import sys,json,urllib.request,urllib.error\n"
+        "class NR(urllib.request.HTTPRedirectHandler):\n"
+        " def redirect_request(self,*a):return None\n"
+        "op=urllib.request.build_opener(NR)\n"
         "u,m,b=sys.argv[1],sys.argv[2],sys.argv[3]\n"
         "h=dict(x.split(': ',1) for x in sys.argv[4:] if ': ' in x)\n"
         "rq=urllib.request.Request(u,data=b.encode() if b else None,method=m,headers=h)\n"
         "try:\n"
-        " r=urllib.request.urlopen(rq,timeout=20)\n"
+        " r=op.open(rq,timeout=20)\n"
         " print(json.dumps({'status':r.status,'url':r.geturl(),'headers':dict(r.headers),'body':r.read(20000).decode('utf-8','replace')}))\n"
         "except urllib.error.HTTPError as e:\n"
-        " print(json.dumps({'status':e.code,'url':u,'headers':dict(e.headers or {}),'body':e.read(20000).decode('utf-8','replace'),'note':'http error'}))\n"
+        " if e.code in (301,302,303,307,308):\n"
+        "  loc=(e.headers.get('Location') if e.headers else '') or ''\n"
+        "  print(json.dumps({'status':e.code,'url':u,'headers':dict(e.headers or {}),'note':'redirect NOT followed -> '+loc+' (resubmit as a new gated action to re-check scope)'}))\n"
+        " else:\n"
+        "  print(json.dumps({'status':e.code,'url':u,'headers':dict(e.headers or {}),'body':e.read(20000).decode('utf-8','replace'),'note':'http error'}))\n"
         "except Exception as e:\n"
         " print(json.dumps({'status':None,'url':u,'note':str(e)}))\n"
     )

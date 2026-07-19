@@ -35,11 +35,17 @@ class Scope:
     def contains_ip(self, ip_text: str) -> bool:
         """True only if ip_text is a valid IP inside an authorised network.
 
-        Fail-closed: anything that does not parse as an IP, or that falls
-        outside every authorised network, returns False (i.e. out of scope).
+        Accepts dotted IPv4, IPv6 literals, AND integer/0x-hex/0o-octal encodings
+        of an IP (canonicalised first) so a decimal/hex-smuggled host cannot slip
+        past by numeric form. Fail-closed: anything that does not parse as an IP, or
+        that falls outside every authorised network, returns False (out of scope).
         """
+        from .hostmatch import canonical_ip
+        canon = canonical_ip((ip_text or "").strip())
+        if canon is None:
+            return False
         try:
-            ip = ipaddress.ip_address(ip_text.strip())
+            ip = ipaddress.ip_address(canon)
         except ValueError:
             return False
         return any(ip in net for net in self.authorized_networks)

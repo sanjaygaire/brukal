@@ -196,3 +196,34 @@ def test_web_rate_limit_denies_when_exceeded():
     assert br.run(a)[0].verdict == "ALLOW"
     d, r = br.run(a)                                 # third within the minute
     assert d.verdict == "DENY" and d.layer == "hard:web-rate" and r is None
+
+
+def test_httpwebcage_does_not_follow_redirect_to_out_of_scope():
+    # A real backend test: an in-scope host that 302s to http://evil.com/ must NOT be
+    # followed — the out-of-scope target must never be reached. The cage surfaces the
+    # Location so the caller can resubmit it as a fresh, gated action.
+    import http.server
+    import threading
+    from brukal.web import HttpWebCage
+
+    class _Redirector(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", "http://evil.com/")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Redirector)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        res = HttpWebCage(timeout=5).run(WebAction("get", url=f"http://127.0.0.1:{port}/"))
+        assert res.status == 302                       # the redirect itself, not followed
+        assert "evil.com" not in (res.url or "")       # did NOT navigate to the out-of-scope host
+        assert "evil.com" in (res.note or "")          # surfaced the Location for a re-check
+        assert not (res.body or "")                    # no body fetched from evil.com
+    finally:
+        srv.shutdown()
