@@ -225,6 +225,20 @@ class AssistSession:
                 seen.add(c); out.append(c)
         return "\n".join(f"- {c}" for c in out[-limit:])
 
+    def record_verified_success(self, verified):
+        """A success was CONFIRMED from real gated output (see verify.py). Promote it
+        to the trusted lesson store with provenance, so the brain grows only from
+        verified wins. No-op if there's no lesson store."""
+        if self.lessons is None:
+            return None
+        tech = sorted({m.lower() for m in _TECH_HINTS.findall(self._highlights_text())})
+        tool = (verified.command.split() or [""])[0].lstrip("`").split("/")[-1].lower()
+        service = ", ".join(tech[:3]) or self.target
+        tags = [t for t in ([tool] + tech) if t]
+        return self.lessons.record_verified_success(
+            target=self.target, service=service, command=verified.command,
+            outcome=f"{verified.kind}: {verified.evidence[:80]}", tags=tags)
+
     def ask(self, question: str) -> str:
         """Answer the operator's question about the hunt, grounded in real findings.
         A conversational reply — runs nothing, changes no state."""
@@ -1580,7 +1594,9 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
             print(f"  [{st.index}] {(st.phase or '').upper():<12} {st.verdict or '-':<9} "
                   f"{(st.command or '')[:70]}\n        {st.summary[:100]}")
 
-    loop = GroundedLoop(session, max_steps=max_steps, observer=observer)
+    from .verify import Verifier
+    loop = GroundedLoop(session, max_steps=max_steps, observer=observer,
+                        verifier=Verifier())      # confirm 'solved' from real output
 
     try:
         if not session.plan:
@@ -1604,6 +1620,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         return 1
 
     handoff = {
+        "solved": "SOLVED — success verified from real gated output",
         "manual": "the next step is yours (intrusive/interactive exploitation)",
         "escalation": "a step needs your sign-off (ESCALATE)",
         "stalled": "no safe next step — over to you",

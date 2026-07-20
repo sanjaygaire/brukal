@@ -79,7 +79,7 @@ class LoopStep:
 class LoopResult:
     """The outcome of a whole autonomous run."""
     steps: list[LoopStep]
-    stop_reason: str                          # manual | escalation | stalled | exhausted | done
+    stop_reason: str          # solved | manual | escalation | stalled | exhausted | done
     stop_detail: str
 
     @property
@@ -93,6 +93,12 @@ class LoopResult:
     @property
     def paused_for_human(self) -> bool:
         return self.stop_reason in ("manual", "escalation")
+
+    @property
+    def solved(self) -> bool:
+        """True only when a success condition was CONFIRMED from real gated output
+        (never the model's prose)."""
+        return self.stop_reason == "solved"
 
 
 class GroundedLoop:
@@ -109,8 +115,9 @@ class GroundedLoop:
     """
 
     def __init__(self, session, *, max_steps: int = 20, max_stalls: int = 4,
-                 max_similar: int = 4, max_coach: int = 3, observer=None):
+                 max_similar: int = 4, max_coach: int = 3, observer=None, verifier=None):
         self.session = session
+        self._verifier = verifier             # optional Verifier: confirms 'solved'
         self.max_steps = max_steps
         self.max_stalls = max_stalls
         self.max_similar = max_similar        # how many near-duplicate moves to tolerate
@@ -133,6 +140,25 @@ class GroundedLoop:
         result = LoopResult(steps=self.steps, stop_reason=reason, stop_detail=detail)
         self._emit("stop", reason=reason, detail=detail, result=result)
         return result
+
+    def _check_solved(self, command, result, source):
+        """If the REAL output of an executed command satisfies the success condition
+        (a captured flag / verified foothold), finish as `solved` and promote the win
+        to the trusted lesson store. Grounded: prose can never trigger this — only
+        gate-executed output reaches here. Returns a LoopResult on solve, else None."""
+        if self._verifier is None or result is None:
+            return None
+        verified = self._verifier.check(command, result, source)
+        if verified is None:
+            return None
+        try:
+            self.session.record_verified_success(verified)   # brain grows only on a confirmed win
+        except Exception:
+            pass                                             # promotion must never break the finish
+        self._emit("solved", verified=verified)
+        return self._finish(
+            "solved", f"{verified.kind} verified from real gated output "
+                      f"[{verified.source}] `{verified.command}`: {verified.evidence[:64]}")
 
     def run(self) -> LoopResult:
         """Run until a terminal condition and return the trace + why it stopped."""
@@ -160,6 +186,9 @@ class GroundedLoop:
                 self.steps.append(step)
                 self._emit("step", step=step)
                 if result is not None:
+                    solved = self._check_solved(f"WEB: {reflex}", result, "web")
+                    if solved is not None:
+                        return solved            # the rendered page contained the flag
                     continue                     # re-plan with the rendered page in hand
 
             self._emit("thinking")
@@ -226,6 +255,9 @@ class GroundedLoop:
             self._emit("step", step=step)
 
             if executed:
+                solved = self._check_solved(action, result, "web" if is_web else "shell")
+                if solved is not None:
+                    return solved                # success CONFIRMED from real output
                 self._ran.add(_norm_cmd(action))
                 self._sig_counts[sig] = self._sig_counts.get(sig, 0) + 1
                 self._stalls = 0
