@@ -226,3 +226,52 @@ def test_loop_reflex_auto_renders_a_web_service():
 def test_norm_cmd_collapses_whitespace():
     assert _norm_cmd("  nmap   -sV   10.0.0.1 ") == "nmap -sV 10.0.0.1"
     assert _norm_cmd(None) == ""
+
+
+# -- PHASE 2: coach-then-retry instead of instant abort ----------------------
+
+def test_loop_coaches_a_repeat_then_proceeds_to_a_new_move():
+    # A repeated proposal must NOT instantly abort the run. The loop coaches the
+    # model, and when the model then offers a GENUINELY DIFFERENT move it proceeds —
+    # recon -> (repeat, coached) -> enum -> foothold, no stall.
+    loop, sess, kali, tmp = _loop([
+        "1. [recon] scan",                                            # make_plan()
+        _adv("scan", run="nmap -sV 10.10.10.5"),                      # runs
+        _adv("scan again", run="nmap -sV 10.10.10.5"),               # repeat -> COACHED
+        _adv("enumerate web", run="whatweb http://10.10.10.5"),      # a NEW move -> runs
+        _adv("exploit the login", manual="try default creds admin:admin"),  # hand off
+    ])
+    try:
+        sess.make_plan()
+        result = loop.run()
+        assert kali.executed == ["nmap -sV 10.10.10.5", "whatweb http://10.10.10.5"]
+        assert result.stop_reason == "manual"     # progressed, did NOT stall on the repeat
+        assert result.executed == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_planner_context_leads_with_known_and_already_tried():
+    # After a command runs, the next planner prompt must feed back the structured
+    # KNOWN facts (highlights) and an ALREADY TRIED list (executed commands), so the
+    # model builds on knowledge instead of re-deriving / re-running.
+    captured = {}
+
+    class CapLLM:
+        def propose(self, system, user, max_tokens=1024):
+            captured["user"] = user
+            return _adv("next", run="whatweb http://10.10.10.5")
+
+    tmp = tempfile.mkdtemp()
+    ex = Executor(Gate(load_scope(SCOPE)), FakeKali(), AuditLog(Path(tmp) / "a.jsonl"))
+    sess = AssistSession("10.10.10.5", ex, StrategistAgent(CapLLM()))
+    try:
+        d, r, _ = sess.run("nmap -sV 10.10.10.5")            # executes -> tracked
+        assert r is not None and "nmap -sV 10.10.10.5" in sess.executed_cmds
+        sess.highlights.append(("open port", "22/tcp open ssh OpenSSH 9.6"))
+        sess.advise()
+        u = captured["user"]
+        assert "ALREADY TRIED" in u and "nmap -sV 10.10.10.5" in u
+        assert "KNOWN" in u and "OpenSSH 9.6" in u
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

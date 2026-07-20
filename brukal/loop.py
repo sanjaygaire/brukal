@@ -108,17 +108,19 @@ class GroundedLoop:
                 a broken observer can never change what the loop runs.
     """
 
-    def __init__(self, session, *, max_steps: int = 20, max_stalls: int = 2,
-                 max_similar: int = 2, observer=None):
+    def __init__(self, session, *, max_steps: int = 20, max_stalls: int = 4,
+                 max_similar: int = 4, max_coach: int = 3, observer=None):
         self.session = session
         self.max_steps = max_steps
         self.max_stalls = max_stalls
         self.max_similar = max_similar        # how many near-duplicate moves to tolerate
+        self.max_coach = max_coach            # coach a repeat this many times before stalling
         self._observer = observer
         self.steps: list[LoopStep] = []
         self._ran: set[str] = set()           # commands that have really executed
         self._sig_counts: dict = {}           # near-duplicate signature -> count
         self._stalls = 0                      # consecutive blocked proposals
+        self._coach_streak = 0                # consecutive coached repeats without a new move
 
     def _emit(self, kind: str, **payload) -> None:
         if self._observer is not None:
@@ -173,15 +175,34 @@ class GroundedLoop:
                 return self._finish("done", suggestion.goal or
                                     (suggestion.rationale or "").strip()[:160])
 
-            # Grounding guard: exact repeat of something already executed = spinning.
-            if _norm_cmd(action) in self._ran:
-                return self._finish("stalled", f"re-proposed a command already run: {action}")
-            # Near-duplicate guard: too many trivially-different variants of the same
-            # tool+target (the Nexus cycling) -> stop instead of burning the budget.
+            # Grounding guard: a repeat or over-explored near-duplicate is NOT an
+            # instant abort. COACH the model ("you already ran that — pick a
+            # genuinely different move") and let it retry; only stall after it keeps
+            # failing to produce a new move (real, repeated non-progress).
             sig = _sig(action)
-            if self._sig_counts.get(sig, 0) >= self.max_similar:
-                return self._finish("stalled",
-                                    f"cycling on near-duplicate `{sig[0]}` moves against the same target")
+            repeated = _norm_cmd(action) in self._ran
+            over_similar = self._sig_counts.get(sig, 0) >= self.max_similar
+            if repeated or over_similar:
+                self._coach_streak += 1
+                if self._coach_streak > self.max_coach:
+                    what = ("already-run commands" if repeated
+                            else f"near-duplicate `{sig[0]}` moves")
+                    return self._finish(
+                        "stalled", f"kept proposing {what} despite coaching "
+                                   f"({self._coach_streak - 1} nudges) — no genuinely new move")
+                coach = (
+                    f"You already ran `{action}` and its result is in the findings — do "
+                    f"NOT run it again. Choose a GENUINELY DIFFERENT next move: a "
+                    f"different tool, port, path, or advance to the next phase."
+                    if repeated else
+                    f"You have already tried several `{sig[0]}` variants against this "
+                    f"target with no new result. Switch approach — a different tool or "
+                    f"the next phase, not another `{sig[0]}` tweak.")
+                self.session.note(coach)
+                self._emit("coached", action=action, note=coach,
+                           streak=self._coach_streak)
+                continue
+            self._coach_streak = 0        # a genuinely new move — reset the coach counter
 
             # The one door: propose -> gate -> (maybe) run -> observe real output.
             self._emit("running", action=action, web=is_web,

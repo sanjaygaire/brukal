@@ -368,14 +368,29 @@ class StrategistAgent:
         text = self._llm.propose(STRATEGIST_PLAN_SYSTEM, "\n\n".join(parts), max_tokens=500)
         return parse_plan(text)
 
-    def _context_parts(self, target, findings, notes, reference, objectives, plan):
+    def _context_parts(self, target, findings, notes, reference, objectives, plan,
+                       known="", tried=""):
         parts = [f"TARGET: {target}"]
         if objectives:
             parts.append(f"OBJECTIVES the box is asking us to answer:\n{objectives}")
         if plan:
             parts.append(f"OUR PLAN (work the marked ▶ step next; keep advice on the "
                          f"shortest path):\n{plan}")
-        parts.append(f"FINDINGS SO FAR:\n{findings or '(nothing yet — we just started)'}")
+        # State block. LEAD with the confirmed structured facts, then what we've
+        # already tried (so the model builds on knowledge and stops re-running the
+        # same move), then the raw recent activity, then an explicit "advance" cue.
+        if known:
+            parts.append(f"KNOWN — confirmed facts so far (build on these, don't "
+                         f"re-discover them):\n{known}")
+        if tried:
+            parts.append(f"ALREADY TRIED — do NOT repeat any of these; pick a "
+                         f"GENUINELY DIFFERENT move (new tool, port, path, or the next "
+                         f"phase):\n{tried}")
+        parts.append(f"RECENT ACTIVITY (latest command output):\n"
+                     f"{findings or '(nothing yet — we just started)'}")
+        parts.append("UNKNOWN / NEXT: advance the current phase toward the objective. "
+                     "If the last move returned nothing or was blocked, change tactic "
+                     "— do not retry the same thing.")
         if notes:
             parts.append(f"OPERATOR JUST SAID:\n{notes}")
         if reference:
@@ -383,10 +398,12 @@ class StrategistAgent:
         return parts
 
     def options(self, target: str, findings: str, notes: str = "", reference: str = "",
-                objectives: str = "", plan: str = "", n: int = 3) -> list[Suggestion]:
+                objectives: str = "", plan: str = "", n: int = 3,
+                known: str = "", tried: str = "") -> list[Suggestion]:
         """Return a RANKED list of the best next moves (best first), so the operator
         can pick one, tweak it, or give their own instruction instead."""
-        parts = self._context_parts(target, findings, notes, reference, objectives, plan)
+        parts = self._context_parts(target, findings, notes, reference, objectives,
+                                    plan, known=known, tried=tried)
         parts.append(f"Give me up to {n} ranked next-move options in the format.")
         text = self._llm.propose(STRATEGIST_OPTIONS_SYSTEM, "\n\n".join(parts),
                                  max_tokens=1000)
@@ -412,8 +429,10 @@ class StrategistAgent:
                                  max_tokens=700).strip()
 
     def advise(self, target: str, findings: str, notes: str = "",
-               reference: str = "", objectives: str = "", plan: str = "") -> Suggestion:
-        parts = self._context_parts(target, findings, notes, reference, objectives, plan)
+               reference: str = "", objectives: str = "", plan: str = "",
+               known: str = "", tried: str = "") -> Suggestion:
+        parts = self._context_parts(target, findings, notes, reference, objectives,
+                                    plan, known=known, tried=tried)
         parts.append("Give me the next step in the template.")
         text = self._llm.propose(STRATEGIST_SYSTEM, "\n\n".join(parts), max_tokens=800)
         return _parse(text, target)

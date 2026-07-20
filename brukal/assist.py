@@ -110,6 +110,7 @@ class AssistSession:
         self.last = None               # last Suggestion (the top-ranked one)
         self.option_list: list = []    # last ranked list of next-move options
         self._rendered: set = set()    # web URLs already auto-rendered (reflex de-dup)
+        self.executed_cmds: list = []  # commands that really ran (fed back as ALREADY TRIED)
         self.resumed = 0               # how many prior findings we loaded
         if blackboard is not None:
             self._load_memory()
@@ -201,6 +202,15 @@ class AssistSession:
     def _highlights_text(self) -> str:
         return "\n".join(f"{t}: {l}" for t, l in self.highlights) if self.highlights else ""
 
+    def _tried_text(self, limit: int = 15) -> str:
+        """The recent commands that actually executed — fed to the planner as
+        ALREADY TRIED so it stops re-proposing them. De-duped, most recent last."""
+        seen, out = set(), []
+        for c in self.executed_cmds:
+            if c not in seen:
+                seen.add(c); out.append(c)
+        return "\n".join(f"- {c}" for c in out[-limit:])
+
     def ask(self, question: str) -> str:
         """Answer the operator's question about the hunt, grounded in real findings.
         A conversational reply — runs nothing, changes no state."""
@@ -213,7 +223,7 @@ class AssistSession:
         ref = self._reference(self._skill_focus(question))
         self.last = self.strategist.advise(
             self.target, self._state(), question, ref, self._objectives_text(),
-            self._plan_text())
+            self._plan_text(), known=self._highlights_text(), tried=self._tried_text())
         return self.last
 
     def advise_options(self, question: str = "", n: int = 3):
@@ -222,7 +232,7 @@ class AssistSession:
         ref = self._reference(self._skill_focus(question))
         opts = self.strategist.options(
             self.target, self._state(), question, ref, self._objectives_text(),
-            self._plan_text(), n=n)
+            self._plan_text(), n=n, known=self._highlights_text(), tried=self._tried_text())
         if not opts:                       # never leave the operator with nothing
             opts = [self.advise(question)]
         self.option_list = opts
@@ -245,6 +255,7 @@ class AssistSession:
         keeping session state single-threaded."""
         new_hl: list[tuple[str, str]] = []
         if result is not None:
+            self.executed_cmds.append(command)   # fed back as ALREADY TRIED next turn
             raw = (result.stdout or "").strip()
             new_hl = highlight_findings(raw)
             self.highlights.extend(h for h in new_hl if h not in self.highlights)
