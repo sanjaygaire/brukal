@@ -94,7 +94,7 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
 
 class AssistSession:
     def __init__(self, target, executor, strategist, skills=None, blackboard=None,
-                 lessons=None, browser=None):
+                 lessons=None, browser=None, research=None):
         self.target = target
         self.executor = executor
         self.strategist = strategist
@@ -102,6 +102,7 @@ class AssistSession:
         self.skills = skills
         self.blackboard = blackboard   # Obsidian-backed persistence (optional)
         self.lessons = lessons         # cross-session LessonStore (optional)
+        self.research = research        # optional control-plane ResearchProvider (untrusted web)
         self.notes: list[str] = []     # observations: command results, manual reports, notes
         self.highlights: list[tuple[str, str]] = []   # accumulated key results
         self.objectives: list[str] = []               # what the box is asking (HTB tasks)
@@ -153,13 +154,26 @@ class AssistSession:
         return " ".join(terms).strip() or self.target
 
     def _reference(self, focus: str) -> str:
-        """The guidance block fed to the strategist: Brukal's own LEARNED LESSONS
-        first (trusted experience), then the untrusted red-team skill packs."""
+        """The guidance block fed to the strategist. Order = priority:
+          1. LEARNED LESSONS  — Brukal's own verified experience (trusted).
+          2. LOCAL SKILL PACKS — vendored red-team playbooks (untrusted).
+          3. FRESH WEB RESEARCH — on-demand retrieval (untrusted), LAST so local/
+             verified knowledge ranks above fresh web. Control-plane egress only;
+             degrades to "" on any failure. Everything here is guidance the model may
+             use to PROPOSE — the gate still rules on every action."""
         parts = []
         if self.lessons is not None:
             parts.append(self.lessons.context_for(focus))
         if self.skills is not None:
             parts.append(self.skills.context_for(focus))
+        if self.research is not None:
+            # feed research the highlight text too — it carries service+version/CVE
+            # that the distilled skill-focus string drops.
+            rq = (self._highlights_text() + " " + focus).strip()
+            try:
+                parts.append(self.research.context_for(rq))
+            except Exception:
+                pass                          # research must never break planning
         return "\n\n".join(p for p in parts if p)
 
     def make_plan(self):
@@ -1448,8 +1462,13 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
                                     DockerHttpWebCage(container=container))
     browser = GovernedBrowser(session_scope, web_cage, audit)
 
+    # On-demand research (control-plane egress only; disabled unless
+    # BRUKAL_RESEARCH_SOURCES names allowlisted sources). Never touches the cage.
+    from .research import ResearchProvider
+    research = ResearchProvider()
     session = AssistSession(target, executor, strategist, skills=SkillLibrary(),
-                            blackboard=blackboard, lessons=lessons, browser=browser)
+                            blackboard=blackboard, lessons=lessons, browser=browser,
+                            research=research if research.enabled else None)
     cage = "fake" if fake else "docker:" + container
     return session, audit, target, cage
 
