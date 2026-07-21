@@ -193,3 +193,32 @@ if __name__ == "__main__":
           f"(expected {allowed})")
     print(f"  audit chain intact: {audit.verify()}\n")
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _gate_wild():
+    scope = Scope(
+        engagement="wild",
+        authorized_networks=(ipaddress.ip_network("10.129.234.54/32"),),
+        allowlisted_tools=frozenset({"*"}),
+        rate_limit_per_min=1000,
+        authorized_hosts=frozenset({"nexus.htb", "*.nexus.htb"}),
+    )
+    return Gate(scope)
+
+
+def test_wildcard_vhost_authorises_subdomains_not_siblings():
+    s = _gate_wild().scope
+    assert s.contains_host("nexus.htb")            # the base domain
+    assert s.contains_host("git.nexus.htb")        # a subdomain (found vhost)
+    assert s.contains_host("fuzz.nexus.htb")       # a fuzz candidate
+    assert not s.contains_host("nexus.htb.evil.com")   # sibling suffix -> DENIED
+    assert not s.contains_host("evil.com")             # unrelated -> DENIED
+
+
+def test_vhost_fuzz_command_allowed_but_out_of_scope_host_still_denied():
+    g = _gate_wild()
+    # a Host-header fuzz against the IN-SCOPE IP passes (candidate is under *.nexus.htb)
+    fuzz = 'ffuf -w list.txt -u http://10.129.234.54/ -H Host:FUZZ.nexus.htb'
+    assert g.check(fuzz, "10.129.234.54", "recon").verdict in ("ALLOW", "ESCALATE")
+    # but a genuinely out-of-scope host in the command is still DENIED
+    assert g.check("curl http://evil.com/x", "10.129.234.54", "recon").verdict == "DENY"

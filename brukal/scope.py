@@ -51,9 +51,16 @@ class Scope:
         return any(ip in net for net in self.authorized_networks)
 
     def contains_host(self, host: str) -> bool:
-        """True if `host` is an explicitly authorised hostname, or an in-scope IP.
-        Deterministic set/CIDR membership only — no DNS. Fail-closed on anything
-        empty or unrecognised."""
+        """True if `host` is an explicitly authorised hostname (or a subdomain of an
+        authorised `*.domain` wildcard), or an in-scope IP. Deterministic set/CIDR
+        membership only — no DNS. Fail-closed on anything empty or unrecognised.
+
+        A wildcard `*.nexus.htb` matches any subdomain (`git.nexus.htb`,
+        `FUZZ.nexus.htb`) but NOT a sibling like `nexus.htb.evil.com` — the suffix
+        must match on a label boundary. This is what lets vhost fuzzing work: the
+        candidate hosts are `Host:` header values sent to an in-scope IP, and the
+        actual network destination is still governed by the IP/CIDR check and the
+        cage's nftables egress lock. A wildcard cannot authorise a different IP."""
         h = (host or "").strip().lower()
         if not h:
             return False
@@ -62,6 +69,9 @@ class Scope:
             h = h.split(":", 1)[0]
         if h in self.authorized_hosts:
             return True
+        for a in self.authorized_hosts:
+            if a.startswith("*.") and h.endswith("." + a[2:]):   # subdomain of *.domain
+                return True
         return self.contains_ip(h)
 
     def with_host(self, host: str) -> "Scope":

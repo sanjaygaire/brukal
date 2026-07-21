@@ -1081,15 +1081,33 @@ def _authorise_vhost(session, name: str) -> bool:
     name = (name or "").strip().lower()
     if not name:
         return False
+    # Authorise the host AND, for a bare domain, its vhosts (*.domain) — so vhost
+    # fuzzing (Host: FUZZ.domain against the in-scope IP) is not blocked. A wildcard
+    # only widens the *hostname* set; the network destination is still the in-scope
+    # IP (URL/CIDR check + nftables), so this cannot reach an out-of-scope host.
+    names = _vhost_names(name)
     updated = False
     gate = getattr(session.executor, "_gate", None)
-    if gate is not None:
-        gate.scope = gate.scope.with_host(name)
-        updated = True
-    if getattr(session, "browser", None) is not None:
-        session.browser._scope = session.browser._scope.with_host(name)
-        updated = True
+    for n in names:
+        if gate is not None:
+            gate.scope = gate.scope.with_host(n)
+            updated = True
+        if getattr(session, "browser", None) is not None:
+            session.browser._scope = session.browser._scope.with_host(n)
+            updated = True
     return updated
+
+
+def _vhost_names(name: str) -> list[str]:
+    """A host to authorise, plus its `*.domain` wildcard when it's a bare domain
+    (has a dot, isn't already a wildcard, isn't an IP) — so its vhosts are in scope."""
+    name = (name or "").strip().lower()
+    if not name:
+        return []
+    names = [name]
+    if "." in name and not name.startswith("*.") and not name.replace(".", "").isdigit():
+        names.append("*." + name)
+    return names
 
 
 def _take_option(session, opt):
@@ -1423,10 +1441,10 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     #     requests without a mid-hunt `host` command, and ensure_cage_vhosts (below)
     #     maps each to the target IP in the cage so it actually resolves.
     for h in hosts or ():
-        h = (h or "").strip().lower()
-        if h and not session_scope.contains_host(h):
-            session_scope = session_scope.with_host(h)
-            _emit(console, f"  ✓ authorised vhost {h} (scope-time).")
+        for n in _vhost_names(h):              # the host + its *.domain (vhost fuzzing)
+            if n and n not in session_scope.authorized_hosts:
+                session_scope = session_scope.with_host(n)
+                _emit(console, f"  ✓ authorised vhost {n} (scope-time).")
 
     # 3) Live-run sign-off (fake cage needs none). Confirm interactively if a
     #    tty is available; otherwise the --yes-authorised flag is required.

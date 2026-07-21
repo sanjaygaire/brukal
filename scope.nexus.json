@@ -1,0 +1,12 @@
+{
+  "engagement": "htb-nexus",
+  "authorized_cidrs": [
+    "10.129.234.54/32"
+  ],
+  "authorized_hosts": [
+    "nexus.htb",
+    "*.nexus.htb"
+  ],
+  "allowlisted_tools": "all",
+  "rate_limit_per_min": 30
+}
