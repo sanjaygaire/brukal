@@ -104,6 +104,7 @@ class AssistSession:
         self.blackboard = blackboard   # Obsidian-backed persistence (optional)
         self.lessons = lessons         # cross-session LessonStore (optional)
         self.research = research        # optional control-plane ResearchProvider (untrusted web)
+        self.cage_container = None       # docker cage name (set by _prepare_session) for vhost mapping
         self.notes: list[str] = []     # observations: command results, manual reports, notes
         self.highlights: list[tuple[str, str]] = []   # accumulated key results
         self.objectives: list[str] = []               # what the box is asking (HTB tasks)
@@ -1156,6 +1157,12 @@ def _authorise_vhost(session, name: str) -> bool:
         if getattr(session, "browser", None) is not None:
             session.browser._scope = session.browser._scope.with_host(n)
             updated = True
+    # Also map the concrete vhost -> the target IP in the cage's /etc/hosts, so it
+    # actually RESOLVES for the browser/curl (the wildcard can't be an /etc/hosts
+    # entry, so only the concrete name is mapped).
+    if getattr(session, "cage_container", None):
+        from .web import map_cage_host
+        map_cage_host(name, session.target, session.cage_container)
     return updated
 
 
@@ -1550,7 +1557,10 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     else:
         from .chrome import DockerChromeCage
         from .web import CompositeWebCage, DockerHttpWebCage, ensure_cage_vhosts
-        ensure_cage_vhosts(session_scope, container)
+        # Map authorised vhosts -> the TARGET IP in the cage so nexus.htb (and any
+        # authorised subdomain) resolves for the browser/curl regardless of how broad
+        # the scope is (not only for a single-/32 scope).
+        ensure_cage_vhosts(session_scope, container, target_ip=target)
         web_cage = CompositeWebCage(DockerChromeCage(container=container),
                                     DockerHttpWebCage(container=container))
     browser = GovernedBrowser(session_scope, web_cage, audit)
@@ -1562,6 +1572,7 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     session = AssistSession(target, executor, strategist, skills=SkillLibrary(),
                             blackboard=blackboard, lessons=lessons, browser=browser,
                             research=research if research.enabled else None)
+    session.cage_container = None if fake else container   # for mid-session vhost mapping
     cage = "fake" if fake else "docker:" + container
     return session, audit, target, cage
 

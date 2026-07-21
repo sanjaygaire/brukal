@@ -26,6 +26,7 @@ backend for live browser interaction + request interception plugs in here next.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -329,33 +330,47 @@ class CompositeWebCage:
                               f"not wired live yet; use navigate/get/request/screenshot")
 
 
-def ensure_cage_vhosts(scope: Scope, container: str = "brukal-kali") -> list[str]:
-    """Map the scope's authorised hostnames to the target IP inside the cage's
-    /etc/hosts, so a vhost like `nexus.htb` actually resolves for cage-run web
-    requests. Only acts when the scope authorises exactly one single-host (/32)
-    network — the common HTB case — and never invents an IP. ip + host come from
-    the trusted scope, not from any target, so there is no injection surface.
-    Returns the hostnames it mapped (best-effort; failures are ignored)."""
+def map_cage_host(host: str, ip: str, container: str = "brukal-kali") -> bool:
+    """Best-effort: add `<ip> <host>` to the cage's /etc/hosts so a vhost resolves for
+    cage-run web requests and the headless browser. `ip` is validated as an IP and
+    `host` as a plain hostname before use (no shell-injection surface). Wildcards are
+    skipped (they can't be /etc/hosts entries). Returns True on a mapping attempt."""
+    import ipaddress
     import subprocess
-    hosts = sorted(scope.authorized_hosts)
-    nets = scope.authorized_networks
-    # Only when the scope is ONE single-host (/32) target is the vhost->IP mapping
-    # unambiguous. A base scope with several networks (or a localhost /32 alongside)
-    # is left alone rather than guessing the wrong IP.
-    if not hosts or len(nets) != 1 or nets[0].num_addresses != 1:
+    host = (host or "").strip().lower()
+    ip = (ip or "").strip()
+    if not host or host.startswith("*") or not re.fullmatch(r"[a-z0-9.\-]+", host):
+        return False
+    try:
+        ipaddress.ip_address(ip)                 # reject anything that isn't a clean IP
+    except ValueError:
+        return False
+    try:
+        subprocess.run(
+            ["docker", "exec", "-u", "root", container, "sh", "-c",
+             f"grep -qw {host} /etc/hosts || echo '{ip} {host}' >> /etc/hosts"],
+            capture_output=True, timeout=15)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_cage_vhosts(scope: Scope, container: str = "brukal-kali",
+                       target_ip: str = "") -> list[str]:
+    """Map the scope's authorised hostnames to an IP inside the cage's /etc/hosts, so a
+    vhost like `nexus.htb` actually resolves for cage-run web requests and the browser.
+    The IP is `target_ip` (the host being worked — authorised vhosts belong to it), or,
+    when no target is given, the single-host /32 the scope authorises. Wildcards are
+    skipped. Returns the hostnames it mapped (best-effort; failures ignored)."""
+    hosts = sorted(h for h in scope.authorized_hosts if not h.startswith("*"))
+    ip = (target_ip or "").strip()
+    if not ip:                                   # fall back to a single-host /32 scope
+        nets = scope.authorized_networks
+        if len(nets) == 1 and nets[0].num_addresses == 1:
+            ip = str(nets[0].network_address)
+    if not hosts or not ip:
         return []
-    ip = str(nets[0].network_address)
-    mapped = []
-    for h in hosts:
-        try:
-            subprocess.run(
-                ["docker", "exec", "-u", "root", container, "sh", "-c",
-                 f"grep -qw {h} /etc/hosts || echo '{ip} {h}' >> /etc/hosts"],
-                capture_output=True, timeout=15)
-            mapped.append(h)
-        except Exception:
-            pass
-    return mapped
+    return [h for h in hosts if map_cage_host(h, ip, container)]
 
 
 class GovernedBrowser:

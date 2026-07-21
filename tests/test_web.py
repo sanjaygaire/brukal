@@ -227,3 +227,24 @@ def test_httpwebcage_does_not_follow_redirect_to_out_of_scope():
         assert not (res.body or "")                    # no body fetched from evil.com
     finally:
         srv.shutdown()
+
+
+def test_ensure_cage_vhosts_maps_to_target_ip_under_broad_scope(monkeypatch):
+    # The real bug: nexus.htb never resolved in the cage because the scope wasn't a
+    # single /32. It must now map authorised vhosts -> the TARGET IP regardless of
+    # scope breadth, and skip wildcards (can't be an /etc/hosts entry).
+    import brukal.web as W
+    calls = []
+    monkeypatch.setattr(W, "map_cage_host", lambda h, ip, c="brukal-kali": calls.append((h, ip)) or True)
+    scope = Scope("t", (), frozenset({"*"}), 30,
+                  authorized_hosts=frozenset({"nexus.htb", "*.nexus.htb"}))
+    mapped = W.ensure_cage_vhosts(scope, "brukal-kali", target_ip="10.129.61.188")
+    assert mapped == ["nexus.htb"]                       # wildcard skipped
+    assert calls == [("nexus.htb", "10.129.61.188")]     # mapped to the target IP
+
+
+def test_map_cage_host_rejects_injection_and_bad_input():
+    from brukal.web import map_cage_host
+    assert map_cage_host("*.nexus.htb", "10.0.0.1", "x") is False   # wildcard
+    assert map_cage_host("nexus.htb", "not-an-ip", "x") is False    # bad IP
+    assert map_cage_host("a;rm -rf b", "10.0.0.1", "x") is False    # shell metachars in host
