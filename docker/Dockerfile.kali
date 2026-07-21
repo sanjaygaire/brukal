@@ -8,11 +8,13 @@ FROM kalilinux/kali-rolling
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Which Kali metapackage defines the toolset. Default = the full professional
-# arsenal. Override for a leaner or a maximal build:
-#   --build-arg KALI_METAPACKAGE=kali-linux-headless    (leaner: ~600 core CLI tools)
+# Which Kali metapackage defines the toolset. Default = kali-linux-headless: the
+# full CLI pentest arsenal (~600 tools) built for a no-GUI environment — the correct
+# shape for a container the operator never opens a screen on. Override for more:
+#   --build-arg KALI_METAPACKAGE=kali-linux-large       (headless + niche long-tail;
+#       NOTE: pulls in a full desktop/GUI via kali-linux-default — big, slow, unused)
 #   --build-arg KALI_METAPACKAGE=kali-linux-everything  (literally everything Kali ships)
-ARG KALI_METAPACKAGE=kali-linux-large
+ARG KALI_METAPACKAGE=kali-linux-headless
 
 # Cage essentials the container needs regardless of the toolset: VPN + net tooling,
 # nftables (the kernel egress lock the entrypoint installs), python3 (parses

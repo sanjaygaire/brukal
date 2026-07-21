@@ -208,9 +208,9 @@ deliberately gated behind an explicit authorisation flag — only ever point it 
 systems you are authorised to test (see [`SECURITY.md`](SECURITY.md)).
 
 ```bash
-# 1. bring up the cage (a Kali container with the FULL pentest arsenal — the first
-#    build is large/slow, several GB; kernel egress-locked to scope at startup).
-#    Leaner build: --build-arg KALI_METAPACKAGE=kali-linux-headless
+# 1. bring up the cage (a Kali container with the full headless pentest arsenal,
+#    ~600 tools; kernel egress-locked to scope at startup). First build is a few GB.
+#    Bigger toolset: --build-arg KALI_METAPACKAGE=kali-linux-large  (adds a GUI stack)
 docker compose -f docker/docker-compose.yml up -d --build
 
 # 2. set scope to your authorised target (a bare host becomes /32; a CIDR
