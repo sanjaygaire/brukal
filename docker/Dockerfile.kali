@@ -14,10 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         smbclient smbmap enum4linux nbtscan snmp onesixtyone ldap-utils redis-tools \
         openvpn iproute2 libcap2-bin \
         nftables python3 \
+        seclists wordlists \
     && rm -rf /var/lib/apt/lists/*
 # ^ nftables: the entrypoint builds a scope-derived, default-drop egress ruleset
 #   at startup so the KERNEL enforces scope (a command that slips past the Python
 #   gate still cannot send a packet out of scope). python3: parses scope.json.
+#   seclists + wordlists: the wordlists the strategist actually proposes live under
+#   /usr/share/seclists/... and /usr/share/wordlists/ — WITHOUT these, every
+#   ffuf/gobuster/hydra run with a seclists/rockyou path fails on a missing file.
+
+# rockyou ships gzipped; unpack it so `-P /usr/share/wordlists/rockyou.txt` works.
+RUN [ -f /usr/share/wordlists/rockyou.txt.gz ] && \
+        gunzip -k /usr/share/wordlists/rockyou.txt.gz || true
 
 # The wider offensive arsenal (brute force, web attack, cracking, exploitation
 # helpers, shells). These are ALLOWLISTED, but the risk layer marks them
@@ -29,8 +37,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         john hashcat hash-identifier exploitdb \
         crackmapexec impacket-scripts evil-winrm responder \
         netcat-traditional socat \
+        metasploit-framework \
         chromium \
     && rm -rf /var/lib/apt/lists/*
+# For the FULL Kali arsenal (600+ tools, several GB, long build) swap the curated
+# lists above for a metapackage:  RUN apt-get update && apt-get install -y \
+#     kali-linux-headless && rm -rf /var/lib/apt/lists/*
 # ^ chromium: headless browser for the governed web surface (brukal web --chrome,
 #   the Chrome/CDP backend) — renders JS apps + drives interactive web actions.
 
