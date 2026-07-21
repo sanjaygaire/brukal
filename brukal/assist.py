@@ -19,6 +19,7 @@ import getpass
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from .audit import AuditLog
@@ -723,6 +724,66 @@ class _AutoLiveView:
         self._live = Live(self._render(), console=self.con, refresh_per_second=10,
                           transient=False)
         return self._live
+
+
+class _PlainAutoView:
+    """Live feedback for `brukal auto` when rich is NOT installed. The old plain path
+    only printed a line when a STEP finished, so during the model call and a long scan
+    the screen sat silent and looked frozen. This prints what Brukal is doing right now
+    (🧠 thinking / ⚙ running <cmd>) and runs a background heartbeat that ticks the
+    elapsed seconds in place, so a 2-minute scan visibly shows it's still working."""
+
+    def __init__(self):
+        import threading
+        self._threading = threading
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _beat(self, label):
+        start = time.time()
+        while not self._stop.wait(5):        # tick every 5s
+            el = int(time.time() - start)
+            sys.stdout.write(f"\r     … {label} — {el}s   ")
+            sys.stdout.flush()
+
+    def _start_beat(self, label):
+        self._stop_beat()
+        self._stop = self._threading.Event()
+        self._thread = self._threading.Thread(target=self._beat, args=(label,), daemon=True)
+        self._thread.start()
+
+    def _stop_beat(self):
+        if self._thread is not None:
+            self._stop.set()
+            self._thread.join(timeout=1)
+            self._thread = None
+            sys.stdout.write("\r" + " " * 64 + "\r")   # clear the heartbeat line
+            sys.stdout.flush()
+
+    def set_status(self, text):
+        print(f"  {text}")
+
+    def on(self, kind, payload):
+        if kind == "thinking":
+            self._stop_beat(); print("  🧠 thinking…"); self._start_beat("thinking")
+        elif kind == "running":
+            self._stop_beat()
+            action = (payload.get("action") or "")[:90]
+            tag = "🌐" if payload.get("web") else "⚙"
+            print(f"  {tag} running: {action}")
+            tool = (action.split() or [""])[0]
+            self._start_beat(f"running {tool} (killed at 180s if it runs long)")
+        elif kind == "coached":
+            self._stop_beat(); print(f"  ↩ {(payload.get('note') or '')[:110]}")
+        elif kind == "solved":
+            self._stop_beat(); print("  🎯 SOLVED — verified from real output")
+        elif kind == "step":
+            self._stop_beat()
+            st = payload["step"]
+            print(f"  [{st.index}] {(st.phase or '').upper():<12} {st.verdict or '-':<9} "
+                  f"{(st.command or '')[:70]}\n        {st.summary[:110]}")
+        elif kind == "stop":
+            self._stop_beat()
 
 
 def _rich_approver(con, holder):
@@ -1603,14 +1664,15 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     view = _AutoLiveView(console, target, cage, max_steps,
                          session.objectives[0] if session.objectives else "") \
         if console is not None else None
+    # No rich? Use the plain live view so 'thinking' / 'running <cmd>' + an elapsed
+    # heartbeat are still shown — a long scan must never look frozen.
+    plain_view = _PlainAutoView() if view is None else None
 
     def observer(kind, payload):
         if view is not None:
             view.on(kind, payload)
-        elif kind == "step":
-            st = payload["step"]
-            print(f"  [{st.index}] {(st.phase or '').upper():<12} {st.verdict or '-':<9} "
-                  f"{(st.command or '')[:70]}\n        {st.summary[:100]}")
+        elif plain_view is not None:
+            plain_view.on(kind, payload)
 
     from .verify import Verifier
     loop = GroundedLoop(session, max_steps=max_steps, observer=observer,
@@ -1620,13 +1682,22 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         if not session.plan:
             if view is not None:
                 view.set_status("🗺  planning the route…")
+            elif plain_view is not None:
+                plain_view.set_status("🗺  planning the route…")
+                plain_view._start_beat("planning")
             session.make_plan()             # lay out the route before driving it
         if view is not None:
             with view.start():
                 result = loop.run()
         else:
-            result = loop.run()
+            try:
+                result = loop.run()
+            finally:
+                if plain_view is not None:
+                    plain_view._stop_beat()
     except KeyboardInterrupt:
+        if plain_view is not None:
+            plain_view._stop_beat()
         print("\n  paused.")
         return 0
     except Exception as e:
