@@ -96,10 +96,22 @@ PY
   chain output {
     type filter hook output priority 0; policy drop;
     oif \"lo\" accept
+    oif \"tun0\" accept
     ct state established,related accept
     $rf daddr $RESOLVER udp dport 53 accept
     $rf daddr $RESOLVER tcp dport 53 accept
 "
+    # The lab is reached THROUGH the VPN tunnel, so allow output on tun0 (HTB only
+    # pushes routes for the lab range, so nothing else goes there) AND pin the VPN
+    # server itself so the encrypted control channel can (re)connect — a scope lock
+    # that drops the VPN's own server would kill the tunnel it depends on.
+    for host in $(awk '/^[[:space:]]*remote[[:space:]]/{print $2}' "$CFG" 2>/dev/null); do
+        for ip in $(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u); do
+            RULES="$RULES    ip daddr $ip accept
+"
+            echo "[cage] pinned VPN server $host -> $ip"
+        done
+    done
     for cidr in $CIDRS; do
         RULES="$RULES    $(_family "$cidr") daddr $cidr accept
 "

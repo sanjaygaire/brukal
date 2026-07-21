@@ -18,6 +18,13 @@ services:
     # A real init as PID 1 reaps zombie processes — headless chromium (the governed
     # web renderer) leaves <defunct> children that otherwise pile up in the cage.
     init: true
+    # Use real public resolvers, NOT Docker's embedded 127.0.0.11 proxy — that proxy
+    # intermittently stops forwarding (a Docker Desktop / WSL2 glitch), which then
+    # breaks OpenVPN's ability to resolve the HTB server and reconnect. Override with
+    # the BRUKAL_DNS env if your network needs a specific resolver.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     networks:
       - brukal_isolated
     # Raw-socket scanning (nmap SYN/service/OS detection). These caps are in the
