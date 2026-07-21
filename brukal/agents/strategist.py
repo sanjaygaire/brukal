@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 from dataclasses import dataclass
 
 from ..llm import LLMClient
@@ -40,6 +41,29 @@ def _shell_ish(line: str) -> bool:
         return False
     first = line.split()[0].lower().rsplit("/", 1)[-1]   # basename of a path-y tool
     return first in _TOOLISH
+
+
+def _repair_command(cmd: "str | None") -> "str | None":
+    """A command truncated by max_tokens leaves an unbalanced quote that the gate's
+    shlex parse rejects (`hard:parse`). Balance a single trailing quote so the common
+    cut-off `-H \"Host: nexus.htb` case survives; if it still won't parse, return None
+    so an unrunnable command is never proposed. The gate re-validates the result, so
+    this only recovers intent — it can't smuggle anything past scope/injection."""
+    if not cmd:
+        return cmd
+    try:
+        shlex.split(cmd)
+        return cmd                                  # already parseable
+    except ValueError:
+        pass
+    for q in ('"', "'"):
+        if cmd.count(q) % 2 == 1:                    # odd count -> a dangling quote
+            try:
+                shlex.split(cmd + q)
+                return cmd + q                       # balancing fixed it
+            except ValueError:
+                continue
+    return None                                      # unrepairable -> drop it
 
 
 def _salvage_command(text: str) -> "str | None":
@@ -113,8 +137,17 @@ STRATEGIST_SYSTEM = (
     "output is already captured and shown in full. Example: send "
     "`curl -sv http://target/` NOT `curl -sv http://target/ 2>&1 | head -50`.\n"
     "- Do NOT query external DNS servers (e.g. `dig @1.1.1.1`, `@8.8.8.8`) or any host "
-    "that is not the target — they are out of scope and DENIED. For virtual-host "
-    "discovery use `ffuf`/`gobuster vhost` with a `Host:` header against the target IP.\n"
+    "that is not the target — they are out of scope and DENIED.\n"
+    "- You NEVER need to edit /etc/hosts or resolve a vhost yourself — Brukal maps "
+    "authorised vhosts to the target IP inside the cage automatically. To hit a vhost, "
+    "just send the tool's Host-header option against the TARGET IP, as ONE clean "
+    "command (close every quote):\n"
+    "    virtual-host discovery: "
+    "`ffuf -w <wordlist> -u http://<target-ip>/ -H \"Host: FUZZ.<domain>\" -fs 0`\n"
+    "    hit a known vhost:      "
+    "`gobuster dir -u http://<target-ip>/ -H \"Host: <vhost>\" -w <wordlist>`\n"
+    "  Propose ONE tool per move. To test several things, give them as SEPARATE ranked "
+    "options — NEVER chain with `&&`, `;`, or a loop; chaining is rejected as injection.\n"
     "- Brukal HUNTS AUTONOMOUSLY end to end. Propose the next concrete action as a "
     "RUN command, INCLUDING exploitation: credential attacks (hydra/ncrack/medusa), "
     "sqlmap, known-CVE exploits, nuclei templates, impacket, catching data. The gate "
@@ -324,7 +357,7 @@ def _parse(text: str, default_target: str) -> Suggestion:
         if " (" in command:
             command = command[:command.index(" (")].strip()
         command = command.strip("`\"'").strip()   # re-peel: the paren trim can re-expose a backtick
-        command = command or None
+        command = _repair_command(command or None)  # balance a truncated trailing quote
     if manual and manual.lower() in ("none", "n/a", "-"):
         manual = None
 
@@ -405,8 +438,11 @@ class StrategistAgent:
         parts = self._context_parts(target, findings, notes, reference, objectives,
                                     plan, known=known, tried=tried)
         parts.append(f"Give me up to {n} ranked next-move options in the format.")
+        # 1600 (was 1000): a verbose model (e.g. deepseek-chat) writing 3 options with
+        # long reasoning could overrun 1000 and get its LAST command CUT OFF mid-quote,
+        # which then failed the gate's parse. More headroom stops that truncation.
         text = self._llm.propose(STRATEGIST_OPTIONS_SYSTEM, "\n\n".join(parts),
-                                 max_tokens=1000)
+                                 max_tokens=1600)
         self.last_read = parse_read(text)     # the "what just happened" line, shown first
         return parse_options(text, target, limit=n)
 

@@ -117,3 +117,26 @@ def test_salvage_command_from_bare_shell_line():
 def test_advice_only_reply_is_not_salvaged_into_a_command():
     s = _parse("Enumerate more before exploiting; we don't have enough yet.", "10.10.10.5")
     assert s.command is None and s.manual is None
+
+
+# -- truncated-command repair (max_tokens cut a command mid-quote) ------------
+
+def test_repair_balances_a_truncated_host_header_quote():
+    from brukal.agents.strategist import _repair_command
+    # the exact deepseek-chat failure: an unbalanced -H "Host: ... quote
+    got = _repair_command('ffuf -u http://10.0.0.1/FUZZ -w list.txt -H "Host: nexus.htb')
+    assert got == 'ffuf -u http://10.0.0.1/FUZZ -w list.txt -H "Host: nexus.htb"'
+    import shlex
+    shlex.split(got)                                   # now parseable
+    # an already-clean command is returned unchanged
+    assert _repair_command("nmap -sV 10.0.0.1") == "nmap -sV 10.0.0.1"
+    assert _repair_command(None) is None and _repair_command("") == ""
+
+
+def test_parse_repairs_a_truncated_command_so_it_is_runnable():
+    reply = ('PHASE: enumeration\nGOAL: vhost dirs\n'
+             'RUN: gobuster dir -u http://10.0.0.1/ -H "Host: nexus.htb')
+    s = _parse(reply, "10.0.0.1")
+    assert s.command == 'gobuster dir -u http://10.0.0.1/ -H "Host: nexus.htb"'
+    import shlex
+    shlex.split(s.command)                             # the gate's shlex will accept it
