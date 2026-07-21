@@ -15,6 +15,9 @@ services:
       context: .
       dockerfile: Dockerfile.kali
     container_name: brukal-kali
+    # A real init as PID 1 reaps zombie processes — headless chromium (the governed
+    # web renderer) leaves <defunct> children that otherwise pile up in the cage.
+    init: true
     networks:
       - brukal_isolated
     # Raw-socket scanning (nmap SYN/service/OS detection). These caps are in the

@@ -15,6 +15,7 @@ ever called for an ALLOWed action. A backend never sees a denied command.
 """
 from __future__ import annotations
 
+import os
 import select
 import shlex
 import subprocess
@@ -49,26 +50,48 @@ class DockerKali:
     is no second place for shell injection to live.
     """
 
-    def __init__(self, container: str = "brukal-kali", timeout: int = 300,
+    def __init__(self, container: str = "brukal-kali", timeout: int = 180,
                  user: str = "brukalop"):
         self.container = container
         self.timeout = timeout
         self.user = user   # run approved tools unprivileged; "" for the default user
 
     def run(self, command: str) -> ExecResult:
+        inner = shlex.split(command)
         argv = ["docker", "exec"]
         if self.user:
             argv += ["-u", self.user]
-        argv += [self.container, *shlex.split(command)]
+        # Run the tool under the container's OWN `timeout` so it is killed INSIDE the
+        # cage at self.timeout. docker exec's client-side timeout does not kill the
+        # container-side process, so a long scan would otherwise keep running orphaned
+        # (a 110k-entry ffuf ran 10+ min past the limit and choked the cage). `-k 5`
+        # escalates to SIGKILL 5s after SIGTERM if the tool ignores it.
+        argv += [self.container, "timeout", "-k", "5", str(self.timeout), *inner]
         try:
             proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=self.timeout
+                argv, capture_output=True, text=True, timeout=self.timeout + 15
             )
+            if proc.returncode in (124, 137):        # coreutils timeout / SIGKILL
+                return ExecResult(command, 124, proc.stdout,
+                                  f"timed out — killed at {self.timeout}s (narrow the command)")
             return ExecResult(command, proc.returncode, proc.stdout, proc.stderr)
         except subprocess.TimeoutExpired:
+            self._reap(inner)                        # host waited out too — reap any orphan
             return ExecResult(command, 124, "", "timed out")
         except FileNotFoundError:
             return ExecResult(command, 127, "", "docker not found")
+
+    def _reap(self, inner) -> None:
+        """Best-effort: kill any orphaned instance of the tool inside the container so
+        a stuck scan can't linger and consume the cage."""
+        tool = os.path.basename(inner[0]) if inner else ""
+        if not tool:
+            return
+        try:
+            subprocess.run(["docker", "exec", self.container, "pkill", "-9", "-f", tool],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------- #
