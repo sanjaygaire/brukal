@@ -48,6 +48,16 @@ class ReconAgent:
         self._llm = llm
         self._executor = executor
 
+    def propose(self, task: str, context: str = ""):
+        """Generate — but do NOT execute — the next command as an ActionRequest,
+        or None if the model produced nothing valid. Splitting proposal from
+        execution lets the multi-agent loop route this agent's command through the
+        SAME one door as everything else while attributing it to the recon role
+        (so per-agent trust modulates its future soft-risk decisions). The command
+        it returns is still re-validated by the gate at execution time."""
+        text = self._llm.propose(RECON_SYSTEM, _build_user_prompt(task, context))
+        return parse_action_request(text)
+
     def run_task(self, task: str, context: str = ""):
         """One turn: propose -> parse -> gate/execute. Returns (request, outcome).
 
@@ -55,12 +65,7 @@ class ReconAgent:
         nothing valid — a no-op). `outcome` is (Decision, ExecResult|None) or
         None when there was no valid request to submit.
         """
-        system = RECON_SYSTEM
-        user = _build_user_prompt(task, context)
-
-        text = self._llm.propose(system, user)
-        request = parse_action_request(text)
-
+        request = self.propose(task, context)
         if request is None:
             # Malformed / empty proposal: fail-closed, do nothing.
             return None, None

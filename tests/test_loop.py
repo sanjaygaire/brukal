@@ -194,8 +194,9 @@ def test_sig_collapses_near_duplicates():
 
 
 def test_loop_reflex_auto_renders_a_web_service():
-    # a web port in the findings triggers an automatic governed Chrome render
-    # BEFORE the model is asked — 'web port open -> look at the site'.
+    # a web port in the findings triggers an automatic governed web action BEFORE the
+    # model is asked — 'web port open -> map the site'. This is now a bounded, in-scope
+    # CRAWL (attack-surface map), which subsumes the old single-page render.
     import tempfile as _tf
 
     from brukal import AuditLog as _AL
@@ -218,9 +219,10 @@ def test_loop_reflex_auto_renders_a_web_service():
     loop = GroundedLoop(sess, max_steps=4)
     sess.make_plan()
     result = loop.run()
-    # the FIRST step is the automatic web render (reflex), not a model proposal
-    assert result.steps[0].command == "WEB: render http://10.10.10.5/"
+    # the FIRST step is the automatic governed crawl (reflex), not a model proposal
+    assert result.steps[0].command.startswith("CRAWL:")
     assert result.steps[0].executed
+    assert sess.surface is not None and "http://10.10.10.5/" in sess.surface.pages
 
 
 def test_norm_cmd_collapses_whitespace():

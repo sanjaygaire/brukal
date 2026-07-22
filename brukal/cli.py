@@ -206,7 +206,31 @@ def _cmd_auto(args) -> int:
         scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
         container=args.container, max_steps=args.max_steps, hosts=args.host or (),
         model=args.model, provider=args.provider, base_url=args.base_url,
-        handoff_to_menu=not args.no_handoff)
+        handoff_to_menu=not args.no_handoff, single_agent=args.single_agent,
+        full_send=args.full_send)
+
+
+def _cmd_report(args) -> int:
+    # Build a deliverable report from a target's persisted findings vault.
+    from pathlib import Path
+
+    from brukal.assist import _vault_for
+    from brukal.findings import FindingStore
+    from brukal.report import build_report, write_reports
+    vault_dir = _vault_for(args.vault, args.target) if args.target else Path(args.vault)
+    store = FindingStore(Path(vault_dir) / "findings.jsonl")
+    meta = {"target": args.target or "-", "scope": args.target or "-",
+            "engagement": "-", "cage": "-", "stop_reason": "report (regenerated)",
+            "audit_intact": None}
+    written = write_reports(store, meta, vault_dir)
+    if not written.get("md"):
+        print("No findings vault found. Run `brukal auto <target>` first.")
+        return 1
+    print(f"report: {written['md']}   ({len(store)} finding(s), "
+          f"{len(store.confirmed())} confirmed)")
+    if args.show:
+        print("\n" + build_report(store, meta))
+    return 0
 
 
 def _cmd_web(args) -> int:
@@ -448,11 +472,26 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--no-handoff", action="store_true",
                     help="when auto hands back, stop and exit instead of dropping "
                          "into the manual menu on the same session")
+    pa.add_argument("--single-agent", action="store_true",
+                    help="classic single-strategist loop; default is multi-agent "
+                         "(strategist plans, recon/exploit/verify specialists execute)")
+    pa.add_argument("--full-send", action="store_true",
+                    help="unleash: auto-approve ALL in-scope actions (incl. "
+                         "irreversible/attack) instead of pausing. Scope wall stays — "
+                         "out-of-scope is still DENIED.")
     pa.add_argument("--model", default=None)
     pa.add_argument("--provider", default=None,
                     help="anthropic (default) | ollama | openai | openrouter | ...")
     pa.add_argument("--base-url", default=None)
     pa.set_defaults(func=_cmd_auto)
+
+    prep = sub.add_parser("report",
+                          help="build a pentest report (findings + evidence) from a "
+                               "target's vault")
+    prep.add_argument("target", nargs="?", help="target IP (locates its findings vault)")
+    prep.add_argument("--vault", default="runs/vault")
+    prep.add_argument("--show", action="store_true", help="also print the report")
+    prep.set_defaults(func=_cmd_report)
 
     pev = sub.add_parser("eval",
                          help="capability eval: governed vs ungated (steps-to-foothold)")

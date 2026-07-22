@@ -173,9 +173,12 @@ on it in two stages:
 
 On top of that spine:
 
-- **Multi-agent orchestration** (`orchestrator.py`) runs recon / exploit / verify
-  agents sequentially over a **Pentesting Task Tree**, sharing findings through an
-  Obsidian-vault **blackboard** that stores *digests, not raw dumps*.
+- **Multi-agent orchestration** in two forms: `brukal run` walks recon / exploit /
+  verify agents over a **Pentesting Task Tree** (sequential or `--parallel`), sharing
+  findings through an Obsidian-vault **blackboard** that stores *digests, not raw
+  dumps*; `brukal auto` runs the same specialists as **planner + role executors** —
+  the strategist plans each turn and routes the command to `recon`/`exploit`/`verify`,
+  through the one gate with per-agent trust (see *Autonomous grounded loop* below).
 - **The verify agent** (`agents/verify.py`) exists to catch *hallucinated success*:
   a claim is only `SUPPORTED` when an in-scope command actually executed and its
   real output backs it — otherwise it fails closed to `UNVERIFIED`.
@@ -233,8 +236,9 @@ directly:
 | `brukal` | **Guided wizard**: asks the target, lets you pick the model, shows the tool policy (auto-run vs asks-you vs denied) + loaded playbooks, then auto or manual → hunts. |
 | `brukal target <ip\|cidr>` | Set the engagement scope. Validates, /32-normalises a host, confirms anything broader, logs it. `--add` to accumulate. |
 | `brukal solve [ip]` | **Interactive human-assisted hunt.** Ranked next-move options each turn — pick a number, type your own gated command (`c`), give an instruction to re-plan (`i`), or run safe options in parallel (`p`). Dangerous moves prompt `[y/N]`. Resumes from the vault. |
-| `brukal auto [ip]` | **Autonomous grounded loop** with the live animated view. Drives the safe (reversible) steps itself, auto-renders discovered web services in Chrome, and pauses on irreversible/attack steps for your sign-off. |
+| `brukal auto [ip]` | **Autonomous grounded loop** with the live animated view. Multi-agent by default — the strategist plans, `recon`/`exploit`/`verify` specialists execute (one gate, per-agent trust); `--single-agent` for the classic loop. Drives the safe (reversible) steps itself, auto-renders discovered web services in Chrome, and pauses on irreversible/attack steps for your sign-off. |
 | `brukal run <ip>` | The **multi-agent** engagement (recon · exploit · verify) over a task tree + blackboard. `--parallel [--workers N]` runs agents concurrently; `--tui` shows the live dashboard. |
+| `brukal report [ip]` | Build a **pentest report** (severity-ranked findings + evidence + reproduce commands, Markdown + JSON) from the target's findings vault. `--show` prints it. |
 | `brukal web <url>` | Send **one governed web request** (crafted `--method`/`--header`/`--body`), routed through the cage. `--chrome` renders with a real headless browser; `--host` authorises a vhost. The web analogue of `exec`. |
 | `brukal shell <ip>` | Open a **governed interactive shell** in the cage — every line is gated + logged before it runs; state persists across lines. |
 | `brukal exec <cmd> <target>` | Propose **one shell command** through the gate by hand (verdict + output). |
@@ -433,6 +437,39 @@ It runs until it hits a **manual** step (intrusive exploitation — your job), a
 `--max-steps` budget. Governance is unchanged: every command still goes through the
 one gate, and nothing out of scope ever executes.
 
+**Multi-agent by default — planner + role executors.** `auto` runs the multi-agent
+orchestrator: the **strategist stays the planner** (it sets the phase + goal each
+turn, carrying the full grounded context — verified findings, what's been tried, the
+objective), and the phase's **specialist agent generates the command** — `recon`
+enumerates, `exploit` attacks, `verify` confirms. The live view shows who's acting
+(`🔨 exploit: …`). Crucially, this adds *proposers*, never authority: routing is a
+**deterministic keyword match on the phase (no LLM, so target text can't steer it)**,
+every specialist runs through the **same one door** (`Executor.run → gate → cage`),
+and each command is attributed to its role so **per-agent trust** modulates that
+role's future soft-risk scoring — a specialist that keeps getting denied draws more
+scrutiny, but can never widen scope or skip the hard checks. A specialist that
+produces nothing valid falls back to the strategist's own command (no dead turn) and
+takes a trust hit. Pass `--single-agent` (or `BRUKAL_SINGLE_AGENT=1`) for the classic
+single-strategist loop.
+
+**Governance dial — governed (default) vs. `--full-send`.** Brukal has *two* layers of
+governance, and only the soft one is adjustable:
+
+- The **soft layer** — the escalation pauses + per-agent trust — is a convenience/
+  accountability dial. By default `auto` **pauses for your sign-off** on irreversible
+  or attack-grade moves (reverse shells, credential attacks, `sqlmap --dump`); it
+  auto-runs only reversible ones. Pass **`--full-send`** (or `BRUKAL_FULL_SEND=1`) to
+  **auto-approve every *in-scope* action** — maximum autonomy, no pauses. Since your
+  `scope.json` *is* your authorisation, "full send within scope" is full attack power
+  against your authorised target.
+- The **hard gate** — scope + one execution path + injection-parse + fail-closed — is
+  **not** adjustable and `--full-send` does **not** touch it: an out-of-scope command
+  is still `DENIED` and never runs (see `test_full_send_still_denies_out_of_scope`).
+  That wall is what keeps Brukal an authorised-pentest tool rather than an untargeted
+  weapon, and removing it would add zero capability against a target that's already in
+  scope. So there is no "ignore scope" switch, by design (it's one of the five
+  invariants). Full send unleashes power *inside* your authorisation, never beyond it.
+
 **Auto hands the wheel to you — it doesn't just quit.** When the loop stops because
 it has run out of *safe autonomous* moves (the weak-model case: a stall, or a
 manual/escalation step), and you're at a terminal, Brukal drops straight into the
@@ -452,6 +489,8 @@ brukal auto 10.10.10.5 --yes-authorised --scope scope.htb.json --max-steps 15
 brukal auto 10.10.10.5 --provider deepseek --model deepseek-chat   # cheap, strong brain
 brukal auto --fake                          # try the whole loop with no Docker
 brukal auto 10.10.10.5 --no-handoff         # stop and exit instead of the menu
+brukal auto 10.10.10.5 --single-agent       # classic single-strategist loop (no specialists)
+brukal auto 10.10.10.5 --full-send          # unleash: auto-approve ALL in-scope actions
 ```
 
 ### Governed web testing (`brukal web`, WEB actions)
@@ -479,6 +518,48 @@ Inside `brukal solve`/`auto` the strategist proposes **`WEB:` actions**
 through the governed browser automatically — an out-of-scope web action is denied
 exactly like a shell command. Only *scope* and *scheme* are enforced; a SQLi/XSS
 payload goes straight through, because that is the attack.
+
+**Attack-surface crawl (`webmap.py`).** The moment a web service is discovered,
+`auto` reflexively **crawls** the site — a bounded, breadth-first, *in-scope* spider:
+the cage fetches each page (scope-locked egress), and the returned HTML is parsed
+**in the control plane with no network I/O** (`html.parser`) into a structured map —
+every link, **form and its inputs**, and **query parameter**. The crawl is confined
+to the seed host + authorised scope and its page/depth budget (it can neither wander
+off-target nor run forever), and a gate rate-limit simply ends it early with whatever
+it mapped. That map is then folded into the planner's grounded context, so the model
+(even a cheap one) reasons over the *real* endpoints and parameters instead of
+guessing them — the single biggest lever for turning a weak model into a methodical
+web tester. Every fetched URL is still gate-checked; the crawler adds coverage, never
+a way around scope.
+
+**Governed vuln probing (`webprobe.py`).** The crawl map is then turned into a
+concrete **probe checklist** — deterministically, so a weak model can't *forget* to
+test a parameter. `plan_probes()` emits the exact tool commands against the real
+surface: **passive** fingerprint + read-only scans per web root (`whatweb`, `nuclei`,
+`nikto`) and **active** injection tests per discovered parameter and form (`sqlmap`,
+`dalfox`). Governance is entirely the gate's, unchanged: the passive scanners score
+*reversible* and **auto-run** (the loop drains them one-per-turn the moment the site
+is mapped), while the active injection tools score *irreversible* and **ESCALATE for
+your sign-off** — or run under `--full-send`. The active probes are also handed to
+the planner as concrete "suggested probes" against real parameters, so the exploit
+agent proposes targeted injection instead of guessing. Probe output is scanned for
+**vulnerability signals** (`sqlmap` *is vulnerable*, `nuclei [critical]`, `nikto`
+findings, CVE ids), which surface as top highlights for the Verifier/operator. The
+result: methodical coverage from code + targeted exploitation from the model, every
+command through the one gate.
+
+**Findings + report (`findings.py`, `report.py`).** Probe output doesn't just scroll
+past — vulnerability signals are captured as **structured, deduplicated findings**
+(`findings.py`): title, severity, endpoint, parameter, the **real evidence line**, and
+the exact **reproducing command**. Findings are two-tier like lessons — an explicit
+signal (`sqlmap` *is vulnerable*, a Verifier-confirmed foothold/flag) is **confirmed**,
+a heuristic match is a **candidate** a human should verify — so a reviewer is never
+handed a false positive dressed as fact. They persist to an append-only `findings.jsonl`
+in the engagement vault. At the end of an `auto` run Brukal writes a **`report.md` +
+`report.json`** deliverable (severity-ranked findings with evidence, the attack-surface
+summary, engagement metadata, model spend, and audit-chain status), and
+`brukal report <target>` regenerates it from the vault any time. This is what turns
+"Brukal found things" into an audited report an organisation can hand to its engineers.
 
 ### Governed interactive shell (`brukal shell`)
 
@@ -570,6 +651,10 @@ brukal/
 ├── lessons.py        # two-tier cross-session memory: candidate vs verified-trusted
 ├── research.py       # on-demand control-plane retrieval (untrusted web reference)
 ├── web.py            # governed web surface: WebAction, check_web, GovernedBrowser
+├── webmap.py         # attack-surface crawl: HTML->forms/params/links (stdlib, no egress)
+├── webprobe.py       # map->probes: passive scans + active injection tests (governed)
+├── findings.py       # structured, deduped, severity-ranked vuln findings (evidence-backed)
+├── report.py         # findings + metadata -> Markdown / JSON deliverable
 ├── chrome.py         # Chrome/CDP backend — headless browser, request tamper
 ├── session.py        # governed interactive shell (`brukal shell`)
 ├── experiment.py     # the four-metric governance benchmark harness

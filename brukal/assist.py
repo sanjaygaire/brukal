@@ -30,6 +30,9 @@ from .scope import load_scope
 from .trust import TrustModel
 
 _VERDICT_COLOUR = {"ALLOW": "green", "ESCALATE": "yellow", "DENY": "red"}
+# Icon per specialist role, shown in the live views when multi-agent mode routes a
+# step to that agent (recon enumerates, exploit attacks, verify confirms).
+_AGENT_ICON = {"recon": "🔎", "exploit": "🔨", "verify": "✔"}
 _PHASE_COLOUR = {"recon": "cyan", "enumeration": "cyan", "exploitation": "magenta",
                  "privilege-escalation": "red", "looting": "yellow"}
 
@@ -113,6 +116,9 @@ class AssistSession:
         self.last = None               # last Suggestion (the top-ranked one)
         self.option_list: list = []    # last ranked list of next-move options
         self._rendered: set = set()    # web URLs already auto-rendered (reflex de-dup)
+        self.surface = None            # webmap.AttackSurface once the site is crawled
+        from .findings import FindingStore
+        self.findings = FindingStore()   # structured vuln findings (vault-backed in _prepare_session)
         self.executed_cmds: list = []  # commands that really ran (fed back as ALREADY TRIED)
         self.resumed = 0               # how many prior findings we loaded
         if blackboard is not None:
@@ -216,7 +222,16 @@ class AssistSession:
         return "\n".join(lines)
 
     def _highlights_text(self) -> str:
-        return "\n".join(f"{t}: {l}" for t, l in self.highlights) if self.highlights else ""
+        base = "\n".join(f"{t}: {l}" for t, l in self.highlights) if self.highlights else ""
+        # If the site has been crawled, hand the FULL attack surface (forms, params,
+        # endpoints) to the planner/specialists — this is what turns endpoint guessing
+        # into reasoning over real targets. Untrusted data; the gate still rules.
+        if self.surface is not None and self.surface.pages:
+            base = f"{base}\n{self.surface.summary()}" if base else self.surface.summary()
+            sugg = self._probe_suggestions_text()
+            if sugg:
+                base = f"{base}\n{sugg}"
+        return base
 
     def _tried_text(self, limit: int = 15) -> str:
         """The recent commands that actually executed — fed to the planner as
@@ -230,7 +245,14 @@ class AssistSession:
     def record_verified_success(self, verified):
         """A success was CONFIRMED from real gated output (see verify.py). Promote it
         to the trusted lesson store with provenance, so the brain grows only from
-        verified wins. No-op if there's no lesson store."""
+        verified wins, and record it as a CONFIRMED, critical finding in the report."""
+        from .findings import Finding
+        self.findings.add(Finding(
+            title=str(getattr(verified, "kind", "foothold")).replace("_", " "),
+            severity="critical", target=self.target,
+            evidence=getattr(verified, "evidence", "")[:200],
+            source=getattr(verified, "command", ""), category="access",
+            confirmed=True))
         if self.lessons is None:
             return None
         tech = sorted({m.lower() for m in _TECH_HINTS.findall(self._highlights_text())})
@@ -271,12 +293,34 @@ class AssistSession:
 
     # -- doing / recording (persisted to the vault) ------------------------- #
 
-    def run(self, command: str, target: str | None = None):
+    def run(self, command: str, target: str | None = None, agent: str = "strategist"):
         """Run a command through the gate/cage, record it, and surface the key
-        results. Returns (decision, result, new_highlights)."""
+        results. Returns (decision, result, new_highlights). `agent` attributes the
+        action to a role (recon/exploit/verify in multi-agent mode) so the gate's
+        per-agent trust modulates its soft-risk score — it never changes the hard
+        checks or the single execution path."""
         decision, result = self.executor.run(command, target or self.target,
-                                             agent="strategist")
+                                             agent=agent)
         return self._absorb_shell(command, decision, result)
+
+    def plan_context(self) -> str:
+        """The grounded context handed to a specialist agent (recon/exploit/verify)
+        when it generates a command in multi-agent mode. It is deliberately the SAME
+        material the strategist reasons over — verified findings (KNOWN), what has
+        already been tried (so the specialist doesn't repeat it), and the objective —
+        so routing execution to a role never means reasoning on thinner ground. All
+        of it is untrusted environment-derived DATA; the gate remains the safeguard."""
+        parts: list[str] = []
+        known = self._highlights_text()
+        if known:
+            parts.append(f"KNOWN (verified findings so far):\n{known}")
+        tried = self._tried_text()
+        if tried:
+            parts.append(f"ALREADY TRIED (do NOT repeat these):\n{tried}")
+        obj = self._objectives_text()
+        if obj:
+            parts.append(f"OBJECTIVE:\n{obj}")
+        return "\n\n".join(parts)
 
     def _absorb_shell(self, command, decision, result):
         """Fold one shell outcome into session state (notes/highlights/lessons/
@@ -288,6 +332,16 @@ class AssistSession:
             self.executed_cmds.append(command)   # fed back as ALREADY TRIED next turn
             raw = (result.stdout or "").strip()
             new_hl = highlight_findings(raw)
+            # Flag vulnerability signals in the output (sqlmap 'is vulnerable',
+            # nuclei [critical], nikto findings, CVE ids) so a real bug surfaces as a
+            # top highlight instead of scrolling past. Untrusted output; a hit is a
+            # lead for the Verifier/operator, not an action.
+            from . import webprobe
+            for _sev, _label, _line in webprobe.scan_output(raw):
+                h = (f"vuln/{_sev}", f"{_label}: {_line}")
+                if h not in new_hl:
+                    new_hl.append(h)
+                self._record_vuln_finding(command, _sev, _label, _line)
             self.highlights.extend(h for h in new_hl if h not in self.highlights)
             # Turn a failure into an actionable LESSON the model sees next turn, so a
             # weak model course-corrects instead of repeating a bad move.
@@ -313,6 +367,26 @@ class AssistSession:
             self.lessons.learn_from_outcome(command, decision, result, tech)
         return decision, result, new_hl
 
+    # Labels from webprobe.scan_output that represent an EXPLICIT, unambiguous vuln
+    # statement (vs a heuristic match) -> recorded as a CONFIRMED finding. The rest
+    # are candidates a human/Verifier should confirm.
+    _CONFIRMED_VULN_LABELS = {"SQL injection", "SQLi (DBMS identified)", "XSS PoC",
+                              "vulnerable"}
+
+    def _record_vuln_finding(self, command: str, sev: str, label: str, line: str) -> None:
+        """Turn one vuln SIGNAL from real output into a structured, deduplicated
+        finding for the report. Evidence-backed by construction — it only ever runs on
+        the stdout of a gate-executed command."""
+        from .findings import Finding
+        m = re.search(r"https?://[^\s\"']+", command)
+        target = m.group(0) if m else self.target
+        pm = re.search(r"-p\s+(\S+)", command)
+        param = pm.group(1) if pm else ""
+        self.findings.add(Finding(
+            title=label, severity=sev, target=target, evidence=line,
+            source=command, param=param, category="web",
+            confirmed=label in self._CONFIRMED_VULN_LABELS))
+
     def web_urls_from_findings(self) -> list[str]:
         """Deterministically pull web-service URLs out of the findings — open
         http/https ports (nmap) and web-server fingerprints — so a browser render
@@ -336,6 +410,93 @@ class AssistSession:
                 seen.add(u)
                 out.append(u)
         return out
+
+    def crawl(self, seeds=None, max_pages: int = 20, max_depth: int = 2, observer=None):
+        """Governed breadth-first crawl of the in-scope web surface. Every fetch goes
+        through run_web -> the gate -> the cage (scope-locked egress); the HTML that
+        comes back is parsed IN-PROCESS (no egress) into an AttackSurface — forms,
+        parameters, links. Bounded by max_pages / max_depth and confined to the seed
+        host + authorised scope, so it can neither run forever nor wander off-target.
+        A gate rate-limit block ends the crawl cleanly with whatever was mapped. The
+        resulting map is folded into grounded state so the strategist/exploit agent
+        reason over the real site instead of guessing endpoints. Returns the surface."""
+        from collections import deque
+
+        from . import webmap
+        if self.browser is None:
+            return None
+        seeds = list(seeds or self.web_urls_from_findings() or [f"http://{self.target}/"])
+        surface = webmap.AttackSurface(seed=seeds[0] if seeds else "")
+        scope = getattr(self.browser, "_scope", None)
+        seed_hosts = {webmap.host_of(u) for u in seeds if webmap.host_of(u)}
+
+        def _in_scope(url: str) -> bool:
+            h = webmap.host_of(url)
+            if not h:
+                return False
+            return h in seed_hosts or bool(scope and scope.contains_host(h))
+
+        queue = deque((webmap.normalize_url(u, "") or u, 0) for u in seeds if _in_scope(u))
+        visited: set = set()
+        while queue and len(surface.pages) < max_pages:
+            url, depth = queue.popleft()
+            if url in visited:
+                continue
+            visited.add(url)
+            if observer is not None:
+                try:
+                    observer("crawl", url=url, found=len(surface.pages) + 1)
+                except Exception:
+                    pass
+            decision, result, _hl = self.run_web(f"get {url}")
+            if decision is not None and getattr(decision, "layer", "").endswith("web-rate"):
+                break                              # hit the rate wall — stop, keep the map
+            self._rendered.add(url)            # don't let the render reflex re-fetch it
+            if result is None:
+                continue
+            server = (result.headers or {}).get("server") or (result.headers or {}).get("Server")
+            if server:
+                surface.techs.add(str(server).split("/")[0][:24])
+            links, forms, params = webmap.extract(url, result.body or "")
+            in_scope_links = {l for l in links if _in_scope(l)}
+            surface.add_page(url, in_scope_links, forms, params)
+            if depth < max_depth:
+                for l in sorted(in_scope_links):
+                    if l not in visited:
+                        queue.append((l, depth + 1))
+
+        self.surface = surface
+        summ = surface.summary()
+        head = summ.splitlines()[0]
+        self.highlights.append(("site-map", head))
+        self.notes.append(f"[crawl] {summ}")
+        self._persist_finding("crawl", f"crawl {surface.seed}", "ALLOW", head,
+                              [("site-map", head)])
+        return surface
+
+    def web_probes(self, max_active: int = 12):
+        """Deterministic vuln-probe checklist for the crawled surface (empty if not
+        yet crawled). Passive probes (whatweb/nuclei/nikto) auto-run through the gate;
+        active probes (sqlmap/dalfox) are attack-grade and ESCALATE for sign-off (or
+        run under --full-send). The gate — not this list — is the authority."""
+        if self.surface is None or not self.surface.pages:
+            return []
+        from . import webprobe
+        return webprobe.plan_probes(self.surface, self.target, max_active=max_active)
+
+    def _probe_suggestions_text(self, limit: int = 8) -> str:
+        """The active (attack-grade) probes, offered to the planner as concrete next
+        moves against REAL mapped parameters/forms — so the model proposes targeted
+        injection tests instead of guessing. Each still passes through the gate and
+        ESCALATEs (or runs under --full-send); this is a suggestion, not execution."""
+        active = [p for p in self.web_probes() if p.category == "active"]
+        if not active:
+            return ""
+        lines = ["SUGGESTED ACTIVE PROBES (each tests a real mapped parameter/form; "
+                 "needs sign-off or --full-send):"]
+        for p in active[:limit]:
+            lines.append(f"- {p.command}   # {p.rationale}")
+        return "\n".join(lines)
 
     def auto_web_action(self) -> str | None:
         """If a web service has been found but not yet rendered, return the WEB
@@ -640,6 +801,18 @@ def _auto_approver(decision) -> bool:
     return getattr(decision, "reversibility", None) == "reversible"
 
 
+def _full_send_approver(decision) -> bool:
+    """'Full send' auto-mode approver: approve EVERY escalation the gate routed here —
+    including irreversible, attack-grade actions (credential attacks, sqlmap --dump,
+    reverse shells). It is only ever called on decisions the HARD gate already let
+    through (in scope, allowlisted, parsed, not smuggling a host): the approver is
+    invoked on ESCALATE, never on DENY, so an out-of-scope command is still refused
+    before it can reach here. This unleashes maximum autonomy WITHIN your authorised
+    scope; it does not — and cannot — widen scope. Enabled by `--full-send` /
+    BRUKAL_FULL_SEND=1, and only on an authorised live run."""
+    return True
+
+
 class _AutoLiveView:
     """A live, animated terminal view of the autonomous hunt: a spinner that shows
     what Brukal is doing right now (thinking / running a tool / rendering a site),
@@ -694,14 +867,27 @@ class _AutoLiveView:
 
     def on(self, kind, payload):
         if kind == "thinking":
-            self.status = "🧠 thinking… (planning the next move)"
+            ag = payload.get("agent")
+            if ag:                            # the phase's specialist is composing its command
+                self.status = (f"{_AGENT_ICON.get(ag, '🧠')} {ag} agent — "
+                               f"{(payload.get('goal') or 'planning')[:44]}")
+            else:
+                self.status = "🧠 thinking… (planning the next move)"
         elif kind == "running":
             a = payload.get("action", "")
+            ag = payload.get("agent")
             if payload.get("web"):
                 self.status = f"🌐 browser: {a[:56]}"
             else:
                 tool = (a.split() or [""])[0]
-                self.status = f"⚙  running {tool} …  ({a[:48]})"
+                icon = _AGENT_ICON.get(ag, "⚙")
+                who = f"{ag}: " if ag else ""
+                self.status = f"{icon}  {who}running {tool} …  ({a[:44]})"
+        elif kind == "crawling":
+            self.status = "🕸  crawling — mapping the web attack surface…"
+        elif kind == "crawl":
+            self.status = (f"🕸  crawling {str(payload.get('url', ''))[:48]}  "
+                           f"(page {payload.get('found', '?')})")
         elif kind == "step":
             s = payload["step"]
             v = s.verdict or "-"
@@ -766,14 +952,27 @@ class _PlainAutoView:
 
     def on(self, kind, payload):
         if kind == "thinking":
-            self._stop_beat(); print("  🧠 thinking…"); self._start_beat("thinking")
+            self._stop_beat()
+            ag = payload.get("agent")
+            if ag:                            # the phase's specialist is composing its command
+                print(f"  {_AGENT_ICON.get(ag, '🧠')} {ag} agent — "
+                      f"{(payload.get('goal') or 'planning')[:70]}")
+                self._start_beat(f"{ag} thinking")
+            else:
+                print("  🧠 thinking…"); self._start_beat("thinking")
         elif kind == "running":
             self._stop_beat()
             action = (payload.get("action") or "")[:90]
-            tag = "🌐" if payload.get("web") else "⚙"
-            print(f"  {tag} running: {action}")
+            ag = payload.get("agent")
+            tag = "🌐" if payload.get("web") else _AGENT_ICON.get(ag, "⚙")
+            who = f"{ag}: " if ag else ""
+            print(f"  {tag} {who}running: {action}")
             tool = (action.split() or [""])[0]
             self._start_beat(f"running {tool} (killed at 180s if it runs long)")
+        elif kind == "crawling":
+            self._stop_beat()
+            print("  🕸 crawling — mapping the web attack surface…")
+            self._start_beat("crawling the site")
         elif kind == "coached":
             self._stop_beat(); print(f"  ↩ {(payload.get('note') or '')[:110]}")
         elif kind == "solved":
@@ -1474,6 +1673,7 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
 
     Returns (session, audit, target, cage) on success, or an int exit code."""
     try:
+        from .agents import ExploitAgent, ReconAgent, VerifyAgent
         from .agents.strategist import StrategistAgent
         from .blackboard import Blackboard
         from .engagement import interactive_approver
@@ -1529,16 +1729,17 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     audit = AuditLog(audit_path)
     approver = _rich_approver(console, holder) if console is not None else interactive_approver
 
-    executor = Executor(Gate(session_scope, trust=TrustModel()),
+    trust = TrustModel()
+    executor = Executor(Gate(session_scope, trust=trust),
                         FakeKali() if fake else DockerKali(container=container),
                         audit, approver=approver)
     try:
-        strategist = StrategistAgent(LLMClient(model=model, provider=provider,
-                                               base_url=base_url))
+        llm = LLMClient(model=model, provider=provider, base_url=base_url)
     except Exception as e:
         print(f"Could not initialise the model client: {e}")
         print("Set a key, or choose Ollama (free, local) when asked.")
         return 2
+    strategist = StrategistAgent(llm)
 
     # Per-target Obsidian vault → persistence + resume across sessions.
     vault_dir = _vault_for(vault_path, target)
@@ -1573,6 +1774,21 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
                             blackboard=blackboard, lessons=lessons, browser=browser,
                             research=research if research.enabled else None)
     session.cage_container = None if fake else container   # for mid-session vhost mapping
+    # Specialist agents for multi-agent auto ("planner + role executors"). Built on
+    # the SAME executor (one door) and the SAME model as the strategist. The auto
+    # loop uses them only when multi-agent mode is on; they are inert otherwise. The
+    # shared TrustModel is the one the gate reads, so a specialist's outcomes modulate
+    # its own future soft-risk scoring.
+    session.trust = trust
+    # Vault-backed findings ledger (append-only JSONL) — survives across sessions and
+    # feeds `brukal report`.
+    from .findings import FindingStore
+    session.findings = FindingStore(Path(vault_dir) / "findings.jsonl")
+    session.agents = {
+        "recon": ReconAgent(llm, executor),
+        "exploit": ExploitAgent(llm, executor),
+        "verify": VerifyAgent(llm, executor),
+    }
     cage = "fake" if fake else "docker:" + container
     return session, audit, target, cage
 
@@ -1627,10 +1843,36 @@ def _session_vault(session):
     return getattr(getattr(session, "blackboard", None), "root", "runs/vault")
 
 
+def _write_session_report(session, result, cage, audit, spend=""):
+    """Build engagement metadata from the live session and write report.md + .json
+    to the vault. Best-effort — a report failure must never fail the hunt."""
+    try:
+        from .report import write_reports
+        sc = getattr(getattr(session.executor, "_gate", None), "_scope", None)
+        hosts = list(getattr(sc, "authorized_hosts", []) or [])
+        meta = {
+            "engagement": getattr(sc, "engagement", "-"),
+            "target": session.target,
+            "scope": ", ".join([session.target] + hosts) if hosts else session.target,
+            "cage": cage,
+            "steps": len(result.steps),
+            "executed": result.executed,
+            "blocked": result.blocked,
+            "stop_reason": result.stop_reason,
+            "audit_intact": bool(audit.verify()) if audit is not None else False,
+            "spend": spend,
+            "surface": session.surface.summary() if session.surface else "",
+        }
+        return write_reports(session.findings, meta, _session_vault(session))
+    except Exception:
+        return {}
+
+
 def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
              audit_path="runs/audit.jsonl", vault_path="runs/vault",
              container="brukal-kali", model=None, provider=None, base_url=None,
-             max_steps=20, handoff_to_menu=True, hosts=()) -> int:
+             max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
+             full_send=False) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
     in-scope enumeration. When it hands back (manual/escalation/stall/budget), and
     a human is present at a terminal, it drops straight into the interactive menu on
@@ -1658,12 +1900,30 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # In headless auto, an ESCALATE cleanly PAUSES the hunt (the loop hands back)
     # rather than prompting mid-live-view: dangerous/irreversible moves are approved
     # interactively in `brukal solve`. Fail-closed keeps the invariant intact.
-    session.executor._approver = _auto_approver
+    # Governance dial (SOFT layer only — the hard scope gate is never affected).
+    #   default    : pause on irreversible/attack in-scope moves for your sign-off.
+    #   full-send  : auto-approve EVERY in-scope action; only DENY (out of scope /
+    #                hard-check failure) still stops it. Maximum autonomy inside the
+    #                authorised scope; it cannot widen scope.
+    full = bool(full_send or os.environ.get("BRUKAL_FULL_SEND"))
+    session.executor._approver = _full_send_approver if full else _auto_approver
+    if full:
+        _emit(console,
+              "  ⚠ FULL-SEND — auto-approving ALL in-scope actions (incl. irreversible "
+              "/ attack). Scope wall stays: out-of-scope is still DENIED.",
+              "  [bold red]⚠ FULL-SEND[/] — auto-approving [bold]all in-scope[/] actions "
+              "(incl. irreversible/attack). Scope wall stays: out-of-scope still DENIED.")
+
+    # Multi-agent mode (default): strategist plans, specialists (recon/exploit/verify)
+    # execute — one door, per-agent trust. Opt out with BRUKAL_SINGLE_AGENT=1.
+    multi = not (single_agent or os.environ.get("BRUKAL_SINGLE_AGENT"))
+    mode = "multi-agent (planner+recon/exploit/verify)" if multi else "single-strategist"
+    mode += " · full-send" if full else " · governed"
 
     _emit(console, f"\n  brukal auto — target {target}   cage={cage}   "
-                   f"budget={max_steps} steps",
+                   f"budget={max_steps} steps   mode={mode}",
           f"\n  [bold cyan]brukal auto[/] — target [bold]{target}[/]   "
-          f"cage={cage}   budget={max_steps} steps")
+          f"cage={cage}   budget={max_steps} steps   [magenta]{mode}[/]")
     if session.resumed:
         _emit(console, f"  resumed — loaded {session.resumed} prior finding(s).")
 
@@ -1686,8 +1946,13 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
             plain_view.on(kind, payload)
 
     from .verify import Verifier
+    # `multi` computed above. Multi-agent: the strategist PLANS and the phase's
+    # specialist generates each command, through the same one door with per-agent
+    # trust. Single-agent: the classic single-strategist loop.
     loop = GroundedLoop(session, max_steps=max_steps, observer=observer,
-                        verifier=Verifier())      # confirm 'solved' from real output
+                        verifier=Verifier(),      # confirm 'solved' from real output
+                        agents=getattr(session, "agents", None) if multi else None,
+                        trust=getattr(session, "trust", None) if multi else None)
 
     try:
         if not session.plan:
@@ -1728,6 +1993,14 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         "done": "nothing left to safely automate",
     }.get(result.stop_reason, result.stop_reason)
     spend = _spend_line(session)
+
+    # Write the deliverable report (findings + engagement metadata) to the vault.
+    reports = _write_session_report(session, result, cage, audit, spend)
+    if reports.get("md"):
+        n = len(session.findings)
+        _emit(console,
+              f"  📄 report ({n} finding(s)): {reports['md']}",
+              f"  [bold]📄 report[/] ({n} finding(s)): {reports['md']}")
 
     # Hand the wheel to the operator IN THE SAME SESSION when a human is present.
     # Auto stops because it ran out of *safe autonomous* moves — not because the
