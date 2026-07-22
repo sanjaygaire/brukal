@@ -31,16 +31,30 @@ Risk-Constrained Action Gating."*
 - **Runs on any model, including free + local.** Claude, **Groq (free 70B)**,
   OpenAI/OpenRouter/DeepSeek/GLM, or a local Ollama model — the guarantees live in
   the code around the model, so a weak model is *contained*, not trusted.
-- **Learns over time.** A cross-session lessons store turns real outcomes into
-  guidance for the next engagement (`brukal lessons`).
+- **Learns over time — from *verified* wins only.** A two-tier lessons store keeps
+  every attempt as a *candidate* but promotes it to the *trusted* (retrievable) tier
+  only after a real verification confirmed it worked. A wrong or injected "lesson"
+  can't poison future planning, and the gate still denies any out-of-scope action a
+  lesson suggests (`brukal lessons`).
+- **Looks up what it doesn't know.** An on-demand research sub-agent retrieves
+  offensive knowledge (CVE/service/tech) from allowlisted sources — over the
+  orchestrator's **own** egress, never the cage — and injects it as *labelled,
+  untrusted* reference beside the local playbooks.
+- **Knows when it's *solved*.** A deterministic verifier confirms a captured flag or
+  foothold from the **real output of a gated command** — never the model's prose — so
+  a run ends `solved` (verified) vs. merely handed off.
+- **Reliable on any model.** Survives thinking models (`<think>` / `reasoning_content`),
+  retries transient errors, coaches instead of aborting on a repeat, and shows live
+  `thinking / running <cmd>` feedback so a long scan never looks frozen.
 - **Parallel multi-agent.** A main agent fans independent tasks out to sub-agents
   that run concurrently — with the tamper-evident audit chain staying valid under
   concurrency.
 - **Governed web testing.** Drive a real headless browser and craft/tamper HTTP
-  requests, scope-checked by host (incl. vhosts like `nexus.htb`) and logged
-  (`brukal web`, `brukal solve` WEB actions).
+  requests, scope-checked by host (incl. vhosts like `nexus.htb`, auto-resolved in
+  the cage) and logged (`brukal web`, `brukal solve` WEB actions).
 - **A verifiable receipt for everything.** Every decision + result is written to a
-  SHA-256 hash-chained log you can re-verify (`brukal verify`).
+  hash-chained log you can re-verify — optionally HMAC-signed (`BRUKAL_AUDIT_KEY`)
+  so edits are detectable even with file-write access (`brukal verify`).
 
 ---
 
@@ -112,6 +126,42 @@ scope.json ─► scope.py ─► gate.py ─► executor.py ─► kali.py ─�
                         ESCALATE)                   no shell)
 ```
 
+The two planes and the single door between them (a full-resolution SVG of this is
+in [`docs/brukal-architecture.svg`](docs/brukal-architecture.svg)):
+
+```mermaid
+flowchart LR
+    subgraph CP["CONTROL PLANE — proposes (text only)"]
+        LLM["LLM brain<br/>Claude · DeepSeek · Groq · Ollama"]
+        STR["Strategist / GroundedLoop"]
+        REF["Reference (untrusted, labelled):<br/>trusted lessons · skills · web research"]
+        LLM --> STR
+        REF --> STR
+    end
+
+    subgraph GATE["THE GATE — deterministic, NO LLM (disposes)"]
+        direction TB
+        HARD["Hard gate (AND):<br/>injection → parse → allowlist →<br/>scope/hostmatch → no-smuggle → rate"]
+        SOFT["Soft risk layer:<br/>reversibility × blast × trust"]
+        HARD --> SOFT
+    end
+
+    subgraph EXEC["EXECUTION PLANE — cage (nftables egress-locked to scope)"]
+        KALI["DockerKali tools + GovernedBrowser"]
+        TGT["authorised target (via VPN)"]
+        KALI --> TGT
+    end
+
+    STR -->|"Action Request"| GATE
+    SOFT -->|"ALLOW / ESCALATE→human"| EXEC
+    SOFT -.->|"DENY (out of scope / injection)"| X["✗ never runs"]
+    EXEC -->|"REAL output"| VER["Verifier → solved?"]
+    VER --> STR
+    GATE --> AUD["hash-chained + HMAC audit log"]
+    EXEC --> AUD
+    VER -->|"verified win"| LES["trusted lessons store"]
+```
+
 An agent emits **only text**: a schema-validated *Action Request*. The gate rules
 on it in two stages:
 
@@ -133,6 +183,17 @@ On top of that spine:
   carries a trust score `T_i ∈ [0,1]` that it *loses* on unreliable behaviour.
   `T_i` feeds **only the soft layer**, so a less-trusted agent's same command draws
   more scrutiny. It can never widen scope or touch the hard gate.
+- **Hardened host matcher** (`hostmatch.py`) — the scope check finds *every* host in
+  a command (URLs, IPv4/IPv6, and decimal/hex IP encodings), so an out-of-scope host
+  can't be smuggled by spelling. Authorising a vhost also covers its `*.domain`.
+- **Kernel-enforced scope** — the cage installs a scope-derived, default-drop
+  **nftables** egress ruleset at startup (VPN-aware), so a command that slips past the
+  Python gate still can't put a packet on the wire to an out-of-scope host.
+- **On-demand research** (`research.py`) — control-plane-only retrieval, injected as
+  labelled untrusted reference; opt in with `BRUKAL_RESEARCH_SOURCES`.
+- **Verification + verified-only learning** (`verify.py`, two-tier `lessons.py`) — a
+  `solved` verdict and a promoted lesson require a confirmed result from real gated
+  output, never prose; a poisoned lesson still can't cause an out-of-scope action.
 
 ---
 
@@ -191,7 +252,7 @@ the wiring), `--yes-authorised` (confirm authorisation for a live run),
 ## Quickstart
 
 ```bash
-# 1. run the test suite (146 tests, no infra, no key needed)
+# 1. run the test suite (198 tests, no infra, no key needed)
 python -m pytest -q
 
 # 2. reproduce the benchmark metrics (fake cage)
@@ -489,12 +550,13 @@ in sync with the tools installed in `docker/Dockerfile.kali`.
 
 ```
 brukal/
-├── scope.py          # frozen engagement policy; stdlib CIDR matching
+├── scope.py          # frozen engagement policy; stdlib CIDR matching (+ *.vhost)
+├── hostmatch.py      # finds EVERY host in a command (URL/IPv6/decimal-hex smuggle)
 ├── gate.py           # deterministic hard gate + soft risk layer (+ trust hook)
 ├── risk.py           # reversibility × blast-radius scoring
 ├── executor.py       # THE ONE DOOR: gate → log → (maybe) run
-├── kali.py           # FakeKali / DockerKali cage — no shell
-├── audit.py          # SHA-256 hash-chained, tamper-evident log
+├── kali.py           # FakeKali / DockerKali cage — no shell, container-side timeout
+├── audit.py          # hash-chained, tamper-evident log (+ optional HMAC)
 ├── trust.py          # adaptive per-agent trust T_i  (feeds only the soft layer)
 ├── schema.py         # the Action Request the model must emit
 ├── llm.py            # provider-agnostic client (Claude / Groq / Ollama / OpenAI-compat)
@@ -502,16 +564,18 @@ brukal/
 ├── blackboard.py     # Obsidian-vault shared memory (digests, scoped reads)
 ├── tasktree.py       # the Pentesting Task Tree
 ├── assist.py         # human-assisted solver (`brukal solve`) + `brukal auto`
-├── loop.py           # the grounded agentic loop (autonomous, gate-governed)
+├── loop.py           # the grounded agentic loop (autonomous, gate-governed) + verify
+├── verify.py         # deterministic 'solved' — flag/foothold from real gated output
 ├── skills.py         # static red-team playbooks (untrusted reference)
-├── lessons.py        # cross-session learned lessons (Brukal's own experience)
+├── lessons.py        # two-tier cross-session memory: candidate vs verified-trusted
+├── research.py       # on-demand control-plane retrieval (untrusted web reference)
 ├── web.py            # governed web surface: WebAction, check_web, GovernedBrowser
 ├── chrome.py         # Chrome/CDP backend — headless browser, request tamper
 ├── session.py        # governed interactive shell (`brukal shell`)
 ├── experiment.py     # the four-metric governance benchmark harness
 ├── eval.py           # the capability eval (steps-to-foothold, governed vs ungated)
 └── agents/           # recon · exploit · verify · strategist
-tests/                # 140 tests — the invariants, in code
+tests/                # 198 tests — the invariants, in code
 docker/               # the Kali cage (Dockerfile + compose, chromium + VPN)
 run_experiments.py · run_eval.py · run_engagement.py · run_recon.py
 HOW_IT_WORKS.md · CODE_WALKTHROUGH.md · BUILD_ROADMAP.md · COMPARISON.md · SECURITY.md
