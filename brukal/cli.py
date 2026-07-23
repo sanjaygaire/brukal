@@ -207,7 +207,8 @@ def _cmd_auto(args) -> int:
         container=args.container, max_steps=args.max_steps, hosts=args.host or (),
         model=args.model, provider=args.provider, base_url=args.base_url,
         handoff_to_menu=not args.no_handoff, single_agent=args.single_agent,
-        full_send=args.full_send)
+        full_send=args.full_send, mode=getattr(args, "mode", None),
+        no_research=args.no_research)
 
 
 def _cmd_report(args) -> int:
@@ -479,6 +480,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="unleash: auto-approve ALL in-scope actions (incl. "
                          "irreversible/attack) instead of pausing. Scope wall stays — "
                          "out-of-scope is still DENIED.")
+    pmode = pa.add_mutually_exclusive_group()
+    pmode.add_argument("--web", action="store_const", dest="mode", const="web",
+                       help="force the OWASP-WSTG web-app methodology")
+    pmode.add_argument("--box", action="store_const", dest="mode", const="box",
+                       help="force the host/box methodology (enum→foothold→privesc→loot)")
+    pa.add_argument("--no-research", action="store_true",
+                    help="disable control-plane internet learning (no outbound "
+                         "research egress; local skills/lessons only)")
     pa.add_argument("--model", default=None)
     pa.add_argument("--provider", default=None,
                     help="anthropic (default) | ollama | openai | openrouter | ...")

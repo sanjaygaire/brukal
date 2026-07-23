@@ -274,6 +274,27 @@ class GroundedLoop:
                         self._ran.add(_norm_cmd(probe.command))
                     continue                     # re-plan (or drain the next probe)
 
+            # REFLEX 2: LEARN what we don't know. When a new CVE or service+version
+            # appears in the findings, look it up (CONTROL-PLANE, untrusted, candidate
+            # lessons only — never the cage) so the next decision is informed instead
+            # of guessing. One lookup per turn, deduped.
+            todo = self.session.research_todo() if hasattr(self.session, "research_todo") else []
+            if todo:
+                term = todo[0]
+                self._emit("learning", query=term)
+                text = self.session.learn(term)
+                step = LoopStep(
+                    index=len(self.steps) + 1, phase="research",
+                    goal=f"learn: {term}",
+                    rationale="a new service/version or CVE was seen — researching it",
+                    command=f"LEARN: {term}", verdict="ALLOW", executed=bool(text),
+                    summary=(text.splitlines()[1][:120] if text and len(text.splitlines()) > 1
+                             else ("researched" if text else "no results")),
+                    highlights=[])
+                self.steps.append(step)
+                self._emit("step", step=step)
+                continue                         # re-plan with what we just learned
+
             # REFLEX: the moment a web service is found, look at the site with the
             # real browser (Chrome) — deterministic, still governed. This runs
             # before asking the model, so the rendered page feeds the next decision.

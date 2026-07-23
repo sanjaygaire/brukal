@@ -16,9 +16,12 @@ Two hard boundaries, by construction:
     proposes; it can NOT change scope, tools, or gate behaviour — the deterministic
     gate rules on every action regardless.
 
-Standard library only (urllib). Sources are allowlisted + opt-in via the env var
-BRUKAL_RESEARCH_SOURCES (unset => disabled, no egress). Results are cached,
-rate-limited, and time out gracefully; any failure degrades to the local skills.
+Standard library only (urllib). Sources are ALLOWLISTED. Learning is a first-class
+feature and is ON by default with a curated set — verified sources (NVD/CVE,
+Exploit-DB, GTFOBins, HackTricks) plus a key-free general web search (DuckDuckGo) for
+anything they don't cover. Override the allowlist with BRUKAL_RESEARCH_SOURCES
+(comma-separated names), or set it to "off"/"none" to disable all egress. Results are
+cached, rate-limited, and time out gracefully; any failure degrades to local skills.
 """
 from __future__ import annotations
 
@@ -77,20 +80,26 @@ _BUILTIN_SOURCES = {
     "exploitdb": Source("exploitdb", "https://www.exploit-db.com/search?q={q}", "text"),
     "gtfobins": Source("gtfobins", "https://gtfobins.github.io/gtfobins/{q}/", "text"),
     "hacktricks": Source("hacktricks", "https://book.hacktricks.xyz/search?q={q}", "text"),
+    # key-free general web search — catches anything the verified sources don't cover.
+    "web": Source("web", "https://html.duckduckgo.com/html/?q={q}", "ddg"),
 }
+
+# On by default: verified sources + general web (the user chose "verified + web").
+_DEFAULT_SOURCE_NAMES = ("nvd", "exploitdb", "gtfobins", "hacktricks", "web")
+_DISABLE_TOKENS = {"off", "none", "0", "disabled", "no"}
 
 
 def _sources_from_env() -> list[Source]:
-    """Allowlisted sources named in BRUKAL_RESEARCH_SOURCES (comma-separated). Unset
-    or empty => no sources => research disabled (no egress). Unknown names ignored."""
-    raw = os.environ.get("BRUKAL_RESEARCH_SOURCES", "").strip()
-    if not raw:
+    """The allowlisted sources. Unset => the default curated set (verified + web);
+    "off"/"none" => disabled (no egress); otherwise the comma-separated names given
+    (unknown names ignored). This is what makes internet learning a default feature
+    while keeping a hard off switch and an explicit allowlist."""
+    raw = os.environ.get("BRUKAL_RESEARCH_SOURCES", "").strip().lower()
+    if raw in _DISABLE_TOKENS:
         return []
-    out = []
-    for name in (n.strip().lower() for n in raw.split(",")):
-        if name in _BUILTIN_SOURCES:
-            out.append(_BUILTIN_SOURCES[name])
-    return out
+    names = ([n.strip() for n in raw.split(",") if n.strip()]
+             if raw else list(_DEFAULT_SOURCE_NAMES))
+    return [_BUILTIN_SOURCES[n] for n in names if n in _BUILTIN_SOURCES]
 
 
 # --- distillation -----------------------------------------------------------
@@ -117,8 +126,31 @@ def _distill_json(raw: str) -> str:
     return " | ".join(out) if out else json.dumps(data)[:1000]
 
 
+_DDG_TITLE = re.compile(r'class="result__a"[^>]*>(.*?)</a>', re.I | re.S)
+_DDG_SNIP = re.compile(r'class="result__snippet"[^>]*>(.*?)</a>', re.I | re.S)
+
+
+def _distill_ddg(raw: str) -> str:
+    """Pull the top search-result titles + snippets out of a DuckDuckGo HTML page,
+    so the model gets the useful hits, not the whole page chrome."""
+    titles = [_strip_html(t).strip() for t in _DDG_TITLE.findall(raw)]
+    snips = [_strip_html(s).strip() for s in _DDG_SNIP.findall(raw)]
+    out = []
+    for t, s in zip(titles, snips):
+        if t or s:
+            out.append(f"{t} — {s}" if s else t)
+        if len(out) >= 3:
+            break
+    return " | ".join(out)
+
+
 def _distill(source: Source, raw: str, max_chars: int = 600) -> str:
-    text = _distill_json(raw) if source.kind == "json" else _strip_html(raw)
+    if source.kind == "json":
+        text = _distill_json(raw)
+    elif source.kind == "ddg":
+        text = _distill_ddg(raw)
+    else:
+        text = _strip_html(raw)
     return re.sub(r"\s+", " ", text).strip()[:max_chars]
 
 
@@ -200,10 +232,34 @@ class ResearchProvider:
                     break
             if len(snippets) >= self.max_snippets:
                 break
-        if not snippets:
-            return ""
-        parts = [_HEADER]
-        for s in snippets:
-            parts.append(f"### [research:{s.source}] {s.query}\n{s.text}\n"
-                         f"(source: {s.url} · fetched {s.fetched_at})")
-        return "\n".join(parts)
+        return render(snippets)
+
+    def learn(self, query: str, max_snippets: int | None = None) -> list[Snippet]:
+        """Explicit lookup of a SPECIFIC query across the allowlisted sources — the
+        first-class 'go learn this' used by session.learn and the auto-learn reflex.
+        Unlike context_for it uses the query verbatim (not service+version
+        extraction), so it can research anything the planner flags (a tech, an error,
+        a technique). Control-plane, untrusted, degrades to [] on any failure."""
+        q = (query or "").strip()
+        if not self.sources or not q:
+            return []
+        cap = max_snippets or (self.max_snippets + 2)
+        out: list[Snippet] = []
+        for source in self.sources:
+            snip = self._lookup(source, q)
+            if snip is not None:
+                out.append(snip)
+            if len(out) >= cap:
+                break
+        return out
+
+
+def render(snippets) -> str:
+    """The labelled UNTRUSTED reference block for a list of Snippets ("" if empty)."""
+    if not snippets:
+        return ""
+    parts = [_HEADER]
+    for s in snippets:
+        parts.append(f"### [research:{s.source}] {s.query}\n{s.text}\n"
+                     f"(source: {s.url} · fetched {s.fetched_at})")
+    return "\n".join(parts)

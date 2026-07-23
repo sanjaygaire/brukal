@@ -117,6 +117,8 @@ class AssistSession:
         self.option_list: list = []    # last ranked list of next-move options
         self._rendered: set = set()    # web URLs already auto-rendered (reflex de-dup)
         self.surface = None            # webmap.AttackSurface once the site is crawled
+        self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
+        self._learned: set = set()     # research queries already looked up (de-dup)
         from .findings import FindingStore
         self.findings = FindingStore()   # structured vuln findings (vault-backed in _prepare_session)
         self.executed_cmds: list = []  # commands that really ran (fed back as ALREADY TRIED)
@@ -161,8 +163,21 @@ class AssistSession:
             terms += ["reconnaissance", "enumeration", "port", "scan", "service"]
         return " ".join(terms).strip() or self.target
 
+    def set_methodology(self, mode: str | None = None):
+        """Pick and store the engagement methodology — OWASP WSTG for a web app, the
+        enumeration→foothold→privesc→loot flow for a box. `mode` ('web'/'box') forces
+        it; otherwise it's detected from the target (URL/hostname → web, IP → box). The
+        checklist then grounds every plan/decision, and its goal becomes the objective
+        if none was set. Returns the Methodology."""
+        from .methodology import Methodology, detect_kind
+        self.methodology = Methodology(detect_kind(self.target, mode))
+        if not self.objectives:
+            self.add_objective(self.methodology.objective(self.target))
+        return self.methodology
+
     def _reference(self, focus: str) -> str:
         """The guidance block fed to the strategist. Order = priority:
+          0. ENGAGEMENT METHODOLOGY — the OWASP-WSTG / box checklist to follow (top).
           1. LEARNED LESSONS  — Brukal's own verified experience (trusted).
           2. LOCAL SKILL PACKS — vendored red-team playbooks (untrusted).
           3. FRESH WEB RESEARCH — on-demand retrieval (untrusted), LAST so local/
@@ -170,6 +185,8 @@ class AssistSession:
              degrades to "" on any failure. Everything here is guidance the model may
              use to PROPOSE — the gate still rules on every action."""
         parts = []
+        if self.methodology is not None:
+            parts.append(self.methodology.checklist_text())
         if self.lessons is not None:
             parts.append(self.lessons.context_for(focus))
         if self.skills is not None:
@@ -190,6 +207,11 @@ class AssistSession:
         ref = self._reference(self._skill_focus())
         new = self.strategist.plan(self.target, self._state(),
                                    self._objectives_text(), ref)
+        # Fall back to the methodology checklist when the model gives a thin/empty plan,
+        # so even a weak brain follows the full OWASP-WSTG / box flow rather than a
+        # one-line plan.
+        if len(new) < 2 and self.methodology is not None:
+            new = self.methodology.as_plan_steps()
         done = self.plan_cursor                    # preserve progress across a re-plan
         self.plan = new
         self.plan_cursor = min(done, len(self.plan))
@@ -473,6 +495,48 @@ class AssistSession:
         self._persist_finding("crawl", f"crawl {surface.seed}", "ALLOW", head,
                               [("site-map", head)])
         return surface
+
+    def learn(self, query: str) -> str:
+        """First-class internet learning. Look `query` up from the allowlisted
+        CONTROL-PLANE sources (verified + web; NEVER the cage), fold the UNTRUSTED
+        result into the notes so the planner sees it, and persist it as a CANDIDATE
+        lesson only — recall reads TRUSTED lessons, so a poisoned page can never
+        auto-teach a bad habit (a human/verification promotes it). Deduped per query;
+        returns the rendered reference, or "" if research is off / nothing found."""
+        q = (query or "").strip()
+        if not q or self.research is None or q.lower() in self._learned:
+            return ""
+        self._learned.add(q.lower())
+        from . import research as _r
+        try:
+            snippets = self.research.learn(q)
+        except Exception:
+            snippets = []
+        text = _r.render(snippets)
+        if not text:
+            self.notes.append(f"[learn] {q}\n(no results from the allowlisted sources)")
+            return ""
+        self.notes.append(f"[learn] researched '{q}':\n{text[:600]}")
+        self.highlights.append(("learned", f"researched '{q}' "
+                                            f"({len(snippets)} source hit(s))"))
+        if self.lessons is not None:                # candidate tier only — poison-proof
+            for s in snippets[:3]:
+                try:
+                    self.lessons.add(f"[research:{s.source}] {s.query}: {s.text[:200]}",
+                                     tags=[s.source, "research"], kind="reference",
+                                     tier="candidate")
+                except Exception:
+                    pass
+        return text
+
+    def research_todo(self) -> list[str]:
+        """Specific things worth looking up from the live findings (CVE ids, service+
+        version pairs) that haven't been researched yet — drives the auto-learn reflex."""
+        if self.research is None:
+            return []
+        from .research import _query_terms
+        return [t for t in _query_terms(self._highlights_text())
+                if t.lower() not in self._learned]
 
     def web_probes(self, max_active: int = 12):
         """Deterministic vuln-probe checklist for the crawled surface (empty if not
@@ -888,6 +952,8 @@ class _AutoLiveView:
         elif kind == "crawl":
             self.status = (f"🕸  crawling {str(payload.get('url', ''))[:48]}  "
                            f"(page {payload.get('found', '?')})")
+        elif kind == "learning":
+            self.status = f"📚 learning — researching {str(payload.get('query', ''))[:40]}…"
         elif kind == "step":
             s = payload["step"]
             v = s.verdict or "-"
@@ -973,6 +1039,10 @@ class _PlainAutoView:
             self._stop_beat()
             print("  🕸 crawling — mapping the web attack surface…")
             self._start_beat("crawling the site")
+        elif kind == "learning":
+            self._stop_beat()
+            print(f"  📚 learning — researching {payload.get('query', '')}")
+            self._start_beat("researching (control-plane)")
         elif kind == "coached":
             self._stop_beat(); print(f"  ↩ {(payload.get('note') or '')[:110]}")
         elif kind == "solved":
@@ -1872,7 +1942,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
              audit_path="runs/audit.jsonl", vault_path="runs/vault",
              container="brukal-kali", model=None, provider=None, base_url=None,
              max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
-             full_send=False) -> int:
+             full_send=False, mode=None, no_research=False) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
     in-scope enumeration. When it hands back (manual/escalation/stall/budget), and
     a human is present at a terminal, it drops straight into the interactive menu on
@@ -1897,6 +1967,8 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
+    if no_research:                            # opt out of all control-plane research egress
+        session.research = None
     # In headless auto, an ESCALATE cleanly PAUSES the hunt (the loop hands back)
     # rather than prompting mid-live-view: dangerous/irreversible moves are approved
     # interactively in `brukal solve`. Fail-closed keeps the invariant intact.
@@ -1927,10 +1999,12 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     if session.resumed:
         _emit(console, f"  resumed — loaded {session.resumed} prior finding(s).")
 
-    if not session.objectives:              # steer the autonomous hunt toward the goal
-        session.add_objective(f"Enumerate {target}; examine any web service with the "
-                              f"browser; find a way to a foothold (SSH/FTP/web) and "
-                              f"capture the user and root flags.")
+    # Pick the methodology (web=OWASP WSTG / box=enum→foothold→privesc→loot). It grounds
+    # every plan/decision and seeds the objective if none was set. `mode` forces it;
+    # otherwise it's detected from the target (URL/hostname → web, IP → box).
+    meth = session.set_methodology(mode)
+    _emit(console, f"  methodology: {meth.kind} "
+                   f"({'OWASP WSTG' if meth.kind == 'web' else 'box enum→privesc→loot'})")
 
     view = _AutoLiveView(console, target, cage, max_steps,
                          session.objectives[0] if session.objectives else "") \

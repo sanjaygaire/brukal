@@ -192,8 +192,15 @@ On top of that spine:
 - **Kernel-enforced scope** — the cage installs a scope-derived, default-drop
   **nftables** egress ruleset at startup (VPN-aware), so a command that slips past the
   Python gate still can't put a packet on the wire to an out-of-scope host.
-- **On-demand research** (`research.py`) — control-plane-only retrieval, injected as
-  labelled untrusted reference; opt in with `BRUKAL_RESEARCH_SOURCES`.
+- **Internet search & learning** (`research.py`) — a first-class, on-by-default
+  capability: when a new CVE or service+version appears, Brukal **auto-researches** it
+  from an allowlist of **verified sources** (NVD/CVE, Exploit-DB, GTFOBins, HackTricks)
+  **plus a key-free general web search** (DuckDuckGo), folds the result into grounded
+  context, and saves it as a **candidate lesson** (never trusted, so a poisoned page
+  can't teach a bad habit). It runs **only in the control plane** (the orchestrator's
+  own audited egress) — *never* through the cage, which stays scope-locked — and every
+  result is labelled untrusted. Narrow it with `BRUKAL_RESEARCH_SOURCES`, or turn all
+  egress off with `--no-research` / `BRUKAL_RESEARCH_SOURCES=off`.
 - **Verification + verified-only learning** (`verify.py`, two-tier `lessons.py`) — a
   `solved` verdict and a promoted lesson require a confirmed result from real gated
   output, never prose; a poisoned lesson still can't cause an out-of-scope action.
@@ -437,6 +444,17 @@ It runs until it hits a **manual** step (intrusive exploitation — your job), a
 `--max-steps` budget. Governance is unchanged: every command still goes through the
 one gate, and nothing out of scope ever executes.
 
+**Mode-aware methodology (`methodology.py`).** `auto` first picks the right discipline
+for the target: a URL/hostname is a **web app** and drives the **OWASP WSTG** checklist
+(information gathering → configuration → authentication → session → **input
+validation/injection** → **access control/IDOR** → error handling → crypto → business
+logic → client-side, each item tagged with its WSTG id); a bare IP is a **box** and
+drives the machine flow (full enumeration → per-service enum → web enum → foothold →
+privilege escalation → loot the flags). Force it with `--web` / `--box`. The checklist
+is injected as the **top-priority planner reference** and, if a weak model returns a
+thin plan, *becomes* the plan — so even a cheap model follows a complete, auditable
+methodology from a recognised standard instead of wandering.
+
 **Multi-agent by default — planner + role executors.** `auto` runs the multi-agent
 orchestrator: the **strategist stays the planner** (it sets the phase + goal each
 turn, carrying the full grounded context — verified findings, what's been tried, the
@@ -651,6 +669,7 @@ brukal/
 ├── lessons.py        # two-tier cross-session memory: candidate vs verified-trusted
 ├── research.py       # on-demand control-plane retrieval (untrusted web reference)
 ├── web.py            # governed web surface: WebAction, check_web, GovernedBrowser
+├── methodology.py    # mode-aware playbook: OWASP WSTG (web) / enum→privesc (box)
 ├── webmap.py         # attack-surface crawl: HTML->forms/params/links (stdlib, no egress)
 ├── webprobe.py       # map->probes: passive scans + active injection tests (governed)
 ├── findings.py       # structured, deduped, severity-ranked vuln findings (evidence-backed)
