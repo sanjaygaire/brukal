@@ -188,14 +188,23 @@ class GroundedLoop:
         return result
 
     def _check_solved(self, command, result, source):
-        """If the REAL output of an executed command satisfies the success condition
-        (a captured flag / verified foothold), finish as `solved` and promote the win
-        to the trusted lesson store. Grounded: prose can never trigger this — only
-        gate-executed output reaches here. Returns a LoopResult on solve, else None."""
+        """If the REAL SHELL output of an executed command CONFIRMS the success
+        condition (a captured flag / `id`-proven foothold), finish as `solved` and
+        promote the win to the trusted lesson store. Grounded: prose can never trigger
+        this — only gate-executed output reaches here — and a match in a
+        target-controlled WEB body is a CANDIDATE only: it is recorded as an unconfirmed
+        lead (never solving, never promoting a trusted lesson) and the loop keeps going,
+        so a fresh gated shell command has to confirm it. Returns a LoopResult on a
+        confirmed solve, else None."""
         if self._verifier is None or result is None:
             return None
         verified = self._verifier.check(command, result, source)
         if verified is None:
+            return None
+        if not verified.confirmed:
+            # Web/target-controlled match — NEVER solve or promote. Record the lead and
+            # keep hunting; don't believe a page that merely CONTAINS "uid=" or a hash.
+            self._record_candidate(verified)
             return None
         try:
             self.session.record_verified_success(verified)   # brain grows only on a confirmed win
@@ -205,6 +214,29 @@ class GroundedLoop:
         return self._finish(
             "solved", f"{verified.kind} verified from real gated output "
                       f"[{verified.source}] `{verified.command}`: {verified.evidence[:64]}")
+
+    def _record_candidate(self, verified):
+        """Record an UNCONFIRMED (web-sourced) success lead: a candidate finding + a
+        candidate lesson (never trusted), plus a coach note telling the loop to confirm
+        it with a real shell command instead of believing the page. Deduped by evidence
+        so a repeated render doesn't spam. Never solves, never promotes."""
+        key = (verified.kind, verified.evidence)
+        if key in getattr(self, "_seen_candidates", set()):
+            return
+        if not hasattr(self, "_seen_candidates"):
+            self._seen_candidates = set()
+        self._seen_candidates.add(key)
+        try:
+            self.session.record_candidate_lead(verified)
+        except Exception:
+            pass                                             # recording must never derail the loop
+        hint = (f" Run `{verified.confirm_command}` over a shell to confirm it — "
+                if verified.confirm_command else " ")
+        self.session.note(
+            f"A {verified.kind}-like string (`{verified.evidence[:48]}`) appeared in "
+            f"WEB output, which the target controls — do NOT treat it as proof."
+            f"{hint}until then it is only a candidate lead.")
+        self._emit("candidate", verified=verified)
 
     def run(self) -> LoopResult:
         """Run until a terminal condition and return the trace + why it stopped."""

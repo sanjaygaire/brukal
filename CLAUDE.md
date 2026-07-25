@@ -73,9 +73,9 @@ scope.json ─► scope.py ─► gate.py ─► executor.py ─► kali.py ─�
 ## Working copy (verify before editing)
 
 - The repo root is the directory containing `.git` — confirm with `git status`.
-- Create a virtualenv, install the agent extras (`pip install -e ".[agents]"` or
-  `pip install -r requirements.txt`), and run the tests from the repo root:
-  `python -m pytest`.
+- Create a virtualenv, install the dev extras (`pip install -e ".[dev]"` or
+  `pip install -r requirements.txt` — both pull pytest + pydantic + rich so a clean
+  checkout runs green), and run the tests from the repo root: `python -m pytest`.
 
 ## Verified state (see Brukal.md for the live running log)
 

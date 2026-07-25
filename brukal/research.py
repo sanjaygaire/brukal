@@ -21,7 +21,9 @@ feature and is ON by default with a curated set — verified sources (NVD/CVE,
 Exploit-DB, GTFOBins, HackTricks) plus a key-free general web search (DuckDuckGo) for
 anything they don't cover. Override the allowlist with BRUKAL_RESEARCH_SOURCES
 (comma-separated names), or set it to "off"/"none" to disable all egress. Results are
-cached, rate-limited, and time out gracefully; any failure degrades to local skills.
+cached, rate-limited, bounded by a per-engagement fetch budget (the target influences
+the query terms, so total egress is capped), and every fetched query is logged; any
+failure degrades to local skills.
 """
 from __future__ import annotations
 
@@ -70,7 +72,11 @@ class Source:
     kind: str = "text"         # "text" (html/plain) or "json"
 
     def url(self, query: str) -> str:
-        return self.url_template.format(q=urllib.parse.quote(query))
+        # safe='' so a query FULLY percent-encodes — `/`, `.` and friends included. The
+        # query is built from target-controlled highlights, so a value like
+        # "../../../../etc/passwd" must NOT keep its slashes and path-traverse within the
+        # allowlisted host (bug 1d). Only the fixed template contributes path structure.
+        return self.url_template.format(q=urllib.parse.quote(query, safe=""))
 
 
 _BUILTIN_SOURCES = {
@@ -186,7 +192,8 @@ class ResearchProvider:
     everything failed. Never raises into the loop."""
 
     def __init__(self, sources=None, *, fetch=None, cache=None, timeout: float = 8.0,
-                 min_interval: float = 1.0, max_snippets: int = 2, max_queries: int = 2):
+                 min_interval: float = 1.0, max_snippets: int = 2, max_queries: int = 2,
+                 max_fetches: int = 40, on_fetch=None):
         self.sources = list(sources) if sources is not None else _sources_from_env()
         self._fetch = fetch or _default_fetch     # injectable (tests pass a fake)
         self._cache = cache if cache is not None else {}   # (source, query) -> Snippet|None
@@ -195,23 +202,50 @@ class ResearchProvider:
         self._last_fetch = 0.0
         self.max_snippets = max_snippets
         self.max_queries = max_queries
+        # Per-engagement egress budget (bug 1e). The query terms are derived from
+        # target-controlled highlights, so the target influences WHAT we search. A hard
+        # cap on total real fetches bounds that: no matter how many novel service/CVE
+        # strings a hostile target sprays into its banners, control-plane egress can't be
+        # driven past this budget. Cached lookups are free (don't count).
+        self.max_fetches = max_fetches
+        self.fetches = 0                          # real fetches performed this engagement
+        self.fetch_log: list[dict] = []           # every fetched query, for audit/surfacing
+        self._on_fetch = on_fetch                 # optional callback(entry) to record it
 
     @property
     def enabled(self) -> bool:
         return bool(self.sources)
 
+    @property
+    def budget_exhausted(self) -> bool:
+        return self.fetches >= self.max_fetches
+
     def _lookup(self, source: Source, query: str):
         key = (source.name, query.lower())
         if key in self._cache:                     # cache hit (incl. cached miss)
             return self._cache[key]
+        if self.budget_exhausted:                  # per-engagement egress cap reached
+            return None                            # not cached: a later budget could serve it
         wait = self.min_interval - (time.monotonic() - self._last_fetch)
         if wait > 0:
             time.sleep(wait)
+        url = source.url(query)
+        # Log every query we actually fetch BEFORE the request — a truthful record of
+        # exactly what left the control plane, even if the fetch then fails.
+        entry = {"source": source.name, "query": query, "url": url,
+                 "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        self.fetch_log.append(entry)
+        self.fetches += 1
+        if self._on_fetch is not None:
+            try:
+                self._on_fetch(entry)
+            except Exception:
+                pass                               # logging must never break research
         try:
-            raw = self._fetch(source.url(query), self.timeout)
+            raw = self._fetch(url, self.timeout)
             self._last_fetch = time.monotonic()
             text = _distill(source, raw)
-            snip = Snippet(source.name, query, text, source.url(query),
+            snip = Snippet(source.name, query, text, url,
                            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())) if text else None
         except Exception:
             snip = None                            # timeout / HTTP / parse error -> degrade

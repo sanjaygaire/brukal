@@ -32,9 +32,15 @@ agents = [
 tui = [
     "rich>=13",
 ]
-# Development / running the test suite:
+# Development / running the test suite. A superset: the tests import the agent
+# schema (pydantic) and the live dashboard (rich), so `pip install -e ".[dev]"` on a
+# clean checkout must pull those too, or `python -m pytest` fails at import. Keep this
+# in sync with requirements.txt.
 dev = [
     "pytest>=7.0",
+    "anthropic>=0.40",
+    "pydantic>=2.0",
+    "rich>=13",
 ]
 
 [project.scripts]

@@ -11,9 +11,11 @@ grows only from VERIFIED experience.
     outcome/when). Optional BRUKAL_LESSON_REVIEW=1 requires human sign-off first.
 
 Pitfalls derived from the gate's OWN deterministic decision (not-allowlisted,
-injection, scope, timeout) are trusted-by-construction — they come from our command
-+ the gate's ruling, never from target output (invariant 1/3), and they are
-avoidance guidance, not action suggestions.
+injection, scope) or from our own `timeout(1)` wrapper's exit code (124) are
+trusted-by-construction — they come from our command + the gate's ruling / our
+control-plane wrapper, never from target stdout/stderr text (invariant 1/3), and they
+are avoidance guidance, not action suggestions. Every trusted-tier write, without
+exception, goes through `_commit_trusted`, which requires a verification token.
 
 Everything here is DATA. Lessons are reloaded read-only and injected clearly
 labelled as guidance; no lesson can widen scope or change gate/tool policy — the
@@ -33,6 +35,26 @@ from pathlib import Path
 
 _WORD = re.compile(r"[a-z0-9][a-z0-9.\-]+")
 _MAX_LESSONS = 500          # cap per tier; evict the least-reinforced when full
+
+# Kinds that are trusted-BY-CONSTRUCTION: AVOIDANCE guidance derived from our own
+# command + the gate's deterministic ruling (never target output). A 'win'/'reference'
+# is an ACTION suggestion and must be VERIFIED before it can ever reach the retrievable
+# trusted tier — see LessonStore._commit_trusted.
+_GATE_DERIVED_KINDS = ("pitfall", "tactic")
+
+
+class _Verification:
+    """Unforgeable-by-construction proof that a trusted-tier write is warranted.
+
+    Only THIS module mints one, at exactly three points: a gate-derived pitfall/tactic
+    (our command + the gate's ruling), a verified promotion (`promote(verified=True)`),
+    and a confirmed win (`record_verified_success`). Code outside lessons.py cannot
+    construct a valid token, so no external caller can inject a retrievable trusted
+    'win' without going through verification — closing the `add(tier="trusted")` hole."""
+    __slots__ = ("reason",)
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
 
 
 @dataclass
@@ -122,22 +144,17 @@ class LessonStore:
 
     # -- writing ------------------------------------------------------------ #
 
-    def add(self, text: str, tags, kind: str = "tactic", tier: str | None = None) -> Lesson:
-        """Record a lesson into a tier, reinforcing (bumping hits) an existing one
-        with the same signature in that tier instead of duplicating it. Default tier:
-        a 'win' is a CANDIDATE (needs verification); a pitfall/tactic is TRUSTED
-        (gate-derived avoidance guidance, safe by construction)."""
-        if tier is None:
-            tier = "candidate" if kind == "win" else "trusted"
-        lst = self._trusted if tier == "trusted" else self._candidates
-        lesson = Lesson(text=text.strip(), tags=[t.lower() for t in tags if t],
-                        kind=kind, tier=tier)
+    def _insert(self, lst: list, lesson: Lesson) -> Lesson:
+        """Append `lesson` to `lst` (a tier), reinforcing (bumping hits) an existing
+        one with the same signature instead of duplicating it; evict the least-
+        reinforced when the tier is full; persist. Tier membership is decided by the
+        callers (add / _commit_trusted), not here."""
         for existing in lst:
             if existing.signature() == lesson.signature():
                 existing.hits += 1
                 existing.ts = time.time()
-                if len(text) > len(existing.text):
-                    existing.text = text.strip()      # keep the clearer phrasing
+                if len(lesson.text) > len(existing.text):
+                    existing.text = lesson.text       # keep the clearer phrasing
                 self._save()
                 return existing
         lst.append(lesson)
@@ -146,6 +163,36 @@ class LessonStore:
             del lst[:-_MAX_LESSONS]
         self._save()
         return lesson
+
+    def _commit_trusted(self, lesson: Lesson, token: "_Verification") -> Lesson:
+        """THE single chokepoint for every trusted-tier write. Requires a verification
+        token minted inside this module; refuses otherwise (fail-closed). This is what
+        makes an unverified trusted 'win' unwritable from any external caller."""
+        if not isinstance(token, _Verification):
+            raise PermissionError("trusted-tier write requires a verification token")
+        lesson.tier = "trusted"
+        return self._insert(self._trusted, lesson)
+
+    def add(self, text: str, tags, kind: str = "tactic", tier: str | None = None) -> Lesson:
+        """Record a lesson, reinforcing (bumping hits) an existing one with the same
+        signature instead of duplicating it. Default tier: a 'win'/'reference' is a
+        CANDIDATE (needs verification); a gate-derived pitfall/tactic is TRUSTED
+        (avoidance guidance, safe by construction).
+
+        A trusted-tier write is honoured ONLY for gate-derived pitfall/tactic kinds,
+        which mint their own token here. A request to write a 'win'/'reference' as
+        trusted is REFUSED and downgraded to a candidate — trusted wins must go through
+        `record_verified_success`/`promote`, the only paths that mint a verification
+        token. This closes the `add(tier="trusted")` bypass (bug 1b)."""
+        if tier is None:
+            tier = "candidate" if kind in ("win", "reference") else "trusted"
+        lesson = Lesson(text=text.strip(), tags=[t.lower() for t in tags if t],
+                        kind=kind, tier="candidate")
+        if tier == "trusted" and kind in _GATE_DERIVED_KINDS:
+            return self._commit_trusted(lesson, _Verification(f"gate-derived:{kind}"))
+        # Everything else — including any attempt to write a 'win'/'reference' as
+        # trusted — lands in the candidate pool, which is never retrieved for planning.
+        return self._insert(self._candidates, lesson)
 
     def learn_from_outcome(self, command: str, decision, result, tech_tags=None) -> None:
         """Derive a lesson from one command's real outcome. Pitfalls (gate-derived)
@@ -156,8 +203,12 @@ class LessonStore:
         layer = getattr(decision, "layer", "") or ""
 
         if result is not None:
-            timed_out = (getattr(result, "returncode", 0) == 124
-                         or "timed out" in (getattr(result, "stderr", "") or "").lower())
+            # Our own `timeout(1)` wrapper in the cage exits 124 on a timeout. That exit
+            # code is OURS (control-plane), never target-controlled text — so keying the
+            # pitfall on it keeps this lesson gate/tool-derived (invariant 1/3), matching
+            # this module's docstring. We deliberately do NOT read target stdout/stderr
+            # to decide a timeout, which the target could forge ("timed out" in a banner).
+            timed_out = (getattr(result, "returncode", 0) == 124)
             if timed_out and tool:
                 self.add(f"`{tool}` with broad options times out in the cage — run a "
                          f"faster, narrower variant first.", [tool, "timeout"], "pitfall")
@@ -197,17 +248,11 @@ class LessonStore:
             return False
         for i, c in enumerate(self._candidates):
             if c.signature() == signature:
-                c.tier = "trusted"
+                self._candidates.pop(i)
                 c.provenance = {"target": target, "service": service, "command": command,
                                 "outcome": outcome, "verified_at": _now()}
-                self._candidates.pop(i)
-                for t in self._trusted:               # merge if already present
-                    if t.signature() == c.signature():
-                        t.hits += c.hits
-                        self._save()
-                        return True
-                self._trusted.append(c)
-                self._save()
+                # Through the single trusted chokepoint (dedups/merges into trusted).
+                self._commit_trusted(c, _Verification("promoted:verified"))
                 return True
         return False
 
@@ -219,13 +264,14 @@ class LessonStore:
         and not yet reviewed, in which case it is held as a candidate awaiting sign-off."""
         tool = _tool_of(command)
         body = text or f"`{tool}` worked against {service} — {outcome}.".strip()
+        lesson = Lesson(text=body.strip(), tags=[t.lower() for t in tags if t], kind="win")
         if not self._review_ok(reviewed):
-            return self.add(body, list(tags), "win", tier="candidate")
-        lesson = self.add(body, list(tags), "win", tier="trusted")
+            # Awaiting human sign-off -> held as a candidate (not retrievable yet).
+            return self._insert(self._candidates, lesson)
         lesson.provenance = {"target": target, "service": service, "command": command,
                              "outcome": outcome, "verified_at": _now()}
-        self._save()
-        return lesson
+        # A confirmed win reaches the trusted tier ONLY through the token chokepoint.
+        return self._commit_trusted(lesson, _Verification("verified-success"))
 
     # -- reading (TRUSTED tier only) ---------------------------------------- #
 

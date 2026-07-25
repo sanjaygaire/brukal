@@ -109,6 +109,30 @@ def test_research_never_touches_executor_or_cage():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# --- 1d: a target-controlled query must not path-traverse the allowlisted host
+
+def test_query_is_fully_encoded_no_path_traversal():
+    src = Source("gtfobins", "https://gtfobins.github.io/gtfobins/{q}/", "text")
+    url = src.url("../../../../etc/passwd")
+    assert "/etc/passwd" not in url                    # slashes encoded -> can't traverse
+    assert "%2F" in url                                # they became %2F
+    assert url.startswith("https://gtfobins.github.io/gtfobins/")   # host/path unchanged
+
+
+# --- 1e: a per-engagement fetch budget bounds target-influenced egress ------
+
+def test_research_respects_a_per_engagement_fetch_budget_and_logs_queries():
+    fetched, logged = [], []
+    rp = ResearchProvider(_SRC, fetch=lambda u, t: fetched.append(u) or "notes",
+                          min_interval=0.0, max_fetches=2, on_fetch=logged.append)
+    assert rp.learn("q1") and rp.learn("q2")           # two distinct fetches allowed
+    assert rp.learn("q3") == []                        # budget exhausted -> no egress
+    assert len(fetched) == 2 and rp.fetches == 2 and rp.budget_exhausted
+    # every fetched query is logged (audit) — via fetch_log AND the on_fetch callback
+    assert [e["query"] for e in rp.fetch_log] == ["q1", "q2"]
+    assert [e["query"] for e in logged] == ["q1", "q2"]
+
+
 def test_research_caches_and_rate_limits():
     calls = []
     rp = ResearchProvider(_SRC, fetch=lambda u, t: calls.append(u) or "vsftpd notes",

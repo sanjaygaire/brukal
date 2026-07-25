@@ -123,6 +123,51 @@ def test_loop_does_not_solve_on_a_prose_claim():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# -- 1a: target-controlled WEB output must never confirm a success ----------
+
+def test_web_uid_string_is_a_candidate_not_a_confirmed_foothold():
+    # THE false positive: a page whose BODY contains `id`-style output. The target
+    # controls that text, so it is a CANDIDATE lead (confirmed=False), never proof.
+    v = Verifier()
+    web = SimpleNamespace(body="uid=0(root) gid=0(root) groups=0(root)", stdout=None)
+    got = v.check("WEB: render http://10.10.10.5/", web, source="web")
+    assert got is not None and got.kind == "foothold" and got.confirmed is False
+    assert got.confirm_command == "id"                 # run it yourself to believe it
+    # the same evidence in real SHELL output IS a confirmed foothold
+    sh = v.check("id", ExecResult("id", 0, "uid=0(root) gid=0(root)", ""), source="shell")
+    assert sh.confirmed is True
+
+
+def test_web_md5_alone_on_a_line_is_a_candidate_not_a_confirmed_flag():
+    # the other false positive: a 32-hex (an MD5, an asset hash) alone on a page line
+    v = Verifier()
+    web = SimpleNamespace(body=f"{_FLAG}\n", stdout=None)
+    got = v.check("WEB: render http://10.10.10.5/", web, source="web")
+    assert got is not None and got.kind == "flag" and got.confirmed is False
+    # but a flag alone on a line in SHELL output is confirmed (regression guard)
+    assert v.check("cat user.txt", ExecResult("x", 0, f"{_FLAG}\n", ""),
+                   source="shell").confirmed is True
+
+
+def test_loop_never_solves_or_promotes_on_web_output():
+    class StubSession:
+        target = "10.10.10.5"
+        def __init__(self): self.verified = []; self.candidates = []; self.notes = []
+        def record_verified_success(self, v): self.verified.append(v)
+        def record_candidate_lead(self, v): self.candidates.append(v)
+        def note(self, text): self.notes.append(text)
+
+    loop = GroundedLoop(StubSession(), verifier=Verifier())
+    web = SimpleNamespace(body="uid=0(root) gid=0(root)", stdout=None)
+    # web output NEVER solves the loop or promotes a trusted lesson — only records a lead
+    assert loop._check_solved("WEB: render http://10.10.10.5/", web, "web") is None
+    assert loop.session.candidates and not loop.session.verified
+    assert loop.session.notes and "do NOT treat it as proof" in loop.session.notes[0]
+    # a genuine SHELL-confirmed foothold DOES solve + promote
+    res = loop._check_solved("id", ExecResult("id", 0, "uid=0(root) gid=0(root)", ""), "shell")
+    assert res is not None and res.stop_reason == "solved" and loop.session.verified
+
+
 def test_no_verifier_means_no_solved_stop():
     # without a verifier the loop behaves exactly as before (no 'solved')
     tmp = tempfile.mkdtemp()

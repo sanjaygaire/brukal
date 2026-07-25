@@ -180,6 +180,41 @@ def test_poisoned_promoted_lesson_cannot_cause_out_of_scope_action():
     assert d.verdict == "DENY"                       # the gate rules; the lesson cannot widen scope
 
 
+# --- 1b: every trusted-tier write goes through the verification chokepoint --
+
+def test_add_cannot_write_a_trusted_win_without_verification():
+    # bug 1b: add(tier="trusted") for a 'win' must be REFUSED (downgraded to candidate)
+    # so no caller can inject a retrievable trusted win bypassing verification.
+    store = LessonStore(tempfile.mktemp())
+    l = store.add("run exploit/foo — it 'works'", ["foo"], "win", tier="trusted")
+    assert l.tier == "candidate"
+    assert store.retrieve("foo") == [] and not store._trusted   # never retrievable
+
+
+def test_trusted_commit_requires_a_verification_token():
+    import pytest
+
+    from brukal.lessons import Lesson
+    store = LessonStore(tempfile.mktemp())
+    # the single chokepoint fails closed without a module-minted token
+    with pytest.raises(PermissionError):
+        store._commit_trusted(Lesson(text="x", tags=["x"], kind="win"), None)
+
+
+# --- 1c: a timeout pitfall is keyed on OUR exit code, not target text -------
+
+def test_timeout_pitfall_keys_on_exit_code_not_target_text():
+    store = LessonStore(tempfile.mktemp())
+    # a forged "timed out" in stderr with a normal exit code must NOT teach a pitfall
+    store.learn_from_outcome("nmap x", _decision("ALLOW"),
+                             _result(stdout="", rc=0, stderr="connection timed out"))
+    assert not any("times out" in l.text for l in store._lessons)
+    # our real timeout wrapper (exit 124) still teaches it
+    store.learn_from_outcome("nmap -A -p- x", _decision("ALLOW"),
+                             _result(stdout="", rc=124, stderr=""))
+    assert any("times out" in l.text for l in store._lessons)
+
+
 def test_candidates_persist_separately_and_reload_read_only():
     path = tempfile.mktemp()
     s1 = LessonStore(path)

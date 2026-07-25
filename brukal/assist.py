@@ -265,9 +265,15 @@ class AssistSession:
         return "\n".join(f"- {c}" for c in out[-limit:])
 
     def record_verified_success(self, verified):
-        """A success was CONFIRMED from real gated output (see verify.py). Promote it
-        to the trusted lesson store with provenance, so the brain grows only from
-        verified wins, and record it as a CONFIRMED, critical finding in the report."""
+        """A success was CONFIRMED from real gated SHELL output (see verify.py). Promote
+        it to the trusted lesson store with provenance, so the brain grows only from
+        verified wins, and record it as a CONFIRMED, critical finding in the report.
+
+        Defence in depth: this refuses an UNCONFIRMED (web-sourced) lead — it must never
+        write a confirmed critical finding or a trusted lesson from target-controlled
+        text. Such leads go through `record_candidate_lead` instead."""
+        if not getattr(verified, "confirmed", True):
+            return self.record_candidate_lead(verified)
         from .findings import Finding
         self.findings.add(Finding(
             title=str(getattr(verified, "kind", "foothold")).replace("_", " "),
@@ -284,6 +290,32 @@ class AssistSession:
         return self.lessons.record_verified_success(
             target=self.target, service=service, command=verified.command,
             outcome=f"{verified.kind}: {verified.evidence[:80]}", tags=tags)
+
+    def record_candidate_lead(self, verified):
+        """An UNCONFIRMED success lead (a flag/foothold-like string seen in
+        target-controlled WEB output). Record it as a CANDIDATE finding (never
+        confirmed) and a CANDIDATE lesson (never retrieved), so the signal is not lost
+        but nothing target-controlled can end the run as 'solved', inject a confirmed
+        critical finding, or poison the trusted lesson store. Confirm it with a fresh
+        gated shell command before believing it."""
+        from .findings import Finding
+        self.findings.add(Finding(
+            title=f"unconfirmed {str(getattr(verified, 'kind', 'foothold')).replace('_', ' ')} "
+                  f"(web-sourced, needs shell confirmation)",
+            severity="info", target=self.target,
+            evidence=getattr(verified, "evidence", "")[:200],
+            source=getattr(verified, "command", ""), category="access",
+            confirmed=False))
+        if self.lessons is not None:
+            try:
+                self.lessons.add(
+                    f"saw a {verified.kind}-like string in web output of "
+                    f"`{verified.command}` — confirm with a shell command before trusting.",
+                    tags=["candidate-lead", verified.kind], kind="reference",
+                    tier="candidate")
+            except Exception:
+                pass
+        return None
 
     def ask(self, question: str) -> str:
         """Answer the operator's question about the hunt, grounded in real findings.

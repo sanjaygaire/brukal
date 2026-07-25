@@ -53,6 +53,9 @@ class Verified:
     evidence: str        # the exact matched text (the flag / the id line)
     command: str         # the gated command whose REAL output produced it
     source: str = "shell"   # "shell" | "web"
+    confirmed: bool = True  # True ONLY when proven from real SHELL output; a match in
+                            # target-controlled WEB body is a CANDIDATE lead, never proof.
+    confirm_command: str = ""   # a gated shell command that WOULD confirm a web candidate
     provenance: dict = field(default_factory=dict)
 
 
@@ -62,7 +65,22 @@ def _result_text(result) -> str:
 
 class Verifier:
     """Checks a real command outcome for a success condition. Returns a Verified on a
-    confirmed flag/foothold, else None. Deterministic; never sees the model."""
+    flag/foothold match, else None. Deterministic; never sees the model.
+
+    The `source` of the output decides whether a match is CONFIRMED or merely a
+    CANDIDATE:
+
+      * ``shell`` — the real stdout of a gate-executed command in the cage. A flag
+        alone on a line, or `id`/root-prompt evidence, is CONFIRMED here.
+      * ``web`` — a page BODY returned by the governed browser. The target controls
+        this text completely, so a 32-hex could be any MD5 and a "uid=0(root)" string
+        is just page content, not proof of code execution. A match here is a CANDIDATE
+        only (``confirmed=False``): it NEVER solves the loop, NEVER writes a confirmed
+        finding, and NEVER promotes a trusted lesson. To believe it, run a fresh gated
+        shell command yourself (e.g. ``id``) — see ``confirm_command``.
+
+    A foothold means code execution; only real shell output can ever prove that.
+    """
 
     def __init__(self, condition: SuccessCondition | None = None):
         self.condition = condition or SuccessCondition.from_env()
@@ -70,18 +88,31 @@ class Verifier:
         self._foothold_res = [re.compile(p) for p in self.condition.foothold_patterns]
 
     def check(self, command: str, result, source: str = "shell") -> Verified | None:
-        """A success is confirmed ONLY from real output (result is not None). Prose
-        never reaches here — the loop calls this with the executed result."""
+        """A match is drawn ONLY from real output (result is not None). Prose never
+        reaches here — the loop calls this with the executed result. A ``web``-sourced
+        match is returned with ``confirmed=False`` (a candidate lead); only ``shell``
+        output yields a confirmed success."""
         if result is None:
             return None
         text = _result_text(result)
         if not text:
             return None
+        shell = (source == "shell")
         m = self._flag_re.search(text)
         if m:
-            return Verified("flag", m.group(0).strip(), command, source)
+            # A flag string in SHELL output of a gated command is confirmed. The same
+            # 32-hex in a target-controlled WEB body is only a candidate (could be an
+            # MD5 / asset hash) — surface it, but don't solve or promote on it.
+            return Verified("flag", m.group(0).strip(), command, source,
+                            confirmed=shell,
+                            confirm_command="" if shell else "read the flag file over a shell")
         for rx in self._foothold_res:
             fm = rx.search(text)
             if fm:
-                return Verified("foothold", fm.group(0).strip(), command, source)
+                # Foothold = code execution. Only real SHELL output can prove it; a web
+                # page containing "uid=0(root)" is just target-controlled text. Return a
+                # candidate from web with a gated command that WOULD confirm it.
+                return Verified("foothold", fm.group(0).strip(), command, source,
+                                confirmed=shell,
+                                confirm_command="" if shell else "id")
         return None
