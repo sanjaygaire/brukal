@@ -12,6 +12,7 @@ from .audit import AuditLog
 from .kali import FakeKali, DockerKali, ExecResult, FakeSession, DockerSession
 from .executor import Executor, Approver
 from .session import GovernedSession, open_session, run_shell
+from .sessions import SessionManager, SessionState
 from .risk import RiskProfile, assess
 from .tasktree import TaskTree, Task, TaskStatus
 from .blackboard import Blackboard, render_scope
@@ -32,6 +33,7 @@ __all__ = [
     "FakeSession", "DockerSession",
     "Executor", "Approver",
     "GovernedSession", "open_session", "run_shell",
+    "SessionManager", "SessionState",
     "RiskProfile", "assess",
     "TaskTree", "Task", "TaskStatus",
     "Blackboard", "render_scope", "Orchestrator", "ParallelOrchestrator",

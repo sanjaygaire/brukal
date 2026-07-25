@@ -123,6 +123,8 @@ class AssistSession:
         self.findings = FindingStore()   # structured vuln findings (vault-backed in _prepare_session)
         self.executed_cmds: list = []  # commands that really ran (fed back as ALREADY TRIED)
         self.resumed = 0               # how many prior findings we loaded
+        self.sessions = None           # lazy SessionManager (Phase 2 stateful live shells)
+        self.session_states: dict = {} # mirrored per-session state (for the blackboard)
         if blackboard is not None:
             self._load_memory()
 
@@ -420,6 +422,108 @@ class AssistSession:
             tech = sorted({m.lower() for _t, ln in new_hl for m in _TECH_HINTS.findall(ln)})
             self.lessons.learn_from_outcome(command, decision, result, tech)
         return decision, result, new_hl
+
+    # -- stateful live sessions (Phase 2) ----------------------------------- #
+
+    def _session_backend_factory(self, target):
+        """Build the right stateful backend for a live session from the cage this
+        engagement is already using: a real persistent `docker exec bash` when the
+        one-shot cage is DockerKali, else the in-memory FakeSession for tests/--fake.
+        Overridable (tests set this before the first session) for a scripted shell."""
+        from .kali import DockerKali, DockerSession, FakeSession
+        kali = getattr(self.executor, "_kali", None) if self.executor is not None else None
+        if isinstance(kali, DockerKali):
+            return DockerSession(container=kali.container, target=target)
+        return FakeSession(target)
+
+    def _ensure_sessions(self):
+        """Lazily create the SessionManager, wired to the SAME gate, audit log and
+        approver as the one-shot executor — so a session write is gated + logged
+        identically and an ESCALATE honours the engagement's current approver
+        (interactive / auto / full-send). Every write still goes through the one door."""
+        if self.sessions is None:
+            from .sessions import SessionManager
+            self.sessions = SessionManager(
+                self.executor._gate, self.executor._audit,
+                backend_factory=self._session_backend_factory,
+                approver=lambda d: self.executor._approver(d),
+                on_state=self._mirror_session_state)
+        return self.sessions
+
+    def _mirror_session_state(self, st) -> None:
+        """Persist per-session state to the blackboard so a resumed engagement can see
+        what each live shell did (never the raw transcript into the model — just a
+        digest)."""
+        self.session_states[st.sid] = st
+        if self.blackboard is None:
+            return
+        lines = ["# Live sessions", ""]
+        for s in sorted(self.session_states.values(), key=lambda x: x.sid):
+            status = ("closed" if s.closed and not s.orphaned else
+                      "ORPHANED" if s.orphaned else "open")
+            lines.append(f"## session {s.sid} — {s.target}  ({status})")
+            lines.append(f"- lines run: {s.lines}   denied: {s.denied}")
+            for cmd, verdict, rc in s.transcript[-12:]:
+                lines.append(f"  - [{verdict}] `{cmd}`" + (f"  (rc {rc})" if rc is not None else ""))
+            lines.append("")
+        try:
+            self.blackboard.write_page("sessions.md", "\n".join(lines))
+        except Exception:
+            pass
+
+    def open_session(self, target: str | None = None) -> int:
+        """Open a live governed shell on the (authorised) target and make it current."""
+        sid = self._ensure_sessions().open(target or self.target)
+        self.note(f"[session {sid}] opened a live shell on {target or self.target}")
+        return sid
+
+    _SESSION_ID_RE = re.compile(r"^\s*(?:\[(\d+)\]|#(\d+))\s*(.*)$", re.S)
+
+    def session_action(self, directive: str, agent: str = "operator"):
+        """Interpret a SESSION directive from the planner and run it through the multi-
+        session manager. Every send is gated via GovernedSession (check_session), so an
+        out-of-scope/injected line is DENIED and never reaches the shell.
+
+        Grammar:
+          open [target]           open a new live shell (becomes current)
+          close [N]               close session N (or the current one)
+          [N] <line> / #N <line>  send <line> to session N
+          <line>                  send to the current session (opening one if none)
+
+        Returns (decision, result, sid, new_highlights). `result` is a REAL shell
+        ExecResult (source=shell), so a flag/foothold in it is CONFIRMED by the Verifier
+        — the capability that lets the loop finish a box, not just enumerate it."""
+        mgr = self._ensure_sessions()
+        d = (directive or "").strip()
+        low = d.lower()
+        if low == "open" or low.startswith("open "):
+            tgt = d[4:].strip() or self.target
+            return None, None, self.open_session(tgt), []
+        if low == "close" or low.startswith("close"):
+            rest = d[5:].strip()
+            sid = int(rest) if rest.isdigit() else mgr.current_id
+            if sid is not None:
+                mgr.close(sid)
+                self.note(f"[session {sid}] closed")
+            return None, None, sid, []
+        sid, line = None, d
+        m = self._SESSION_ID_RE.match(d)
+        if m and (m.group(1) or m.group(2)):
+            sid, line = int(m.group(1) or m.group(2)), m.group(3).strip()
+        if not line:
+            return None, None, sid, []
+        if sid is None:
+            sid = mgr.current_id or mgr.open(self.target)
+        decision, result = mgr.send(sid, line, agent=agent)
+        # Fold the real shell outcome into session state exactly like a one-shot run,
+        # so notes/highlights/lessons/findings all see it and the plan advances.
+        decision, result, hl = self._absorb_shell(line, decision, result)
+        return decision, result, sid, hl
+
+    def close_sessions(self) -> None:
+        """Close every live session (end-of-run cleanup / kill switch). Idempotent."""
+        if self.sessions is not None:
+            self.sessions.close_all()
 
     # Labels from webprobe.scan_output that represent an EXPLICIT, unambiguous vuln
     # statement (vs a heuristic match) -> recorded as a CONFIRMED finding. The rest
@@ -2080,9 +2184,11 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     except KeyboardInterrupt:
         if plain_view is not None:
             plain_view._stop_beat()
+        session.close_sessions()             # no orphaned live shells on an interrupt
         print("\n  paused.")
         return 0
     except Exception as e:
+        session.close_sessions()
         if os.environ.get("BRUKAL_DEBUG"):
             raise
         print(f"\n  ⚠ model/cage error: {e}")
@@ -2143,9 +2249,11 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
                 raise
             print(f"\n  ⚠ model/cage error: {e}")
             return 1
+        session.close_sessions()             # operator done — tear the live shells down
         print(f"\n  session recorded to {audit_path} · chain intact: {audit.verify()}\n")
         return 0
 
+    session.close_sessions()                 # non-interactive stop — no orphaned shells
     _emit(console,
           f"\n  ⏹ stopped: {handoff}\n     {result.stop_detail}\n"
           f"  ran {result.executed} command(s), {result.blocked} blocked · "

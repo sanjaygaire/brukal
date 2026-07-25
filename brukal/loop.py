@@ -215,6 +215,67 @@ class GroundedLoop:
             "solved", f"{verified.kind} verified from real gated output "
                       f"[{verified.source}] `{verified.command}`: {verified.evidence[:64]}")
 
+    def _run_session(self, suggestion):
+        """Drive one SESSION directive through the multi-session manager. Returns a
+        LoopResult when the loop should STOP (solved / escalation / stall), or None to
+        keep going. Every line is gated by check_session inside session_action; an
+        out-of-scope/injected line is DENIED and never reaches the shell."""
+        directive = suggestion.session
+        first = (directive.strip().split() or [""])[0].lower()
+        is_lifecycle = first in ("open", "close")
+        sess_key = _norm_cmd(f"SESSION: {directive}")
+
+        # Don't let a weak model spin re-running the same shell line. Lifecycle
+        # (open/close) is exempt; a repeated command send is coached, then stalls.
+        if not is_lifecycle and sess_key in self._ran:
+            self._coach_streak += 1
+            if self._coach_streak > self.max_coach:
+                return self._finish(
+                    "stalled", f"kept re-running the same session line `{directive}` "
+                               f"despite coaching")
+            self.session.note(f"You already ran `SESSION: {directive}` and its result is "
+                              f"in the findings — do something genuinely different.")
+            self._emit("coached", action=f"SESSION: {directive}", streak=self._coach_streak)
+            return None
+        self._coach_streak = 0
+
+        self._emit("running", action=f"SESSION: {directive}", web=False,
+                   agent="operator", phase=suggestion.phase, goal=suggestion.goal)
+        decision, result, sid, highlights = self.session.session_action(
+            directive, agent="operator")
+        executed = result is not None
+        verdict = (decision.verdict if decision is not None
+                   else ("ALLOW" if sid is not None else "NOOP"))
+        step = LoopStep(
+            index=len(self.steps) + 1,
+            phase=suggestion.phase or "exploitation",
+            goal=suggestion.goal or f"live session: {directive}",
+            rationale=suggestion.rationale, command=f"SESSION: {directive}",
+            verdict=verdict, executed=executed,
+            summary=(self._summarise(decision, result, highlights) if decision is not None
+                     else f"session #{sid} {'opened' if first == 'open' else 'closed' if first == 'close' else 'ready'}"),
+            highlights=list(highlights))
+        self.steps.append(step)
+        self._emit("step", step=step)
+
+        if executed:
+            solved = self._check_solved(directive, result, "shell")
+            if solved is not None:
+                return solved                    # flag/foothold CONFIRMED from a real shell
+            self._ran.add(sess_key)
+            self._stalls = 0
+            return None
+        # Not executed. A lifecycle op (open/close) has no decision — not a stall.
+        if decision is None:
+            return None
+        if verdict == "ESCALATE":
+            return self._finish("escalation", f"needs human sign-off: SESSION {directive}")
+        self._stalls += 1
+        if self._stalls > self.max_stalls:
+            return self._finish(
+                "stalled", f"{self._stalls} blocked proposals in a row (last: {decision.reason})")
+        return None
+
     def _record_candidate(self, verified):
         """Record an UNCONFIRMED (web-sourced) success lead: a candidate finding + a
         candidate lesson (never trusted), plus a coach note telling the loop to confirm
@@ -355,6 +416,17 @@ class GroundedLoop:
 
             self._emit("thinking")
             suggestion = self.session.advise()
+
+            # SESSION action (Phase 2): a stateful live-shell directive. Opens/uses a
+            # persistent shell in the cage that survives turns; every line is still gated
+            # via check_session (out-of-scope DENIED, destructive ESCALATEs), and a
+            # flag/foothold in its REAL shell output is CONFIRMED — how a box is finished,
+            # not just enumerated.
+            if getattr(suggestion, "session", None):
+                result = self._run_session(suggestion)
+                if isinstance(result, LoopResult):
+                    return result
+                continue
 
             # The next action is a shell RUN or a WEB action (both governed). No
             # action -> either the operator's move (MANUAL) or nothing left to do.

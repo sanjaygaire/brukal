@@ -94,8 +94,21 @@ STRATEGIST_SYSTEM = (
     "answered, say so.>\n"
     "RUN: <one recon/enumeration command Brukal can run>   (optional)\n"
     "WEB: <a governed browser action for web-app testing>   (optional)\n"
-    "MANUAL: <a step the operator does themselves — exploitation, a shell, cracking "
-    "a hash, submitting a flag>   (optional)\n\n"
+    "MANUAL: <a step the operator does themselves — cracking a hash offline, "
+    "submitting a flag, a GUI/interactive step>   (optional)\n"
+    "SESSION: <a line for a PERSISTENT live shell>   (optional)\n\n"
+    "Use SESSION when you need STATE to carry across steps — a foothold shell, a "
+    "privesc chain, `cd`/env that must persist, reading `user.txt`/`root.txt` after a "
+    "shell. It is a real interactive shell in the cage that survives turns; every line "
+    "is still gated (out-of-scope hosts DENIED, destructive lines need sign-off), but "
+    "arbitrary in-box commands (`id`, `cat /root/root.txt`, `sudo -l`, `./exploit`) run "
+    "— unlike RUN, which is for allowlisted enumeration tools. SESSION grammar:\n"
+    "  SESSION: open            start a live shell on the target (becomes current)\n"
+    "  SESSION: id              run a line in the current shell (state persists)\n"
+    "  SESSION: [2] cat x       run a line in shell #2 (multiple shells allowed)\n"
+    "  SESSION: close           close the current shell\n"
+    "A flag/foothold proven from SESSION output is CONFIRMED (real shell), so this is "
+    "how you actually finish a box, not just enumerate it.\n\n"
     "For WEB-APP work prefer a WEB action over a shell tool — it goes through the "
     "same gate but renders JS and can tamper requests. WEB grammar (verb first):\n"
     "  WEB: get <url>            fetch a URL (crafted request)\n"
@@ -247,6 +260,7 @@ class Suggestion:
     phase: str = ""           # recon / enumeration / exploitation / ...
     goal: str = ""            # the concrete objective of this step
     web: str | None = None    # a gated WEB action (navigate/get/request/fill/...), if any
+    session: str | None = None  # a stateful live-shell directive (open/close/[N]/line), if any
 
 
 _PLAN_LINE = re.compile(r"^\s*\d+[.)]\s*(?:\[(?P<phase>[^\]]+)\]\s*)?(?P<text>.+?)\s*$")
@@ -357,12 +371,24 @@ def _parse(text: str, default_target: str) -> Suggestion:
     command = _field(text, "RUN") or None
     manual = _field(text, "MANUAL") or None
     web = _field(text, "WEB") or None
+    session = _field(text, "SESSION") or None
 
     if web:
         web = web.strip().strip("`\"'").strip()
         if " (" in web:
             web = web[:web.index(" (")].strip()
         web = web.strip("`\"'").strip() or None
+
+    if session:
+        # A live-shell directive; peel wrapping quotes/backticks but KEEP shell
+        # operators (a real shell legitimately uses | > ; — the session gate rules on
+        # scope + destructive, not the tool allowlist). Strip only a trailing "(why)".
+        session = session.strip().strip("`\"'").strip()
+        if " (" in session:
+            session = session[:session.index(" (")].strip()
+        session = session.strip("`\"'").strip() or None
+        if session and session.lower() in ("none", "n/a", "-"):
+            session = None
 
     if command:                                   # strip a trailing "(why)" note
         # Peel wrapping whitespace AND quotes/backticks in any order — models often
@@ -380,22 +406,22 @@ def _parse(text: str, default_target: str) -> Suggestion:
     # a shell-looking line before giving up. Only warn if the model clearly TRIED to
     # propose an action (used a marker/fence) but we couldn't parse it — a deliberate
     # advice-only reply is legitimate and stays quiet.
-    if command is None and manual is None and web is None:
+    if command is None and manual is None and web is None and session is None:
         salvaged = _salvage_command(text)
         if salvaged:
             command = salvaged
-        elif re.search(r"(?im)^\s*(RUN|WEB|MANUAL)\s*:|```", text):
+        elif re.search(r"(?im)^\s*(RUN|WEB|MANUAL|SESSION)\s*:|```", text):
             log.warning("strategist: could not extract an action from model reply: %r",
                         (text[:200] + "…") if len(text) > 200 else text)
 
     # Fall back to the whole reply as rationale if the model ignored the template.
     if not reasoning:
-        reasoning = re.sub(r"^(PHASE|GOAL|RUN|MANUAL|WEB)\s*:.*$", "", text,
+        reasoning = re.sub(r"^(PHASE|GOAL|RUN|MANUAL|WEB|SESSION)\s*:.*$", "", text,
                            flags=re.M | re.I).strip() or text.strip()
 
     return Suggestion(rationale=reasoning, command=command,
                       target=default_target if command else None, manual=manual,
-                      phase=phase, goal=goal, web=web)
+                      phase=phase, goal=goal, web=web, session=session)
 
 
 class StrategistAgent:
