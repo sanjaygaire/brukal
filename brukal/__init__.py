@@ -29,6 +29,7 @@ from .budget import EngagementBudget
 from . import checkpoint
 from .experiment import ExperimentResult, run_all, render
 from . import eval as capability_eval
+from . import benchmark
 
 __all__ = [
     "Scope", "load_scope", "Gate", "Decision",
@@ -49,5 +50,5 @@ __all__ = [
     "GroundedLoop", "LoopStep", "LoopResult",
     "KillSwitch", "EngagementBudget", "checkpoint",
     "ExperimentResult", "run_all", "render",
-    "capability_eval",
+    "capability_eval", "benchmark",
 ]

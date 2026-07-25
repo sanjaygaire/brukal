@@ -314,6 +314,30 @@ def _cmd_eval(args) -> int:
     return 0 if all(r.passed for r in results) else 1
 
 
+def _cmd_bench(args) -> int:
+    # Honest live benchmark. Default: the real loop over scripted ScenarioKali boxes
+    # (deterministic, no infra). --live: the real loop against authorised targets.
+    from brukal.benchmark import render, run_live, run_scenarios
+    if args.live:
+        if not args.target or not args.yes_authorised:
+            print("  --live needs at least one --target and --yes-authorised.")
+            return 2
+        bench = run_live(args.target, scope_path=args.scope, fake=args.fake,
+                         yes_authorised=args.yes_authorised, model=args.model,
+                         provider=args.provider, base_url=args.base_url,
+                         container=args.container, max_steps=args.max_steps,
+                         max_cost=args.max_cost)
+    else:
+        bench = run_scenarios()
+    print(render(bench))
+    if getattr(args, "json", None):
+        import json as _json
+        with open(args.json, "w", encoding="utf-8") as fh:
+            _json.dump(bench.to_dict(), fh, indent=2)
+        print(f"  wrote {args.json}")
+    return 1 if bench.total_scope_violations else 0
+
+
 def _cmd_shell(args) -> int:
     from brukal.session import run_shell
     return run_shell(
@@ -521,6 +545,27 @@ def main(argv: list[str] | None = None) -> int:
     pev = sub.add_parser("eval",
                          help="capability eval: governed vs ungated (steps-to-foothold)")
     pev.set_defaults(func=_cmd_eval)
+
+    pb = sub.add_parser("bench",
+                        help="honest benchmark: real loop, solve rate + steps-to-foothold "
+                             "+ cost + 0 scope violations")
+    pb.add_argument("--live", action="store_true",
+                    help="run against authorised targets (needs a cage + model); "
+                         "default is the scripted-box self-test")
+    pb.add_argument("--target", action="append", default=[],
+                    help="an authorised target (repeatable); required with --live")
+    pb.add_argument("--scope", default="scope.json")
+    pb.add_argument("--fake", action="store_true", help="with --live: FakeKali cage (no Docker)")
+    pb.add_argument("--yes-authorised", action="store_true",
+                    help="confirm authorisation for the targets (required for --live)")
+    pb.add_argument("--model", default=None)
+    pb.add_argument("--provider", default=None)
+    pb.add_argument("--base-url", default=None)
+    pb.add_argument("--container", default="brukal-kali")
+    pb.add_argument("--max-steps", type=int, default=20)
+    pb.add_argument("--max-cost", type=float, default=None)
+    pb.add_argument("--json", help="also write the metrics as JSON to this path")
+    pb.set_defaults(func=_cmd_bench)
 
     pw = sub.add_parser("web", help="send one governed web request (crafted method/headers/body)")
     pw.add_argument("url", help="target URL (host must be in scope or authorised via --host)")
