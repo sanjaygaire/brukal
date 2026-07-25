@@ -24,6 +24,9 @@ from .web import (WebAction, WebResult, GovernedBrowser, FakeWebCage, HttpWebCag
                   DockerHttpWebCage, check_web, ensure_cage_vhosts)
 from .chrome import ChromeCage, DockerChromeCage, FakeCDP
 from .loop import GroundedLoop, LoopStep, LoopResult
+from .killswitch import KillSwitch
+from .budget import EngagementBudget
+from . import checkpoint
 from .experiment import ExperimentResult, run_all, render
 from . import eval as capability_eval
 
@@ -44,6 +47,7 @@ __all__ = [
     "DockerHttpWebCage", "check_web", "ensure_cage_vhosts",
     "ChromeCage", "DockerChromeCage", "FakeCDP",
     "GroundedLoop", "LoopStep", "LoopResult",
+    "KillSwitch", "EngagementBudget", "checkpoint",
     "ExperimentResult", "run_all", "render",
     "capability_eval",
 ]

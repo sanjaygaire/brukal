@@ -208,7 +208,11 @@ def _cmd_auto(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url,
         handoff_to_menu=not args.no_handoff, single_agent=args.single_agent,
         full_send=args.full_send, mode=getattr(args, "mode", None),
-        no_research=args.no_research)
+        no_research=args.no_research,
+        max_cost=getattr(args, "max_cost", None),
+        max_research=getattr(args, "max_research", None),
+        max_time=getattr(args, "max_time", None),
+        resume=not getattr(args, "no_resume", False))
 
 
 def _cmd_report(args) -> int:
@@ -488,6 +492,18 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--no-research", action="store_true",
                     help="disable control-plane internet learning (no outbound "
                          "research egress; local skills/lessons only)")
+    pa.add_argument("--max-cost", type=float, default=None, metavar="USD",
+                    help="stop when LLM spend reaches this many dollars "
+                         "(also BRUKAL_MAX_COST; ignored for local/free models)")
+    pa.add_argument("--max-research", type=int, default=None, metavar="N",
+                    help="cap total control-plane research fetches this run "
+                         "(also BRUKAL_MAX_RESEARCH)")
+    pa.add_argument("--max-time", type=float, default=None, metavar="SECONDS",
+                    help="wall-clock ceiling; hand back when reached "
+                         "(also BRUKAL_MAX_TIME)")
+    pa.add_argument("--no-resume", action="store_true",
+                    help="ignore any saved checkpoint and start fresh "
+                         "(default resumes loop-progress if a checkpoint exists)")
     pa.add_argument("--model", default=None)
     pa.add_argument("--provider", default=None,
                     help="anthropic (default) | ollama | openai | openrouter | ...")

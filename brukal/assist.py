@@ -802,6 +802,42 @@ class AssistSession:
         self.option_list = []
         return results
 
+    def parallel_run(self, commands, max_workers: int = 4):
+        """Enumerate INDEPENDENT things (several in-scope hosts/ports) CONCURRENTLY.
+
+        Only gate-ALLOW commands run in parallel; anything the gate would DENY/ESCALATE
+        is skipped and reported for sequential handling (approval is single-threaded).
+        Execution happens in worker threads over the SAME one door — the audit log's
+        append is atomic and the gate's rate window is lock-guarded (see gate.py), so
+        concurrent writes can't corrupt the chain or the limiter — and every outcome is
+        absorbed back on THIS thread, keeping session state single-threaded. Returns a
+        list of (command, decision, result, highlights); skipped commands have result
+        None. Never a parallel write to the rate limiter without its lock."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        runnable, skipped = [], []
+        for cmd in commands:
+            if not (cmd or "").strip():
+                continue
+            d = self.executor._gate.check(cmd, self.target, "strategist")
+            (runnable if d.verdict == "ALLOW" else skipped).append((cmd, d))
+
+        results = []
+        if runnable:
+            raw = {}
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futs = {pool.submit(self.executor.run, cmd, self.target, "strategist"): cmd
+                        for cmd, _d in runnable}
+                for f in as_completed(futs):
+                    raw[futs[f]] = f.result()
+            for cmd, (decision, result) in raw.items():        # absorb on the main thread
+                d, r, hl = self._absorb_shell(cmd, decision, result)
+                results.append((cmd, d, r, hl))
+
+        for cmd, d in skipped:
+            results.append((cmd, d, None, []))                 # ESCALATE/DENY -> sequential
+        return results
+
     def note(self, text: str):
         self.notes.append(f"[note] {text}")
         self._persist_finding("note", "", "", text, [])
@@ -2078,7 +2114,8 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
              audit_path="runs/audit.jsonl", vault_path="runs/vault",
              container="brukal-kali", model=None, provider=None, base_url=None,
              max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
-             full_send=False, mode=None, no_research=False) -> int:
+             full_send=False, mode=None, no_research=False,
+             max_cost=None, max_research=None, max_time=None, resume=True) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
     in-scope enumeration. When it hands back (manual/escalation/stall/budget), and
     a human is present at a terminal, it drops straight into the interactive menu on
@@ -2105,6 +2142,63 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     session, audit, target, cage = prep
     if no_research:                            # opt out of all control-plane research egress
         session.research = None
+
+    # -- Phase 3 robustness: budget caps, kill switch, resumable checkpoint ---- #
+    from . import checkpoint as _ckpt
+    from .budget import EngagementBudget
+    from .killswitch import KillSwitch
+
+    def _envf(name, cast):
+        v = os.environ.get(name)
+        try:
+            return cast(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    max_cost = max_cost if max_cost is not None else _envf("BRUKAL_MAX_COST", float)
+    max_research = max_research if max_research is not None else _envf("BRUKAL_MAX_RESEARCH", int)
+    max_time = max_time if max_time is not None else _envf("BRUKAL_MAX_TIME", float)
+    if max_research is not None and session.research is not None:
+        session.research.max_fetches = max_research   # cap control-plane egress this run
+    budget = EngagementBudget(max_cost=max_cost, max_steps=max_steps,
+                              max_research_fetches=max_research,
+                              max_wall_seconds=max_time).start()
+
+    kill = KillSwitch()
+    # Trap SIGINT/SIGTERM so an interrupt (or an external `kill`) stops at the next safe
+    # boundary and closes sessions, instead of tearing the process down mid-action.
+    import signal
+    _prev_handlers = {}
+
+    def _on_signal(signum, _frame):
+        kill.trip(f"signal {signum}")
+    try:
+        for _sig in (signal.SIGINT, signal.SIGTERM):
+            _prev_handlers[_sig] = signal.signal(_sig, _on_signal)
+    except (ValueError, OSError):
+        _prev_handlers = {}                    # not on the main thread — skip signal traps
+
+    def _restore_signals():
+        for _sig, _h in _prev_handlers.items():
+            try:
+                signal.signal(_sig, _h)        # give Ctrl-C back after the autonomous phase
+            except (ValueError, OSError):
+                pass
+        _prev_handlers.clear()
+
+    # Resumable engagement: reload loop-progress (executed cmds / learned / cursor) from
+    # the last checkpoint so a dead run continues instead of restarting.
+    ckpt_path = _vault_for(vault_path, target) / "checkpoint.json"
+    if resume and not os.environ.get("BRUKAL_NO_RESUME"):
+        prior = _ckpt.load(ckpt_path)
+        if prior is not None:
+            done = _ckpt.restore(session, prior)
+            if done:
+                _emit(console, f"  ↻ resumed from checkpoint — {done} step(s) already "
+                               f"spent, {len(session.executed_cmds)} command(s) known.")
+
+    def _save_checkpoint(steps_done, stop_reason):
+        _ckpt.save(ckpt_path, session, steps_done=steps_done, stop_reason=stop_reason)
     # In headless auto, an ESCALATE cleanly PAUSES the hunt (the loop hands back)
     # rather than prompting mid-live-view: dangerous/irreversible moves are approved
     # interactively in `brukal solve`. Fail-closed keeps the invariant intact.
@@ -2162,7 +2256,10 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     loop = GroundedLoop(session, max_steps=max_steps, observer=observer,
                         verifier=Verifier(),      # confirm 'solved' from real output
                         agents=getattr(session, "agents", None) if multi else None,
-                        trust=getattr(session, "trust", None) if multi else None)
+                        trust=getattr(session, "trust", None) if multi else None,
+                        kill=kill, budget=budget, on_checkpoint=_save_checkpoint)
+    if budget.any_cap:
+        _emit(console, f"  budget: {budget.status(cost=0, steps=0, fetches=0)}")
 
     try:
         if not session.plan:
@@ -2184,10 +2281,12 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     except KeyboardInterrupt:
         if plain_view is not None:
             plain_view._stop_beat()
+        _restore_signals()
         session.close_sessions()             # no orphaned live shells on an interrupt
         print("\n  paused.")
         return 0
     except Exception as e:
+        _restore_signals()
         session.close_sessions()
         if os.environ.get("BRUKAL_DEBUG"):
             raise
@@ -2195,6 +2294,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         print("  Check the model is reachable (key set, or Ollama running) and the "
               "cage is up. Set BRUKAL_DEBUG=1 for the trace.")
         return 1
+    _restore_signals()                       # autonomous phase done — Ctrl-C back to normal
 
     handoff = {
         "solved": "SOLVED — success verified from real gated output",
@@ -2202,6 +2302,8 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         "escalation": "a step needs your sign-off (ESCALATE)",
         "stalled": "no safe next step — over to you",
         "exhausted": "hit the step budget",
+        "aborted": "STOPPED by kill switch",
+        "budget": "hit an engagement budget cap",
         "done": "nothing left to safely automate",
     }.get(result.stop_reason, result.stop_reason)
     spend = _spend_line(session)
@@ -2219,8 +2321,9 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # engagement is over. Dropping into the menu keeps every note/highlight/plan and
     # lets the human supply the next insight (the vhost leap, an exploit) without
     # re-launching. Skip only when non-interactive (piped/CI) or explicitly opted out.
+    # A kill-switch abort means STOP — don't drop into the interactive menu.
     to_menu = (handoff_to_menu and not os.environ.get("BRUKAL_NO_HANDOFF")
-               and sys.stdin.isatty())
+               and sys.stdin.isatty() and result.stop_reason != "aborted")
     if to_menu:
         _emit(console,
               f"\n  ⏹ auto handed back: {handoff}\n     {result.stop_detail}\n"
