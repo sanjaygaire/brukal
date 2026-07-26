@@ -16,7 +16,7 @@ from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession
 from brukal.loop import GroundedLoop
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 IN = "10.10.10.5"
 
 

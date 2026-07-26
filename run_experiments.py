@@ -24,7 +24,7 @@ import argparse
 import json
 from pathlib import Path
 
-from brukal import load_scope
+from brukal import BENCH_SCOPE, load_scope
 from brukal.experiment import render, run_all
 
 
@@ -34,25 +34,30 @@ def main(argv=None) -> int:
     p.add_argument("--env", choices=["fake", "docker"], default="fake",
                    help="fake cage (default, no infra) or the real Docker cage")
     p.add_argument("--target", help="authorised target (required for --env docker)")
-    p.add_argument("--scope", default="scope.json", help="path to scope.json")
+    p.add_argument("--scope", default=None,
+                   help="scope file (required for --env docker; the fake benchmark "
+                        "uses its own fixed BENCH_SCOPE)")
     p.add_argument("--json", help="also write results as JSON to this path")
     p.add_argument("--yes-authorised", action="store_true",
                    help="explicit confirmation you are authorised (required for live)")
     args = p.parse_args(argv)
 
-    scope = load_scope(args.scope)
-
     if args.env == "docker":
+        # A real run needs an explicit scope file + sign-off — never a default.
+        if not args.scope:
+            print("Live --env docker needs an explicit --scope <file>.")
+            return 2
+        scope = load_scope(args.scope)
         # A real run: refuse unless the maintainer has explicitly signed off.
         if not (args.target and args.yes_authorised):
             print("Live run refused. A Docker run requires BOTH:\n"
-                  "  --target <an address inside scope.json>\n"
+                  "  --target <an address inside your --scope file>\n"
                   "  --yes-authorised   (you confirm you are authorised to test it)\n"
                   "Also bring the cage up first:\n"
                   "  docker compose -f docker/docker-compose.yml up -d --build")
             return 2
         if not scope.contains_ip(args.target):
-            print(f"Refused: target {args.target} is not inside scope.json.")
+            print(f"Refused: target {args.target} is not inside {args.scope}.")
             return 2
         from brukal.kali import DockerKali
         make_kali = DockerKali
@@ -67,6 +72,7 @@ def main(argv=None) -> int:
               f"Ensure you are authorised.\n")
     else:
         from brukal.kali import FakeKali
+        scope = BENCH_SCOPE          # fixed, reproducible — independent of scope.json
         make_kali = FakeKali
         environment = "fake"
         llm = None

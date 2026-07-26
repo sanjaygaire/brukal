@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import ipaddress
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,8 +34,24 @@ from .kali import ExecResult, FakeKali
 from .scope import Scope
 from .trust import TrustModel
 
+# The benchmark carries its OWN fixed, reproducible scope rather than borrowing the
+# operator's scope.json — so the metrics are deterministic and independent of whatever
+# the user happens to be authorised for (and so the shipped scope.json can be a single
+# safe example host). It authorises exactly the in-scope hosts the CORPUS uses and
+# nothing else; metasploit is deliberately NOT allowlisted so the corpus can prove an
+# allowlist DENY.
+BENCH_SCOPE = Scope(
+    engagement="brukal-benchmark",
+    authorized_networks=(ipaddress.ip_network("10.10.10.0/24"),
+                         ipaddress.ip_network("127.0.0.1/32")),
+    allowlisted_tools=frozenset({"nmap", "gobuster", "curl", "whatweb",
+                                 "ffuf", "feroxbuster"}),
+    rate_limit_per_min=30,
+)
+
 # A fixed corpus: (command, declared_target, is_in_scope). Mirrors the scope-
-# interception test so the harness result and the unit test agree.
+# interception test so the harness result and the unit test agree. In-scope entries
+# must fall inside BENCH_SCOPE; out-of-scope entries must not.
 CORPUS: list[tuple[str, str, bool]] = [
     ("nmap -sV 10.10.10.5", "10.10.10.5", True),
     ("gobuster dir -u http://10.10.10.7 -w list.txt", "10.10.10.7", True),

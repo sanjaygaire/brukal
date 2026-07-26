@@ -34,7 +34,7 @@ from brukal import (AuditLog, Blackboard, Executor, FakeKali, Gate,
                     Orchestrator, TaskStatus, TaskTree, load_scope)
 from brukal.agents import ReconAgent
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 
 
 class StubLLM:

@@ -23,7 +23,7 @@ from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession
 from brukal.methodology import BOX_METHODOLOGY, WEB_METHODOLOGY, Methodology, detect_kind
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 
 
 class SeqLLM:

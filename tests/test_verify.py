@@ -23,7 +23,7 @@ from brukal.lessons import LessonStore
 from brukal.loop import GroundedLoop
 from brukal.verify import SuccessCondition, Verifier
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 _FLAG = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 
 

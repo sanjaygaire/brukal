@@ -19,9 +19,37 @@ from .executor import Executor
 from .gate import Gate
 from .kali import DockerKali, FakeKali
 from .orchestrator import Orchestrator
-from .scope import load_scope
+from .scope import authorization_record, load_scope
 from .tasktree import TaskTree
 from .trust import TrustModel
+
+
+def enforce_authorization(scope, audit, target) -> bool:
+    """Pin the authorising scope into the audit chain at run start, then refuse a
+    stale engagement. Returns True to proceed, False to refuse (message printed).
+
+    Fail-closed (invariant 2): an `expires` that is set but unparseable counts as
+    expired, so we refuse rather than run on a validity window we cannot read. An
+    unset expiry never expires. The authorisation record is written regardless of
+    the outcome, so even a refused stale run leaves a receipt in the ledger."""
+    audit.append("authorization", authorization_record(scope, target))
+    if scope.is_expired():
+        print(f"Refused: this engagement's authorisation has expired ({scope.expires}). "
+              f"Update 'expires' in the scope file to re-authorise before running.")
+        return False
+    return True
+
+
+def warn_if_unkeyed_audit(audit, fake: bool) -> None:
+    """On a LIVE run whose ledger may be used as evidence, nudge the operator to key
+    the audit chain. Unkeyed is tamper-EVIDENT (it detects naive edits and corruption)
+    but not tamper-PROOF: anyone who can write the file can recompute the whole chain.
+    Setting BRUKAL_AUDIT_KEY makes tampering by a file-write actor detectable. We warn
+    rather than block — zero-config unkeyed logging is fine for a local lab."""
+    if fake or getattr(audit, "keyed", False):
+        return
+    print("  ⚠ audit log is UNKEYED — tamper-evident, not tamper-proof. For an "
+          "evidence-grade run, set BRUKAL_AUDIT_KEY before starting.")
 
 
 def interactive_approver(decision) -> bool:
@@ -56,6 +84,13 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
         return 2
 
     scope = load_scope(scope_path)
+    audit = AuditLog(audit_path)
+
+    # Authorization artifact (Phase 5): record which scope authorised this run into
+    # the ledger and refuse a stale engagement — before any other guard.
+    if not enforce_authorization(scope, audit, target):
+        return 2
+    warn_if_unkeyed_audit(audit, fake)
 
     # Scope + authorisation guard (belt and braces on top of the gate).
     if not scope.contains_ip(target):
@@ -71,7 +106,6 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
     trust = TrustModel()
     gate = Gate(scope, trust=trust)
     kali = FakeKali() if fake else DockerKali(container=container)
-    audit = AuditLog(audit_path)
 
     # Knowledge layer + strategy + shared memory (built before the executor so a
     # live dashboard can supply the escalation approver).

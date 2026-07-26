@@ -48,7 +48,7 @@ CASES = [
 
 
 def build_system(audit_dir):
-    scope = load_scope(Path(__file__).resolve().parents[1] / "scope.json")
+    scope = load_scope(Path(__file__).resolve().parent / "fixtures" / "scope.json")
     gate = Gate(scope)
     kali = FakeKali()
     audit = AuditLog(Path(audit_dir) / "audit.jsonl")

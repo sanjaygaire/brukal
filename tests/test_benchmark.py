@@ -14,14 +14,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from brukal import AuditLog, Executor, FakeKali, Gate, load_scope
+from brukal import BENCH_SCOPE, AuditLog, Executor, FakeKali, Gate
 from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession
 from brukal.benchmark import (BenchmarkRun, _output_has_foothold, _steps_to_foothold,
                               render, run_scenarios, run_target)
 from brukal.kali import ExecResult, FakeSession
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
 IN = "10.10.10.5"
 _FLAG = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 
@@ -63,7 +62,7 @@ class _FootholdSession(FakeSession):
 
 def _session(responses, kali=None):
     tmp = tempfile.mkdtemp()
-    ex = Executor(Gate(load_scope(SCOPE)), kali or FakeKali(), AuditLog(Path(tmp) / "a.jsonl"))
+    ex = Executor(Gate(BENCH_SCOPE), kali or FakeKali(), AuditLog(Path(tmp) / "a.jsonl"))
     return AssistSession(IN, ex, StrategistAgent(_SeqLLM(responses)))
 
 

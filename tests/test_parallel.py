@@ -21,7 +21,7 @@ from brukal import (AuditLog, Executor, FakeKali, Gate, ParallelOrchestrator,
                     TaskTree, load_scope)
 from brukal.blackboard import Blackboard
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 
 
 def test_concurrent_audit_appends_keep_the_chain_valid():

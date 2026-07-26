@@ -263,7 +263,7 @@ the wiring), `--yes-authorised` (confirm authorisation for a live run),
 ## Quickstart
 
 ```bash
-# 1. run the test suite (198 tests, no infra, no key needed)
+# 1. run the test suite (290 tests, no infra, no key needed)
 python -m pytest -q
 
 # 2. reproduce the benchmark metrics (fake cage)
@@ -635,13 +635,52 @@ read-only while running:
   "authorized_cidrs": ["10.10.10.0/24", "127.0.0.1/32"],
   "authorized_hosts": ["nexus.htb"],
   "allowlisted_tools": ["nmap", "gobuster", "nikto", "whatweb", "curl", "dig"],
-  "rate_limit_per_min": 30
+  "rate_limit_per_min": 30,
+  "authorization": "SOW-1234 — signed off by the client on 2026-07-20",
+  "expires": "2026-08-20"
 }
 ```
 
 `authorized_hosts` (optional) authorises web vhosts by name for the web surface —
 matched deterministically, never DNS-resolved at runtime. Keep `allowlisted_tools`
 in sync with the tools installed in `docker/Dockerfile.kali`.
+
+### Authorization is a first-class artifact
+
+`authorization` (optional, free text) is *your written assertion that this
+engagement is authorised* — who signed off, an SOW/ticket reference. `expires`
+(optional, an ISO date) is the validity window. At the start of every run Brukal
+**pins the authorising scope into the audit chain by content fingerprint** (so the
+ledger records exactly what a run was permitted under, and a later scope swap shows
+up as a fingerprint change), and **refuses to run once the scope has expired**. An
+unparseable `expires` is treated as expired — fail-closed. Leaving both empty is
+allowed; setting them makes the authorisation part of the tamper-evident record.
+
+### Safe defaults
+
+- **Scope is mandatory.** `run` / `solve` / `auto` refuse to start without an
+  explicit `--scope` (falling back to `./scope.json` only if it exists). Brukal
+  never assumes a broad default range on your behalf — the shipped `scope.json` is
+  a single-host example, not a lab-wide range.
+- **`--full-send` is off by default.** Irreversible / attack actions ESCALATE for
+  human sign-off unless you opt into `--full-send` (which auto-approves only
+  *in-scope* actions — the scope wall is never affected).
+- **Evidence-grade audit.** The audit chain is tamper-*evident* by default. For a
+  run whose log is evidence, set `BRUKAL_AUDIT_KEY` to make it HMAC-keyed
+  (tamper-*proof* against a file-write actor). A live run warns when it is unkeyed.
+
+### Known limits (by design, documented honestly)
+
+- **Bare single-label hostnames.** The deterministic host matcher recognises URLs,
+  IPv4/IPv6 literals, and encoded-IP smuggles, and matches `authorized_hosts` by
+  exact name. A *bare* single-label host (`intranet` with no dots, no scheme) in a
+  command is conservatively **not** treated as a routable host — so authorise such
+  targets by IP or by a dotted name in `authorized_hosts`.
+- **Sessions are `docker exec`, not a PTY.** `brukal shell` and the live-session
+  loop run over a sentinel-framed `docker exec -i bash`, not a pseudo-terminal.
+  Fully interactive prompts (a password prompt, a curses TUI) will time out (the
+  session stays alive) rather than presenting a live prompt. A real PTY is a
+  deferred follow-up.
 
 ---
 
@@ -679,10 +718,10 @@ brukal/
 ├── experiment.py     # the four-metric governance benchmark harness
 ├── eval.py           # the capability eval (steps-to-foothold, governed vs ungated)
 └── agents/           # recon · exploit · verify · strategist
-tests/                # 198 tests — the invariants, in code
+tests/                # 290 tests — the invariants, in code
 docker/               # the Kali cage (Dockerfile + compose, chromium + VPN)
 run_experiments.py · run_eval.py · run_engagement.py · run_recon.py
-HOW_IT_WORKS.md · CODE_WALKTHROUGH.md · BUILD_ROADMAP.md · COMPARISON.md · SECURITY.md
+HOW_IT_WORKS.md · CODE_WALKTHROUGH.md · BUILD_ROADMAP.md · COMPARISON.md · SECURITY.md · CONTRIBUTING.md
 ```
 
 ---
@@ -712,8 +751,15 @@ and [`CODE_WALKTHROUGH.md`](CODE_WALKTHROUGH.md) for the full story.
 Brukal is for **authorised** security testing only — your own lab, or an
 engagement you are explicitly contracted for. The design assumes you never point
 a live run at a system you are not permitted to test, and the gate exists to keep
-an autonomous agent inside that authorisation, not to grant it. Read
-[`SECURITY.md`](SECURITY.md) before any live run.
+an autonomous agent inside that authorisation, not to grant it.
+
+**You are responsible for your own authorization.** The `authorization` /
+`expires` fields and the scope gate record and *enforce the boundary you declare* —
+they do not, and cannot, establish that you are permitted to test a target. Setting
+`authorization` is your attestation, not a grant. Only ever run a live engagement
+against systems you are explicitly authorised to test. Read
+[`SECURITY.md`](SECURITY.md) before any live run, and see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) if you want to review or try to break the gate.
 
 ## License
 

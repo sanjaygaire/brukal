@@ -25,7 +25,7 @@ from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession, _auto_approver, _full_send_approver
 from brukal.loop import GroundedLoop
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 TARGET = "10.10.10.5"
 
 

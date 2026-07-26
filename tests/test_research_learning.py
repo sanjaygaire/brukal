@@ -27,7 +27,7 @@ from brukal.lessons import LessonStore
 from brukal.loop import GroundedLoop
 import brukal.research as research
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 
 
 class SeqLLM:

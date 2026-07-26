@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from brukal import AuditLog, FakeSession, Gate, GovernedSession, load_scope
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"   # 10.10.10.0/24
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"   # 10.10.10.0/24
 
 
 def _session(tmp, approver=None):

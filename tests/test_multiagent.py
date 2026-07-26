@@ -32,7 +32,7 @@ from brukal.assist import AssistSession
 from brukal.loop import GroundedLoop, _route_role
 from brukal.trust import TrustModel
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 TARGET = "10.10.10.5"
 
 

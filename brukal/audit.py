@@ -60,6 +60,7 @@ class AuditLog:
         # Read once at construction so append() and verify() use the same key.
         self._key = key if key is not None else os.environ.get("BRUKAL_AUDIT_KEY") or None
         self._last_hash = self._recover_last_hash()
+        self.keyed = self._key is not None   # True = HMAC (tamper-proof), False = unkeyed
         # The hash chain is inherently sequential: read prev -> compute -> write ->
         # update must be ONE atomic step, or two concurrent agents chain onto the
         # same prev_hash and corrupt the chain. This lock is what makes the audit

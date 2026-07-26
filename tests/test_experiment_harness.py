@@ -18,17 +18,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 pytest.importorskip("pydantic")
 
-from brukal import load_scope, render, run_all
+from brukal import BENCH_SCOPE, render, run_all
 from brukal.experiment import (experiment_adaptive_vs_fixed,
                                experiment_governed_vs_ungated,
                                experiment_multi_vs_single,
                                experiment_scope_interception)
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
-
-
 def _scope():
-    return load_scope(SCOPE)
+    # The benchmark uses its own fixed, reproducible scope (not the operator's
+    # scope.json), so the metrics don't depend on what the user is authorised for.
+    return BENCH_SCOPE
 
 
 def test_all_four_experiments_pass_and_are_env_tagged():

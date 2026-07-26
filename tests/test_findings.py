@@ -24,7 +24,7 @@ from brukal.assist import AssistSession
 from brukal.findings import Finding, FindingStore
 from brukal.report import build_report, report_json
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 TARGET = "10.10.10.5"
 
 

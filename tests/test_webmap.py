@@ -26,7 +26,7 @@ from brukal.assist import AssistSession
 from brukal.web import FakeWebCage, GovernedBrowser
 from brukal import webmap
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 TARGET = "10.10.10.5"
 
 

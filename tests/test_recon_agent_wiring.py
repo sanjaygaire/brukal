@@ -42,7 +42,7 @@ class StubLLM:
 
 
 def _build(llm):
-    scope = load_scope(Path(__file__).resolve().parents[1] / "scope.json")
+    scope = load_scope(Path(__file__).resolve().parent / "fixtures" / "scope.json")
     tmp = tempfile.mkdtemp()
     kali = FakeKali()
     audit = AuditLog(Path(tmp) / "audit.jsonl")

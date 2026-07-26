@@ -27,7 +27,7 @@ from .loop import GroundedLoop, LoopStep, LoopResult
 from .killswitch import KillSwitch
 from .budget import EngagementBudget
 from . import checkpoint
-from .experiment import ExperimentResult, run_all, render
+from .experiment import BENCH_SCOPE, ExperimentResult, run_all, render
 from . import eval as capability_eval
 from . import benchmark
 
@@ -49,6 +49,6 @@ __all__ = [
     "ChromeCage", "DockerChromeCage", "FakeCDP",
     "GroundedLoop", "LoopStep", "LoopResult",
     "KillSwitch", "EngagementBudget", "checkpoint",
-    "ExperimentResult", "run_all", "render",
+    "ExperimentResult", "run_all", "render", "BENCH_SCOPE",
     "capability_eval", "benchmark",
 ]

@@ -19,7 +19,7 @@ from brukal import AuditLog, load_scope
 from brukal.scope import Scope
 from brukal.web import (FakeWebCage, GovernedBrowser, WebAction, check_web)
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 
 
 def _scope_with_host(host="nexus.htb"):

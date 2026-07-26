@@ -1898,7 +1898,9 @@ def _authorise_host(scope, target: str):
     return Scope(engagement=f"{scope.engagement}-solve",
                  authorized_networks=(net,),
                  allowlisted_tools=scope.allowlisted_tools,
-                 rate_limit_per_min=scope.rate_limit_per_min)
+                 rate_limit_per_min=scope.rate_limit_per_min,
+                 authorization=scope.authorization,
+                 expires=scope.expires)
 
 
 def _vault_for(vault_root, target: str) -> Path:
@@ -1918,7 +1920,8 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
         from .agents import ExploitAgent, ReconAgent, VerifyAgent
         from .agents.strategist import StrategistAgent
         from .blackboard import Blackboard
-        from .engagement import interactive_approver
+        from .engagement import (enforce_authorization, interactive_approver,
+                                  warn_if_unkeyed_audit)
         from .llm import LLMClient
         from .skills import SkillLibrary
     except ImportError as e:
@@ -1969,6 +1972,13 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
         provider, model, base_url = choose_brain(console)
 
     audit = AuditLog(audit_path)
+
+    # Authorization artifact (Phase 5): pin the authorising (session) scope into the
+    # ledger and refuse a stale engagement before building the executor.
+    if not enforce_authorization(session_scope, audit, target):
+        return 2
+    warn_if_unkeyed_audit(audit, fake)
+
     approver = _rich_approver(console, holder) if console is not None else interactive_approver
 
     trust = TrustModel()

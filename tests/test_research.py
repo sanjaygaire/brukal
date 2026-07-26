@@ -17,7 +17,7 @@ from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession
 from brukal.research import ResearchProvider, Source, _query_terms
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 _SRC = [Source("gtfobins", "https://gtfobins.github.io/gtfobins/{q}/", "text")]
 
 

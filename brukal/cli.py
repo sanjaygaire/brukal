@@ -173,14 +173,35 @@ def _cmd_target(args) -> int:
     return 0
 
 
+def _resolve_scope(scope_arg):
+    """Scope is mandatory. Use --scope when given; else ./scope.json if it exists;
+    else None (refuse). Brukal never assumes a broad default scope on the operator's
+    behalf — fail-closed (invariant 2)."""
+    if scope_arg:
+        return scope_arg
+    if Path("scope.json").exists():
+        return "scope.json"
+    return None
+
+
+def _no_scope() -> int:
+    print("Refused: no authorised scope. Brukal never runs without one.\n"
+          "  set one:  brukal target <ip-or-cidr>\n"
+          "  or pass:  --scope <file>")
+    return 2
+
+
 def _cmd_run(args) -> int:
+    scope_path = _resolve_scope(args.scope)
+    if scope_path is None:
+        return _no_scope()
     provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
     if provider == "anthropic" and not args.fake and not _ensure_key():
         print("  ⚠ No key set. Set ANTHROPIC_API_KEY, or use a free local model: "
               "--provider ollama --model qwen2.5")
     return run_engagement(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
-        scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
+        scope_path=scope_path, audit_path=args.audit, vault_path=args.vault,
         container=args.container, model=args.model, tui=args.tui,
         provider=args.provider, base_url=args.base_url,
         parallel=args.parallel, workers=args.workers)
@@ -190,9 +211,12 @@ def _cmd_solve(args) -> int:
     # No pre-flight key nag here: when no --provider/BRUKAL_PROVIDER is set,
     # `brukal solve` asks how to run the model (and for a key) interactively.
     from brukal.assist import run_solve
+    scope_path = _resolve_scope(args.scope)
+    if scope_path is None:
+        return _no_scope()
     return run_solve(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
-        scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
+        scope_path=scope_path, audit_path=args.audit, vault_path=args.vault,
         container=args.container, hosts=args.host or (),
         model=args.model, provider=args.provider, base_url=args.base_url)
 
@@ -201,9 +225,12 @@ def _cmd_auto(args) -> int:
     # Headless grounded agentic loop: Brukal drives the safe in-scope steps
     # itself and hands back on a manual/escalation step, a stall, or the budget.
     from brukal.assist import run_auto
+    scope_path = _resolve_scope(args.scope)
+    if scope_path is None:
+        return _no_scope()
     return run_auto(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
-        scope_path=args.scope, audit_path=args.audit, vault_path=args.vault,
+        scope_path=scope_path, audit_path=args.audit, vault_path=args.vault,
         container=args.container, max_steps=args.max_steps, hosts=args.host or (),
         model=args.model, provider=args.provider, base_url=args.base_url,
         handoff_to_menu=not args.no_handoff, single_agent=args.single_agent,
@@ -425,7 +452,8 @@ def main(argv: list[str] | None = None) -> int:
     ph.add_argument("--tui", action=argparse.BooleanOptionalAction, default=True,
                     help="live dashboard (default on; --no-tui to disable)")
     ph.add_argument("--yes", action="store_true", help="skip the broad-range prompt")
-    ph.add_argument("--scope", default="scope.json")
+    ph.add_argument("--scope", default="scope.json",
+                    help="scope file the wizard writes the confirmed target into")
     ph.add_argument("--audit", default="runs/audit.jsonl")
     ph.add_argument("--vault", default="runs/vault")
     ph.add_argument("--container", default="brukal-kali")
@@ -452,7 +480,8 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--parallel", action="store_true",
                     help="dispatch independent tasks to agents concurrently")
     pr.add_argument("--workers", type=int, default=4, help="parallel worker count")
-    pr.add_argument("--scope", default="scope.json")
+    pr.add_argument("--scope", default=None, help="authorised scope file (mandatory; "
+                    "falls back to ./scope.json if present)")
     pr.add_argument("--audit", default="runs/audit.jsonl")
     pr.add_argument("--vault", default="runs/vault")
     pr.add_argument("--container", default="brukal-kali")
@@ -468,7 +497,8 @@ def main(argv: list[str] | None = None) -> int:
     psv.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
     psv.add_argument("--yes-authorised", action="store_true",
                      help="confirm you are authorised (skips the live-run prompt)")
-    psv.add_argument("--scope", default="scope.json")
+    psv.add_argument("--scope", default=None, help="authorised scope file (mandatory; "
+                     "falls back to ./scope.json if present)")
     psv.add_argument("--audit", default="runs/audit.jsonl")
     psv.add_argument("--vault", default="runs/vault",
                      help="Obsidian vault root for saved findings (per-target subfolder)")
@@ -488,7 +518,8 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
     pa.add_argument("--yes-authorised", action="store_true",
                     help="confirm you are authorised (skips the live-run prompt)")
-    pa.add_argument("--scope", default="scope.json")
+    pa.add_argument("--scope", default=None, help="authorised scope file (mandatory; "
+                    "falls back to ./scope.json if present)")
     pa.add_argument("--audit", default="runs/audit.jsonl")
     pa.add_argument("--vault", default="runs/vault",
                     help="Obsidian vault root for saved findings (per-target subfolder)")

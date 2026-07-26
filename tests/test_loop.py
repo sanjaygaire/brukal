@@ -26,7 +26,7 @@ from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession
 from brukal.loop import GroundedLoop, _norm_cmd
 
-SCOPE = Path(__file__).resolve().parents[1] / "scope.json"
+SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
 
 
 class SeqLLM:
