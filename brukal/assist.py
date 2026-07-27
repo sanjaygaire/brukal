@@ -398,6 +398,16 @@ class AssistSession:
                 if h not in new_hl:
                     new_hl.append(h)
                 self._record_vuln_finding(command, _sev, _label, _line)
+            # Exposure/info-disclosure signatures in the RAW response body (leaked
+            # secrets, .git/.env, keys, SQL errors, directory listings) — these come
+            # from raw curl/wget/dumped-file output that the scanner patterns above
+            # miss, so a real exposure the model discovers by hand is RECORDED as a
+            # finding instead of scrolling past. Untrusted output; a lead, not an act.
+            for _sev, _label, _line in webprobe.scan_exposures(raw):
+                h = (f"exposure/{_sev}", f"{_label}: {_line}")
+                if h not in new_hl:
+                    new_hl.append(h)
+                self._record_vuln_finding(command, _sev, _label, _line)
             self.highlights.extend(h for h in new_hl if h not in self.highlights)
             # Turn a failure into an actionable LESSON the model sees next turn, so a
             # weak model course-corrects instead of repeating a bad move.
@@ -408,11 +418,28 @@ class AssistSession:
             self._persist_finding("ran", command, decision.verdict, summary, new_hl)
             self._advance_plan()       # this step is done; move to the next
         else:
-            # Blocked by the gate — tell the model WHY and what to do instead.
-            hint = ("that target/tool is out of scope or not allowed — stay on the "
-                    "authorised host and use an allowlisted tool"
-                    if decision.layer.startswith("hard")
-                    else "this needs sign-off; a lighter, more targeted command may pass")
+            # Blocked by the gate — tell the model WHY and exactly what to do instead,
+            # keyed on WHICH hard check fired, so a weak model corrects in one turn
+            # rather than re-trying the same shape. (Coaching only — the gate is
+            # unchanged; these hints never relax a check.)
+            layer = decision.layer or ""
+            if layer == "hard:injection":
+                hint = ("shell operators (&&  ||  ;  |  $(...)  backticks  >) are "
+                        "rejected — issue ONE tool per step with no chaining or pipes. "
+                        "To parse/inspect output or run multi-step LOCAL analysis in "
+                        "the cage (read a dumped file, `git log`, grep for secrets), "
+                        "use a SESSION action, not RUN.")
+            elif layer == "hard:scope":
+                hint = ("out of scope — stay on the authorised host; do not touch any "
+                        "other address.")
+            elif layer == "hard:allowlist":
+                hint = ("that tool isn't allowlisted here — use an installed, "
+                        "read-only equivalent for this step.")
+            elif layer.startswith("hard"):
+                hint = ("blocked by a hard check — stay on the authorised host and use "
+                        "an allowlisted tool.")
+            else:
+                hint = "this needs sign-off; a lighter, more targeted command may pass"
             self.notes.append(f"[ran] {command}\nNOT RUN — {decision.verdict} "
                               f"({decision.layer}: {decision.reason}). {hint}")
             self._persist_finding("blocked", command, decision.verdict,

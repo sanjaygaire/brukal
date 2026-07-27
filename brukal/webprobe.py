@@ -151,3 +151,59 @@ def scan_output(text: str) -> list[tuple[str, str, str]]:
                 seen.add(key)
                 hits.append((sev, label, line))
     return hits
+
+
+# --- exposure / info-disclosure signatures ---------------------------------
+# Signals in a RAW RESPONSE body (a `curl`/`wget` of a path, a dumped file) that a
+# scanner-pattern (`scan_output`) would miss: exposed secrets, VCS/config files,
+# keys, SQL errors, debug traces, directory listings. Tight content signatures so a
+# 404 page or ordinary HTML does not false-positive. Deterministic over UNTRUSTED
+# output — a hit is a recorded FINDING (evidence for the operator/Verifier), never
+# an action and never fed back as a trusted instruction; the gate stays the sole
+# authority over what runs.
+_EXPOSURES = (
+    (re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+     "critical", "Private key exposed"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "critical", "AWS access key exposed"),
+    (re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b"), "critical", "Slack token exposed"),
+    (re.compile(r"repositoryformatversion\s*=", re.I), "high", "Exposed .git repository"),
+    (re.compile(r"^ref:\s*refs/heads/", re.I | re.M), "high", "Exposed .git repository"),
+    (re.compile(r"(?im)^\s*(?:DB_PASSWORD|DATABASE_URL|SECRET_KEY|APP_KEY|API_KEY|"
+                r"AWS_SECRET_ACCESS_KEY|JWT_SECRET|PRIVATE_KEY|MYSQL_ROOT_PASSWORD|"
+                r"REDIS_PASSWORD|PASSWORD)\s*=\s*\S+"),
+     "high", "Secret in exposed env/config"),
+    (re.compile(r"(?:SQL syntax.*?(?:MySQL|MariaDB)|valid MySQL result|ORA-\d{5}|"
+                r"SQLSTATE\[|PostgreSQL.*?ERROR|Unclosed quotation mark after|"
+                r"SQLiteException|SQLITE_ERROR|Sequelize\w*Error|"
+                r"near \".*?\": syntax error)", re.I),
+     "high", "SQL error (possible injection)"),
+    (re.compile(r"(?i)<title>\s*Index of /"), "medium", "Directory listing enabled"),
+    (re.compile(r"(?i)<title>\s*phpinfo\(\)"), "medium", "phpinfo() exposed"),
+    (re.compile(r"(?i)Apache Server Status\b"), "medium", "Apache server-status exposed"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}"),
+     "medium", "JWT exposed in response"),
+    (re.compile(r"(?:Traceback \(most recent call last\)|Exception in thread \""
+                # a stack frame leaking an internal file path — Node/Python/Ruby/PHP/Java
+                r"|\bat [\w.$<>\[\]]+ ?\((?:/|[A-Za-z]:\\)[^\s()]+\."
+                r"(?:js|mjs|ts|py|rb|php|java|go):\d+"
+                r"|\bat [\w.$]+\([\w.]+\.java:\d+\)|Fatal error:.*?on line \d+)"),
+     "low", "Stack trace / debug info disclosure"),
+    (re.compile(r"\"(?:swagger|openapi)\"\s*:", re.I), "info", "API schema exposed"),
+)
+
+
+def scan_exposures(text: str) -> list[tuple[str, str, str]]:
+    """Scan a raw response/file body for exposure & info-disclosure signatures that
+    `scan_output`'s scanner-oriented patterns miss (leaked secrets, `.git`/`.env`,
+    keys, SQL errors, directory listings, debug traces). Returns (severity, label,
+    evidence-line). Deterministic over UNTRUSTED output — flags for the operator, it
+    never acts."""
+    hits: list[tuple[str, str, str]] = []
+    seen: set = set()
+    for rx, sev, label in _EXPOSURES:
+        m = rx.search(text or "")
+        if m and label not in seen:
+            seen.add(label)
+            line = (m.group(0) or "").strip()[:160]
+            hits.append((sev, label, line))
+    return hits
