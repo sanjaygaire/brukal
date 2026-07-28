@@ -384,6 +384,31 @@ class GovernedBrowser:
         self._audit = audit
         self._hits = deque()                   # timestamps, for the rate limit
         self.current_url = ""                  # set only by a gated, successful navigate
+        self._cookies: dict = {}               # session cookie jar (name -> value)
+
+    def _apply_cookies(self, action: "WebAction") -> None:
+        """Attach the session jar to an outgoing request so authenticated pages are
+        reachable after a login. Never overrides a Cookie the caller set explicitly."""
+        if self._cookies and not any(k.lower() == "cookie" for k in (action.headers or {})):
+            jar = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
+            action.headers = {**(action.headers or {}), "Cookie": jar}
+
+    def _absorb_cookies(self, result) -> None:
+        """Fold any Set-Cookie from the response into the jar, so the session persists
+        across web actions (the basis of authenticated scanning). Robust to a headers
+        dict that collapsed multiple Set-Cookie values into one comma-joined string."""
+        if result is None:
+            return
+        for k, v in (result.headers or {}).items():
+            if k.lower() != "set-cookie":
+                continue
+            for piece in re.split(r",(?=[^;=]+=)", str(v)):
+                first = piece.strip().split(";", 1)[0]
+                if "=" in first:
+                    name, val = first.split("=", 1)
+                    name = name.strip()
+                    if name and val.strip() not in ("deleted", ""):
+                        self._cookies[name] = val.strip()
 
     def _rate_ok(self) -> bool:
         now = time.time()
@@ -408,7 +433,9 @@ class GovernedBrowser:
             self._audit.append("web_decision", blocked)
             return blocked, None
 
+        self._apply_cookies(action)            # carry the session into this request
         result = self._cage.run(action)
+        self._absorb_cookies(result)           # remember any Set-Cookie for the next one
         self._audit.append("web_result", {"status": result.status, "url": result.url,
                                            "note": result.note,
                                            "bytes": len(result.body or "")})

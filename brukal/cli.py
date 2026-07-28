@@ -173,6 +173,32 @@ def _cmd_target(args) -> int:
     return 0
 
 
+def _add_login_args(p) -> None:
+    """Authenticated-scanning flags: give Brukal form-login credentials so the crawl
+    and web actions run BEHIND the login. Auth goes through the governed browser (WEB
+    actions) — the gate is untouched."""
+    p.add_argument("--login-url", default=None, metavar="URL",
+                   help="form-login URL to authenticate at before scanning "
+                        "(e.g. http://target/login.php) — enables authenticated scanning")
+    p.add_argument("--login-user", default=None, metavar="USER", help="login username")
+    p.add_argument("--login-pass", default=None, metavar="PASS", help="login password")
+    p.add_argument("--login-field-user", default="username", metavar="NAME",
+                   help="username form-field name (default: username)")
+    p.add_argument("--login-field-pass", default="password", metavar="NAME",
+                   help="password form-field name (default: password)")
+
+
+def _login_from_args(args):
+    """Build the login spec dict from CLI args, or None if no --login-url was given."""
+    url = getattr(args, "login_url", None)
+    if not url:
+        return None
+    return {"url": url, "user": getattr(args, "login_user", "") or "",
+            "password": getattr(args, "login_pass", "") or "",
+            "user_field": getattr(args, "login_field_user", "username"),
+            "pass_field": getattr(args, "login_field_pass", "password")}
+
+
 def _resolve_scope(scope_arg):
     """Scope is mandatory. Use --scope when given; else ./scope.json if it exists;
     else None (refuse). Brukal never assumes a broad default scope on the operator's
@@ -217,7 +243,7 @@ def _cmd_solve(args) -> int:
     return run_solve(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=scope_path, audit_path=args.audit, vault_path=args.vault,
-        container=args.container, hosts=args.host or (),
+        container=args.container, hosts=args.host or (), login=_login_from_args(args),
         model=args.model, provider=args.provider, base_url=args.base_url)
 
 
@@ -239,7 +265,8 @@ def _cmd_auto(args) -> int:
         max_cost=getattr(args, "max_cost", None),
         max_research=getattr(args, "max_research", None),
         max_time=getattr(args, "max_time", None),
-        resume=not getattr(args, "no_resume", False))
+        resume=not getattr(args, "no_resume", False),
+        login=_login_from_args(args))
 
 
 def _cmd_report(args) -> int:
@@ -506,6 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     psv.add_argument("--host", action="append", metavar="VHOST",
                      help="authorise a web vhost at scope time (e.g. --host nexus.htb); "
                           "repeatable. Lets the hunt render/request that vhost.")
+    _add_login_args(psv)
     psv.add_argument("--model", default=None)
     psv.add_argument("--provider", default=None,
                      help="anthropic (default) | ollama | openai | openrouter | ...")
@@ -527,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--host", action="append", metavar="VHOST",
                     help="authorise a web vhost at scope time (e.g. --host nexus.htb); "
                          "repeatable. Lets auto render/request that vhost.")
+    _add_login_args(pa)
     pa.add_argument("--max-steps", type=int, default=20,
                     help="hand back to you after this many autonomous turns")
     pa.add_argument("--no-handoff", action="store_true",

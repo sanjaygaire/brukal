@@ -124,6 +124,7 @@ class AssistSession:
         self.findings = FindingStore()   # structured vuln findings (vault-backed in _prepare_session)
         self.executed_cmds: list = []  # commands that really ran (fed back as ALREADY TRIED)
         self.resumed = 0               # how many prior findings we loaded
+        self.authenticated = False     # True once a form login has succeeded (auth scanning)
         self.sessions = None           # lazy SessionManager (Phase 2 stateful live shells)
         self.session_states: dict = {} # mirrored per-session state (for the blackboard)
         if blackboard is not None:
@@ -726,6 +727,57 @@ class AssistSession:
         self._persist_finding("crawl", f"crawl {surface.seed}", "ALLOW", head,
                               [("site-map", head)])
         return surface
+
+    def login(self, login_url: str, username: str, password: str,
+              user_field: str = "username", pass_field: str = "password",
+              extra_fields: dict | None = None) -> bool:
+        """Authenticate to a form login THROUGH the governed browser, so the crawl and
+        every later web action run WITH the session — this is how Brukal tests pages
+        behind a login. Operator-supplied credentials only. The browser's cookie jar
+        carries the session; hidden/submit form fields (incl. a CSRF token like DVWA's
+        user_token) are read off the login page and echoed back. The gate is untouched —
+        each request still passes check_web (scope + scheme); the '&'-laden body goes
+        through the HTTP client, never a shell. Returns True if we appear authenticated.
+        """
+        from urllib.parse import urlencode
+
+        from .web import WebAction
+        if self.browser is None:
+            self.notes.append("[login] no governed browser wired — cannot authenticate.")
+            return False
+        # 1) GET the login page: seeds the session cookie + carries CSRF/submit fields.
+        _d, res = self.browser.run(WebAction("request", url=login_url, method="GET"))
+        carried: dict = {}
+        if res is not None and res.body:
+            for tag in re.finditer(r"<input\b[^>]*>", res.body, re.I):
+                t = tag.group(0)
+                typ = (re.search(r'type=["\']?([\w-]+)', t, re.I) or [None, "text"])[1].lower()
+                nm = re.search(r'name=["\']([^"\']+)["\']', t, re.I)
+                vl = re.search(r'value=["\']([^"\']*)["\']', t, re.I)
+                if nm and typ in ("hidden", "submit") and nm.group(1) not in (user_field, pass_field):
+                    carried[nm.group(1)] = vl.group(1) if vl else ""
+        # 2) POST the credentials (+ carried tokens/submit + operator extras).
+        form = {user_field: username, pass_field: password, **carried, **(extra_fields or {})}
+        _d2, res2 = self.browser.run(WebAction(
+            "request", url=login_url, method="POST", body=urlencode(form),
+            headers={"Content-Type": "application/x-www-form-urlencoded"}))
+        # 3) Heuristic auth check: a successful form login redirects AWAY from the login
+        #    page, or the response no longer contains the password field.
+        ok = False
+        if res2 is not None:
+            hdrs = res2.headers or {}
+            loc = hdrs.get("Location", "") or hdrs.get("location", "")
+            redirected_away = (res2.status in (301, 302, 303, 307, 308)
+                               and "login" not in loc.lower())
+            no_login_form = bool(res2.body) and pass_field not in (res2.body or "")
+            ok = bool(redirected_away or no_login_form)
+        self.authenticated = ok
+        jar = len(getattr(self.browser, "_cookies", {}) or {})
+        self.notes.append(
+            f"[login] {login_url} as {username} → "
+            f"{'AUTHENTICATED' if ok else 'login may have FAILED — check creds/field names'} "
+            f"(session cookies held: {jar})")
+        return ok
 
     def learn(self, query: str) -> str:
         """First-class internet learning. Look `query` up from the allowlisted
@@ -2064,7 +2116,7 @@ def _vault_for(vault_root, target: str) -> Path:
 
 def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
                      vault_path, container, model, provider, base_url,
-                     console, holder, hosts=()):
+                     console, holder, hosts=(), login=None):
     """Shared setup for `solve` and `auto`: resolve the target, authorise scope,
     take the live-run sign-off, pick the brain, and build a grounded
     AssistSession wired to the governed executor + per-target vault.
@@ -2199,13 +2251,21 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
         "verify": VerifyAgent(llm, executor),
     }
     cage = "fake" if fake else "docker:" + container
+    # Authenticated scanning: if the operator supplied login credentials, authenticate
+    # NOW (through the governed browser) so the crawl and every later web action run
+    # WITH the session and can reach pages behind the login.
+    if login and login.get("url") and session.browser is not None:
+        ok = session.login(login["url"], login.get("user", ""), login.get("password", ""),
+                           user_field=login.get("user_field", "username"),
+                           pass_field=login.get("pass_field", "password"))
+        _emit(console, f"  {'✓ authenticated' if ok else '⚠ login failed'} at {login['url']}")
     return session, audit, target, cage
 
 
 def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
               audit_path="runs/audit.jsonl", vault_path="runs/vault",
               container="brukal-kali", model=None, provider=None, base_url=None,
-              auto=None, hosts=()) -> int:
+              auto=None, hosts=(), login=None) -> int:
     # A rich console (menu UI + spinner-aware approver), or plain fallback.
     holder: dict = {"status": None}
     try:
@@ -2218,7 +2278,7 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
         target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
         audit_path=audit_path, vault_path=vault_path, container=container,
         model=model, provider=provider, base_url=base_url,
-        console=console, holder=holder, hosts=hosts)
+        console=console, holder=holder, hosts=hosts, login=login)
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
@@ -2282,7 +2342,8 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
              container="brukal-kali", model=None, provider=None, base_url=None,
              max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
              full_send=False, mode=None, no_research=False,
-             max_cost=None, max_research=None, max_time=None, resume=True) -> int:
+             max_cost=None, max_research=None, max_time=None, resume=True,
+             login=None) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
     in-scope enumeration. When it hands back (manual/escalation/stall/budget), and
     a human is present at a terminal, it drops straight into the interactive menu on
@@ -2303,7 +2364,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
         audit_path=audit_path, vault_path=vault_path, container=container,
         model=model, provider=provider, base_url=base_url,
-        console=console, holder=holder, hosts=hosts)
+        console=console, holder=holder, hosts=hosts, login=login)
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
