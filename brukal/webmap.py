@@ -196,6 +196,7 @@ class AttackSurface:
     params: dict = field(default_factory=dict)       # base-URL -> set(param names)
     techs: set = field(default_factory=set)          # tech fingerprints noticed
     api_routes: list = field(default_factory=list)   # API route paths mined from JS/HTML
+    soft_404: bool = False                           # host answers 200 for missing paths
 
     def add_page(self, url: str, links, forms, params) -> None:
         self.pages.add(url)
@@ -223,6 +224,11 @@ class AttackSurface:
                  f"{len(self.links)} link(s), {len(self.forms)} form(s), "
                  f"{self.param_endpoints} parameterised endpoint(s), "
                  f"{len(self.api_routes)} API route(s)."]
+        if self.soft_404:
+            lines.append("  ⚠ SOFT-404: this host returns 200 for paths that do not "
+                         "exist (SPA/catch-all). A 200 from ffuf/gobuster/nikto does NOT "
+                         "mean the path exists — do not trust path-discovery hits; go "
+                         "after the API endpoints below, params, and injection/logic.")
         if self.techs:
             lines.append("  techs: " + ", ".join(sorted(self.techs)[:8]))
         if self.api_routes:

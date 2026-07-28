@@ -219,3 +219,15 @@ def test_web_urls_from_executed_commands():
     urls = sess.web_urls_from_findings()
     assert "http://10.10.10.5:3000/" in urls        # crawl can now seed from this
     assert len(urls) == 1                            # base URL deduped across commands
+
+
+# --- soft-404 detection (SPA returns 200 for missing paths) -----------------
+
+def test_soft_404_warning_in_summary():
+    s = webmap.AttackSurface(seed="http://10.10.10.5/")
+    s.add_page("http://10.10.10.5/", set(), [], {})
+    assert "SOFT-404" not in s.summary()
+    s.soft_404 = True
+    out = s.summary()
+    assert "SOFT-404" in out
+    assert "do not trust path-discovery" in out.lower() or "does not" in out.lower()

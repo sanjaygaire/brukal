@@ -677,6 +677,22 @@ class AssistSession:
                     if l not in visited:
                         queue.append((l, depth + 1))
 
+        # Soft-404 detection: probe one path that certainly does not exist. If the app
+        # answers 200 (SPA fallback / catch-all route), a "200" from a path scanner does
+        # NOT mean the path exists — flag it so the planner stops trusting path-discovery
+        # hits (the #1 source of scanner false positives on modern web apps). One
+        # governed, in-scope fetch.
+        try:
+            from urllib.parse import urlsplit
+            sp = urlsplit(surface.seed)
+            if sp.scheme and sp.netloc:
+                probe = f"{sp.scheme}://{sp.netloc}/brukal_nonexistent_9zq7x8k.html"
+                _d, pr, _h = self.run_web(f"get {probe}")
+                if pr is not None and getattr(pr, "status", None) == 200:
+                    surface.soft_404 = True
+        except Exception:
+            pass
+
         self.surface = surface
         summ = surface.summary()
         head = summ.splitlines()[0]
