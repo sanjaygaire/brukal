@@ -155,3 +155,51 @@ def test_crawl_respects_page_budget():
         assert len(surface.pages) == 1        # stopped at the budget
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --- API route mining (the SPA gap: endpoints live in the JS bundle) --------
+
+def test_extract_api_routes_from_js_bundle():
+    js = ('this.http.get("/rest/user/login");const p=`/api/Products`;'
+          'x="/rest/products/search?q=";y=/rest\\/admin/;z="/oauth/token";'
+          'ignore="/assets/img/logo.png";dup="/rest/user/login";')
+    routes = webmap.extract_api_routes(js)
+    assert "/rest/user/login" in routes
+    assert "/api/Products" in routes
+    assert "/rest/products/search" in routes
+    assert "/oauth/token" in routes
+    assert routes.count("/rest/user/login") == 1          # deduped
+    assert "/assets/img/logo.png" not in routes           # not an API-ish path
+
+
+def test_extract_api_routes_caps_and_tolerates_junk():
+    blob = " ".join(f'"/api/thing{i}"' for i in range(200))
+    assert len(webmap.extract_api_routes(blob, max_routes=40)) == 40
+    assert webmap.extract_api_routes("") == []
+    assert webmap.extract_api_routes("no routes here, just prose about apiaries") == []
+
+
+def test_surface_summary_lists_api_endpoints():
+    s = webmap.AttackSurface(seed="http://10.10.10.5/")
+    s.add_page("http://10.10.10.5/", set(), [], {})
+    s.add_routes(["/rest/user/login", "/rest/admin", "/api/Products"])
+    out = s.summary()
+    assert "API route(s)" in out
+    assert "/rest/user/login" in out and "/rest/admin" in out
+
+
+def test_crawl_mines_routes_from_a_linked_js_bundle():
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    root = '<html><body><script src="/main.js"></script>nothing else</body></html>'
+    js = 'r.get("/rest/user/login");q="/rest/products/search";a=`/rest/admin`;'
+    # specific fragments first (FakeWebCage matches substrings)
+    cage = FakeWebCage({"/main.js": js, "10.10.10.5/": root})
+    browser = GovernedBrowser(scope, cage, audit)
+    sess = AssistSession(TARGET, ex, StrategistAgent(SeqLLM(["x"])), browser=browser)
+    surface = sess.crawl(seeds=["http://10.10.10.5/"], max_pages=10, max_depth=2)
+    # the SPA's real endpoints, mined from the JS bundle the homepage links to
+    assert "/rest/user/login" in surface.api_routes
+    assert "/rest/products/search" in surface.api_routes
+    assert "/rest/admin" in surface.api_routes

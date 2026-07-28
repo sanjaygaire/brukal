@@ -651,9 +651,13 @@ class AssistSession:
             server = (result.headers or {}).get("server") or (result.headers or {}).get("Server")
             if server:
                 surface.techs.add(str(server).split("/")[0][:24])
-            links, forms, params = webmap.extract(url, result.body or "")
+            body = result.body or ""
+            links, forms, params = webmap.extract(url, body)
             in_scope_links = {l for l in links if _in_scope(l)}
             surface.add_page(url, in_scope_links, forms, params)
+            # Mine API route paths from the body (crucial for SPAs: the endpoints live
+            # in the JS bundle, not the near-empty initial HTML). Leads, still gated.
+            surface.add_routes(webmap.extract_api_routes(body))
             if depth < max_depth:
                 for l in sorted(in_scope_links):
                     if l not in visited:
