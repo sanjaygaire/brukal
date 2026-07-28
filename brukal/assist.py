@@ -578,6 +578,15 @@ class AssistSession:
         target = m.group(0) if m else self.target
         pm = re.search(r"-p\s+(\S+)", command)
         param = pm.group(1) if pm else ""
+        # On a soft-404 host, a PATH-DISCOVERY scanner (nikto / dir-brute) reports a
+        # "found" file for every path because everything returns 200 — its high/medium
+        # verdicts are false. Downgrade to an info lead (still recorded, no longer
+        # misleading). Content-based tools (sqlmap/nuclei) are untouched.
+        tool = _tool_of(command)
+        if (self.surface is not None and getattr(self.surface, "soft_404", False)
+                and tool in _PATH_SCANNERS and sev in ("high", "medium")):
+            sev = "info"
+            line = f"{line} — UNVERIFIED (host soft-404s: 200 for any path)"
         self.findings.add(Finding(
             title=label, severity=sev, target=target, evidence=line,
             source=command, param=param, category="web",
@@ -1991,19 +2000,27 @@ _TOOL_CANDIDATES = (
 _RAW_FETCH_TOOLS = frozenset({"curl", "wget", "http", "https", "httpie", "cat",
                              "aws", "hurl", "xh"})
 
+# Pure path-discovery scanners: they only tell you a path "exists". On a soft-404 host
+# (200 for everything) that verdict is meaningless, so their findings are downgraded.
+_PATH_SCANNERS = frozenset({"nikto", "gobuster", "ffuf", "dirb", "feroxbuster",
+                           "dirsearch", "wfuzz", "dirbuster"})
+
+
+def _tool_of(command: str) -> str:
+    """Basename of the tool a command invokes, lowercased ('' if unparseable)."""
+    import shlex
+    try:
+        toks = shlex.split(command)
+    except ValueError:
+        return ""
+    return toks[0].rsplit("/", 1)[-1].lower() if toks else ""
+
 
 def _is_raw_fetch(command: str) -> bool:
     """True if `command`'s tool emits a raw response/file body (so exposure signatures
     are meaningful), False for scanners/attack tools whose verbose output would
     false-positive the content signatures."""
-    import shlex
-    try:
-        toks = shlex.split(command)
-    except ValueError:
-        return False
-    if not toks:
-        return False
-    return toks[0].rsplit("/", 1)[-1].lower() in _RAW_FETCH_TOOLS
+    return _tool_of(command) in _RAW_FETCH_TOOLS
 
 
 def _probe_cage_tools(kali) -> list[str]:

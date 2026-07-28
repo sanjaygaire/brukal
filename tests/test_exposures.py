@@ -145,3 +145,26 @@ def test_raw_curl_still_triggers_exposure_finding():
     sess = _session('{"error":"SQLITE_ERROR: near \\"\'\\": syntax error"}')
     sess.run("curl -s http://10.10.10.5/api/x")
     assert any(f.title == "SQL error (possible injection)" for f in sess.findings.all())
+
+
+# --- soft-404 downgrades path-scanner findings (nikto FP fix) ---------------
+
+def test_soft_404_downgrades_path_scanner_findings():
+    import brukal.webmap as webmap
+    sess = _session("+ OSVDB-3092: /JAMonAdmin.jsp: admin interface (traversal)")
+    sess.surface = webmap.AttackSurface(seed="http://10.10.10.5/")
+    sess.surface.soft_404 = True
+    sess.run("nikto -host http://10.10.10.5/")     # nikto is read-only -> runs
+    nikto = [f for f in sess.findings.all() if "nikto" in f.title.lower()]
+    assert nikto and all(f.severity == "info" for f in nikto)     # downgraded, not high/med
+    assert any("soft-404" in f.evidence.lower() for f in nikto)   # annotated why
+
+
+def test_content_tool_findings_not_downgraded_on_soft_404():
+    import brukal.webmap as webmap
+    sess = _session("[high] CVE-2021-1234 confirmed on the target")
+    sess.surface = webmap.AttackSurface(seed="http://10.10.10.5/")
+    sess.surface.soft_404 = True
+    sess.run("nuclei -u http://10.10.10.5/")       # content-based, not path-discovery
+    # nuclei's verdict stands even on a soft-404 host — not downgraded
+    assert any(f.severity == "high" for f in sess.findings.all())
