@@ -408,11 +408,13 @@ class AssistSession:
                     new_hl.append(h)
                 self._record_vuln_finding(command, _sev, _label, _line)
             # Exposure/info-disclosure signatures in the RAW response body (leaked
-            # secrets, .git/.env, keys, SQL errors, directory listings) — these come
-            # from raw curl/wget/dumped-file output that the scanner patterns above
-            # miss, so a real exposure the model discovers by hand is RECORDED as a
-            # finding instead of scrolling past. Untrusted output; a lead, not an act.
-            for _sev, _label, _line in webprobe.scan_exposures(raw):
+            # secrets, .git/.env, keys, SQL errors, directory listings) — ONLY for
+            # raw-fetch tools (curl/wget/...). A scanner (sqlmap/nikto/nuclei) echoes
+            # payloads and technique names ("PostgreSQL AND error-based") that trip the
+            # content signatures and manufacture false findings, so we never run the
+            # raw-response detector on scanner output — scan_output above owns those.
+            exposures = webprobe.scan_exposures(raw) if _is_raw_fetch(command) else []
+            for _sev, _label, _line in exposures:
                 h = (f"exposure/{_sev}", f"{_label}: {_line}")
                 if h not in new_hl:
                     new_hl.append(h)
@@ -1965,6 +1967,27 @@ _TOOL_CANDIDATES = (
     "rpcclient snmpwalk onesixtyone ldapsearch hydra medusa john hashcat searchsploit "
     "msfconsole nc ncat socat jq python3 ssh sslscan wpscan"
 ).split()
+
+
+# Tools whose stdout IS a raw HTTP response body (or a fetched file) — the only
+# output the content-signature exposure detector should read. A scanner's report is
+# not a response body, so it is deliberately excluded (avoids technique-name FPs).
+_RAW_FETCH_TOOLS = frozenset({"curl", "wget", "http", "https", "httpie", "cat",
+                             "aws", "hurl", "xh"})
+
+
+def _is_raw_fetch(command: str) -> bool:
+    """True if `command`'s tool emits a raw response/file body (so exposure signatures
+    are meaningful), False for scanners/attack tools whose verbose output would
+    false-positive the content signatures."""
+    import shlex
+    try:
+        toks = shlex.split(command)
+    except ValueError:
+        return False
+    if not toks:
+        return False
+    return toks[0].rsplit("/", 1)[-1].lower() in _RAW_FETCH_TOOLS
 
 
 def _probe_cage_tools(kali) -> list[str]:

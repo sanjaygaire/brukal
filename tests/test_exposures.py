@@ -125,3 +125,23 @@ def test_scope_deny_hint_is_distinct():
     sess.run("nmap -sV 8.8.8.8")                          # out of scope
     last = sess.notes[-1].lower()
     assert "out of scope" in last and "shell operator" not in last
+
+
+# --- scanner output must NOT manufacture exposure findings (FP fix) ---------
+
+def test_scanner_output_does_not_trigger_exposure_finding():
+    from brukal.assist import _is_raw_fetch
+    assert _is_raw_fetch("curl -s http://10.10.10.5/x") is True
+    assert _is_raw_fetch("sqlmap -u http://10.10.10.5/x --batch") is False
+    assert _is_raw_fetch("nikto -host http://10.10.10.5/") is False
+    # sqlmap's verbose output names a technique that would trip the SQL signature —
+    # but scan_exposures must not run on a scanner's report.
+    sess = _session("[*] testing 'PostgreSQL AND error-based - WHERE or HAVING clause'")
+    sess.run("sqlmap -u http://10.10.10.5/api/x --batch")
+    assert all(f.title != "SQL error (possible injection)" for f in sess.findings.all())
+
+
+def test_raw_curl_still_triggers_exposure_finding():
+    sess = _session('{"error":"SQLITE_ERROR: near \\"\'\\": syntax error"}')
+    sess.run("curl -s http://10.10.10.5/api/x")
+    assert any(f.title == "SQL error (possible injection)" for f in sess.findings.all())
