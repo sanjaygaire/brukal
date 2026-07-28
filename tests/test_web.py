@@ -180,7 +180,10 @@ def test_composite_cage_routes_by_action_kind():
 
     cage = CompositeWebCage(Render(), Request())
     assert cage.run(WebAction("navigate", url="http://x/")).note == "render"
-    assert cage.run(WebAction("get", url="http://x/")).note == "render"
+    assert cage.run(WebAction("screenshot", url="http://x/")).note == "render"
+    # `get` routes to the HTTP cage so it carries the session jar (authenticated
+    # scanning) and returns raw HTML/JS for the crawl to mine; `navigate` stays render.
+    assert cage.run(WebAction("get", url="http://x/")).note == "request"
     assert cage.run(WebAction("request", url="http://x/")).note == "request"
     # a live-interactive action returns an explanatory note, not a crash
     assert "CDP" in cage.run(WebAction("fill", selector="#a")).note

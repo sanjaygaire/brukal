@@ -321,9 +321,14 @@ class CompositeWebCage:
 
     def run(self, action: WebAction) -> WebResult:
         k = (action.kind or "").lower()
-        if k in ("navigate", "get", "screenshot"):
+        # `get` goes to the HTTP cage, not Chrome: it is jar-aware (carries the
+        # GovernedBrowser session cookie jar, so authenticated pages are reachable
+        # after login) and returns the RAW HTML/JS — which is what the crawl needs
+        # to mine forms, params and API routes from the JS bundle. Chrome render
+        # (`navigate`) stays for when JS execution / a screenshot is actually needed.
+        if k in ("navigate", "screenshot"):
             return self._render.run(action)
-        if k == "request":
+        if k in ("get", "request"):
             return self._request.run(action)
         return WebResult(url=action.url,
                          note=f"'{k}' needs the live CDP browser (interactive) — "
