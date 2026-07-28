@@ -51,6 +51,11 @@ _HIGHLIGHTS = [
 
 # Open web-service ports in an nmap highlight line ("80/tcp open http ...").
 _WEB_PORT_RE = re.compile(r"(\d{1,5})/tcp\s+open\s+(\S+)", re.I)
+# URLs that DESTROY the session: never fetch these during a crawl, or we log
+# ourselves out and the rest of an AUTHENTICATED crawl runs unauthenticated (a
+# classic authenticated-scanning trap — the scanner clicks its own "logout").
+_LOGOUT_RE = re.compile(r"(?:log[-_]?out|sign[-_]?out|log[-_]?off|/logoff\b"
+                        r"|[?&](?:action|do|page|op)=(?:log[-_]?out|sign[-_]?out))", re.I)
 
 # Services / technologies worth pulling a red-team playbook for, mined from the
 # highlights so skill retrieval follows what we've actually discovered on the box.
@@ -670,7 +675,8 @@ class AssistSession:
                 return False
             return h in seed_hosts or bool(scope and scope.contains_host(h))
 
-        queue = deque((webmap.normalize_url(u, "") or u, 0) for u in seeds if _in_scope(u))
+        queue = deque((webmap.normalize_url(u, "") or u, 0)
+                      for u in seeds if _in_scope(u) and not _LOGOUT_RE.search(u))
         visited: set = set()
         while queue and len(surface.pages) < max_pages:
             url, depth = queue.popleft()
@@ -693,7 +699,10 @@ class AssistSession:
                 surface.techs.add(str(server).split("/")[0][:24])
             body = result.body or ""
             links, forms, params = webmap.extract(url, body)
-            in_scope_links = {l for l in links if _in_scope(l)}
+            # Exclude session-destroying links (logout/signout) so an authenticated
+            # crawl keeps its session for the whole run.
+            in_scope_links = {l for l in links
+                              if _in_scope(l) and not _LOGOUT_RE.search(l)}
             surface.add_page(url, in_scope_links, forms, params)
             # Mine API route paths from the body (crucial for SPAs: the endpoints live
             # in the JS bundle, not the near-empty initial HTML). Leads, still gated.

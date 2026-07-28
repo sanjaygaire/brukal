@@ -107,3 +107,15 @@ def test_login_url_out_of_scope_is_denied():
     ok = sess.login("http://8.8.8.8/login.php", "admin", "secret")   # out of scope
     assert ok is False
     assert not browser._cookies                          # nothing was fetched/authenticated
+
+
+# --- crawl must not fetch logout (would destroy an authenticated session) ---
+
+def test_logout_urls_excluded_from_crawl():
+    from brukal.assist import _LOGOUT_RE
+    for u in ["http://x/logout.php", "http://x/logoff", "http://x/user/sign-out",
+              "http://x/?action=logout", "http://x/index?do=signout"]:
+        assert _LOGOUT_RE.search(u), u
+    for u in ["http://x/vulnerabilities/sqli/", "http://x/login.php",
+              "http://x/logs/output", "http://x/about"]:
+        assert not _LOGOUT_RE.search(u), u
