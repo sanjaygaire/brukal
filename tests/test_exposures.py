@@ -168,3 +168,24 @@ def test_content_tool_findings_not_downgraded_on_soft_404():
     sess.run("nuclei -u http://10.10.10.5/")       # content-based, not path-discovery
     # nuclei's verdict stands even on a soft-404 host — not downgraded
     assert any(f.severity == "high" for f in sess.findings.all())
+
+
+# --- injection coaching steers a web POST to a WEB action (auth testing) ----
+
+def test_web_request_injection_coaches_toward_web_action():
+    sess = _session("irrelevant")
+    # a login POST via curl: '&' in the body -> hard:injection DENY
+    dec, result, _hl = sess.run(
+        "curl -s -X POST -d 'username=admin&password=password&Login=Login' "
+        "http://10.10.10.5/login.php")
+    assert dec.verdict == "DENY" and dec.layer == "hard:injection"
+    last = sess.notes[-1].lower()
+    assert "web action" in last and "web fill" in last          # steers to WEB, not curl
+    assert "cookies" in last or "csrf" in last                  # explains why (auth)
+
+
+def test_local_injection_still_steers_to_session():
+    sess = _session("irrelevant")
+    sess.run("cat /tmp/dump/config && grep pass /tmp/dump/config")   # local chain
+    last = sess.notes[-1].lower()
+    assert "session" in last and "web action" not in last

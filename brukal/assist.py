@@ -434,7 +434,23 @@ class AssistSession:
             # rather than re-trying the same shape. (Coaching only — the gate is
             # unchanged; these hints never relax a check.)
             layer = decision.layer or ""
-            if layer == "hard:injection":
+            _web_data = ("-d " in command or "--data" in command
+                         or re.search(r"https?://\S*\?\S*&", command) is not None)
+            if (layer == "hard:injection" and _is_raw_fetch(command)
+                    and "http" in command and _web_data):
+                # A web request (curl/wget) with '&' in form data or a query string is
+                # rejected because '&' is a shell operator in a raw command. The right
+                # primitive is a WEB action: it sends the body through the browser/HTTP
+                # client (no shell), and the browser keeps cookies + CSRF tokens across
+                # requests — which is how you log in and test authenticated pages.
+                hint = ("form data / query strings contain '&', which the shell gate "
+                        "rejects in a raw command. Do NOT use curl for this — use a WEB "
+                        "action: `WEB fill` the form fields then `WEB click` submit (the "
+                        "browser carries cookies + the CSRF token), or `WEB request POST "
+                        "<url> body=field1=v1&field2=v2`. The site map already lists the "
+                        "form and its fields. This is how you authenticate and reach "
+                        "pages behind a login.")
+            elif layer == "hard:injection":
                 hint = ("shell operators (&&  ||  ;  |  $(...)  backticks  >) are "
                         "rejected — issue ONE tool per step with no chaining or pipes. "
                         "To parse/inspect output or run multi-step LOCAL analysis in "
