@@ -203,3 +203,19 @@ def test_crawl_mines_routes_from_a_linked_js_bundle():
     assert "/rest/user/login" in surface.api_routes
     assert "/rest/products/search" in surface.api_routes
     assert "/rest/admin" in surface.api_routes
+
+
+# --- the crawl trigger fires from an executed web command (not just nmap) ---
+
+def test_web_urls_from_executed_commands():
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    sess = AssistSession(TARGET, ex, StrategistAgent(SeqLLM(["x"])))
+    # No nmap "open http" highlight at all — only a web command that already ran.
+    assert sess.web_urls_from_findings() == []
+    sess.executed_cmds.append("whatweb http://10.10.10.5:3000")
+    sess.executed_cmds.append("curl -s http://10.10.10.5:3000/rest/user/login")
+    urls = sess.web_urls_from_findings()
+    assert "http://10.10.10.5:3000/" in urls        # crawl can now seed from this
+    assert len(urls) == 1                            # base URL deduped across commands

@@ -585,6 +585,7 @@ class AssistSession:
         """Deterministically pull web-service URLs out of the findings — open
         http/https ports (nmap) and web-server fingerprints — so a browser render
         can be triggered automatically the moment a web surface appears."""
+        from urllib.parse import urlsplit
         urls: list[str] = []
         for _tag, line in self.highlights:
             for m in _WEB_PORT_RE.finditer(line):
@@ -598,6 +599,17 @@ class AssistSession:
                     urls.append(f"{scheme}://{self.target}/")
                 else:
                     urls.append(f"{scheme}://{self.target}:{port}/")
+        # Also: the moment ANY web command has actually hit the target (curl/whatweb/
+        # ffuf/gobuster against an http(s) URL), we KNOW there is a web surface — seed
+        # the crawl from it. Executed commands are in-scope by construction (the gate
+        # denied anything else), so their URLs are the target's. This is the reliable
+        # trigger; nmap service-detection ("open http") is not, and it made the
+        # surface-map reflex silently skip SPAs whose port nmap didn't label http.
+        for cmd in self.executed_cmds:
+            for m in re.finditer(r"https?://[^\s'\";|>]+", cmd):
+                sp = urlsplit(m.group(0))
+                if sp.scheme and sp.netloc:
+                    urls.append(f"{sp.scheme}://{sp.netloc}/")
         seen, out = set(), []
         for u in urls:
             if u not in seen:
