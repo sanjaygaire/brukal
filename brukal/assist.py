@@ -108,6 +108,7 @@ class AssistSession:
         self.lessons = lessons         # cross-session LessonStore (optional)
         self.research = research        # optional control-plane ResearchProvider (untrusted web)
         self.cage_container = None       # docker cage name (set by _prepare_session) for vhost mapping
+        self.cage_tools: list = []       # tools actually installed in the cage (set by _prepare_session)
         self.notes: list[str] = []     # observations: command results, manual reports, notes
         self.highlights: list[tuple[str, str]] = []   # accumulated key results
         self.objectives: list[str] = []               # what the box is asking (HTB tasks)
@@ -187,6 +188,14 @@ class AssistSession:
              degrades to "" on any failure. Everything here is guidance the model may
              use to PROPOSE — the gate still rules on every action."""
         parts = []
+        if self.cage_tools:
+            # Ground the planner in what the cage ACTUALLY has, so a weak model stops
+            # burning turns guessing tool/script paths that don't exist (e.g. inventing
+            # five `git-dumper.py` locations). A hard constraint, so it leads.
+            parts.append(
+                "CAGE TOOLS INSTALLED (use ONLY these exact names; anything NOT listed "
+                "is NOT installed — never invent a module/script path for it, pick an "
+                "installed alternative):\n" + ", ".join(self.cage_tools))
         if self.methodology is not None:
             parts.append(self.methodology.checklist_text())
         if self.lessons is not None:
@@ -1930,6 +1939,36 @@ def _authorise_host(scope, target: str):
                  expires=scope.expires)
 
 
+# A curated set of the tools a pentest planner commonly reaches for. We ask the cage
+# which are actually present so the model proposes real invocations. Read-only probe.
+_TOOL_CANDIDATES = (
+    "nmap masscan curl wget ffuf gobuster feroxbuster dirb dirsearch nikto whatweb "
+    "wafw00f nuclei wpscan sqlmap dalfox commix gau katana hakrawler waybackurls httpx "
+    "git git-dumper gitdumper dnsrecon dnsx dnsenum subfinder amass assetfinder "
+    "theharvester smbclient smbmap enum4linux enum4linux-ng crackmapexec netexec nxc "
+    "rpcclient snmpwalk onesixtyone ldapsearch hydra medusa john hashcat searchsploit "
+    "msfconsole nc ncat socat jq python3 ssh sslscan wpscan"
+).split()
+
+
+def _probe_cage_tools(kali) -> list[str]:
+    """Ask the cage which of the candidate tools are installed (one read-only `which`),
+    so the planner is grounded in reality instead of guessing tool/script paths that
+    don't exist. This introspects OUR cage, not the target — the agent still never
+    receives the kali, only the resulting list of names. Best-effort: any failure
+    returns [] and the planner simply runs without the hint."""
+    seen = set()
+    try:
+        res = kali.run("which " + " ".join(sorted(set(_TOOL_CANDIDATES))))
+    except Exception:
+        return []
+    for line in (getattr(res, "stdout", "") or "").splitlines():
+        base = line.strip().rsplit("/", 1)[-1]
+        if base in _TOOL_CANDIDATES and base not in seen:
+            seen.add(base)
+    return [t for t in _TOOL_CANDIDATES if t in seen]
+
+
 def _vault_for(vault_root, target: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", target.strip()) or "target"
     return Path(vault_root) / safe
@@ -2009,9 +2048,8 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     approver = _rich_approver(console, holder) if console is not None else interactive_approver
 
     trust = TrustModel()
-    executor = Executor(Gate(session_scope, trust=trust),
-                        FakeKali() if fake else DockerKali(container=container),
-                        audit, approver=approver)
+    kali = FakeKali() if fake else DockerKali(container=container)
+    executor = Executor(Gate(session_scope, trust=trust), kali, audit, approver=approver)
     try:
         llm = LLMClient(model=model, provider=provider, base_url=base_url)
     except Exception as e:
@@ -2053,6 +2091,10 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
                             blackboard=blackboard, lessons=lessons, browser=browser,
                             research=research if research.enabled else None)
     session.cage_container = None if fake else container   # for mid-session vhost mapping
+    if not fake:
+        # Ground the planner in the cage's real toolset (one read-only `which`), so it
+        # proposes installed tools instead of guessing script paths. Best-effort.
+        session.cage_tools = _probe_cage_tools(kali)
     # Specialist agents for multi-agent auto ("planner + role executors"). Built on
     # the SAME executor (one door) and the SAME model as the strategist. The auto
     # loop uses them only when multi-agent mode is on; they are inert otherwise. The
