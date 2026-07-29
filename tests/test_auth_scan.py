@@ -119,3 +119,48 @@ def test_logout_urls_excluded_from_crawl():
     for u in ["http://x/vulnerabilities/sqli/", "http://x/login.php",
               "http://x/logs/output", "http://x/about"]:
         assert not _LOGOUT_RE.search(u), u
+
+
+# --- authenticated exploitation: shell tools get the session cookie ---------
+
+def _authed_session(cookies):
+    from brukal.web import GovernedBrowser
+    scope = load_scope(FIXTURE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    browser = GovernedBrowser(scope, _LoginCage(), audit)
+    browser._cookies = dict(cookies)
+    sess = AssistSession("10.10.10.5", ex, StrategistAgent(_NullLLM()), browser=browser)
+    sess.authenticated = True
+    return sess
+
+
+def test_single_session_cookie_injected_into_shell_web_tools():
+    s = _authed_session({"PHPSESSID": "abc123"})
+    assert s._session_cookie_for("sqlmap -u http://10.10.10.5/x?id=1") == \
+        "sqlmap -u http://10.10.10.5/x?id=1 --cookie='PHPSESSID=abc123'"
+    assert "-b 'PHPSESSID=abc123'" in s._session_cookie_for("curl -s http://10.10.10.5/x")
+    # already carrying a cookie -> untouched
+    assert s._session_cookie_for("curl -b 'X=1' http://10.10.10.5/x") == \
+        "curl -b 'X=1' http://10.10.10.5/x"
+    # non-web tool / unknown tool -> untouched
+    assert s._session_cookie_for("nmap -sV 10.10.10.5") == "nmap -sV 10.10.10.5"
+
+
+def test_multi_cookie_not_injected_would_break_the_gate():
+    # Two cookies -> the '; ' separator would trip the injection guard, so we DON'T
+    # inject (multi-cookie sessions must use WEB actions). Gate stays untouched.
+    s = _authed_session({"PHPSESSID": "abc", "security": "low"})
+    assert s._session_cookie_for("sqlmap -u http://10.10.10.5/x") == "sqlmap -u http://10.10.10.5/x"
+
+
+def test_unauthenticated_session_injects_nothing():
+    s = _authed_session({"PHPSESSID": "abc123"})
+    s.authenticated = False
+    assert s._session_cookie_for("curl http://10.10.10.5/x") == "curl http://10.10.10.5/x"
+
+
+def test_planner_reference_announces_authenticated_session():
+    s = _authed_session({"PHPSESSID": "abc123"})
+    ref = s._reference("")
+    assert "AUTHENTICATED SESSION ACTIVE" in ref and "do not log in again" in ref.lower()

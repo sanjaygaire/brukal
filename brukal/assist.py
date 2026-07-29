@@ -194,6 +194,18 @@ class AssistSession:
              degrades to "" on any failure. Everything here is guidance the model may
              use to PROPOSE — the gate still rules on every action."""
         parts = []
+        if self.authenticated:
+            # Tell the planner it is ALREADY logged in, so it stops wasting turns
+            # re-logging-in and instead tests behind the login. Shell web-tools are
+            # auto-given the session cookie (see _session_cookie_for); WEB actions
+            # carry it natively.
+            parts.append(
+                "AUTHENTICATED SESSION ACTIVE — you are already logged in as the "
+                "operator. Do NOT log in again. Test the pages BEHIND the login "
+                "(the crawled site map lists them). Shell web-tools (sqlmap/curl/ffuf/"
+                "nikto/…) are automatically given the session cookie; WEB actions carry "
+                "it too. Go after the authenticated functionality: injection, access "
+                "control, CSRF, file inclusion.")
         if self.cage_tools:
             # Ground the planner in what the cage ACTUALLY has, so a weak model stops
             # burning turns guessing tool/script paths that don't exist (e.g. inventing
@@ -364,12 +376,35 @@ class AssistSession:
 
     # -- doing / recording (persisted to the vault) ------------------------- #
 
+    def _session_cookie_for(self, command: str) -> str:
+        """When authenticated, give a shell WEB tool the session cookie so it can test
+        pages BEHIND the login (sqlmap/curl/ffuf/... otherwise run unauthenticated).
+        Only when the cookie string carries NO shell metacharacter — a single session
+        cookie, the common case — because the gate rejects ';' in a raw command
+        (invariant 1, unchanged); a multi-cookie session must use WEB actions, which
+        carry the jar natively. The gate still re-reads and governs the result."""
+        if not self.authenticated or self.browser is None or "http" not in command:
+            return command
+        jar = getattr(self.browser, "_cookies", {}) or {}
+        if not jar:
+            return command
+        cookies = "; ".join(f"{k}={v}" for k, v in jar.items())
+        if any(c in cookies for c in ";|&`$<>() "):     # can't pass the shell gate
+            return command
+        tmpl = _COOKIE_INJECT.get(_tool_of(command))
+        if not tmpl:
+            return command
+        if re.search(r"(?:^|\s)(?:-b|--cookie|--cookie-string|-c)\b|Cookie:", command, re.I):
+            return command                              # already carrying a cookie
+        return f"{command} {tmpl.replace('{C}', cookies)}"
+
     def run(self, command: str, target: str | None = None, agent: str = "strategist"):
         """Run a command through the gate/cage, record it, and surface the key
         results. Returns (decision, result, new_highlights). `agent` attributes the
         action to a role (recon/exploit/verify in multi-agent mode) so the gate's
         per-agent trust modulates its soft-risk score — it never changes the hard
         checks or the single execution path."""
+        command = self._session_cookie_for(command)     # authenticated exploitation
         decision, result = self.executor.run(command, target or self.target,
                                              agent=agent)
         return self._absorb_shell(command, decision, result)
@@ -2076,6 +2111,16 @@ _TOOL_CANDIDATES = (
 # not a response body, so it is deliberately excluded (avoids technique-name FPs).
 _RAW_FETCH_TOOLS = frozenset({"curl", "wget", "http", "https", "httpie", "cat",
                              "aws", "hurl", "xh"})
+
+# How each web tool takes a cookie string, so an authenticated session can be handed
+# to a shell tool. `{C}` is the "name=value" cookie string (single-cookie only — see
+# _session_cookie_for; multi-cookie sessions use WEB actions to avoid the gate's ';').
+_COOKIE_INJECT = {
+    "curl": "-b '{C}'", "wget": "--header='Cookie: {C}'", "sqlmap": "--cookie='{C}'",
+    "ffuf": "-H 'Cookie: {C}'", "gobuster": "-c '{C}'", "feroxbuster": "-b '{C}'",
+    "nuclei": "-H 'Cookie: {C}'", "nikto": "-H 'Cookie: {C}'", "dirb": "-H 'Cookie: {C}'",
+    "wpscan": "--cookie-string '{C}'", "dirsearch": "--cookie '{C}'",
+}
 
 # Pure path-discovery scanners: they only tell you a path "exists". On a soft-404 host
 # (200 for everything) that verdict is meaningless, so their findings are downgraded.
