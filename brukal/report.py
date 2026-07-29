@@ -24,14 +24,22 @@ def _ts(t=None) -> str:
 
 
 def _finding_md(f) -> str:
+    from .knowledge import enrich
+    kb = enrich(f.title, f.severity)
+    cvss = f"CVSS {kb['cvss']:.1f}" + (f" ({kb['vector']})" if kb["cvss"] else "")
     lines = [f"### {_BADGE.get(f.severity, f.severity)} — {f.title}"
              f"{' *(candidate)*' if not f.confirmed else ''}"]
+    lines.append(f"- **Severity:** {f.severity.upper()}  ·  **{cvss}**"
+                 + (f"  ·  **Category:** {f.category}" if getattr(f, "category", "") else ""))
     lines.append(f"- **Target:** `{f.target or '-'}`"
                  + (f"  ·  **Parameter:** `{f.param}`" if f.param else ""))
+    lines.append(f"- **Impact:** {kb['impact']}")
     if f.evidence:
         lines.append(f"- **Evidence:**\n\n  ```\n  {f.evidence.strip()[:500]}\n  ```")
     if f.source:
         lines.append(f"- **Reproduce:** `{f.source}`")
+    lines.append(f"- **Remediation:** {kb['remediation']}")
+    lines.append(f"- **References:** {', '.join(kb['refs'])}")
     lines.append(f"- **Status:** {'confirmed (evidence-backed)' if f.confirmed else 'candidate — verify manually'}")
     return "\n".join(lines)
 
