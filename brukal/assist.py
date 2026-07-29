@@ -411,6 +411,41 @@ class AssistSession:
                     return f"{command} {tmpl.replace('{C}', cookies)}"
         return command
 
+    def _curl_to_web_action(self, command: str):
+        """Translate a curl/wget web request into a governed WEB request action. Lets a
+        form/query/INJECTION payload whose '&' or ';' the shell gate rejects still run —
+        through the HTTP client, no shell. Returns a WebAction or None."""
+        import shlex
+
+        from .web import WebAction
+        if _tool_of(command) not in ("curl", "wget"):
+            return None
+        try:
+            toks = shlex.split(command)
+        except ValueError:
+            return None
+        method, url, body, headers = "GET", "", "", {}
+        i = 1
+        while i < len(toks):
+            t = toks[i]
+            if t in ("-X", "--request") and i + 1 < len(toks):
+                method = toks[i + 1].upper(); i += 2; continue
+            if t in ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+                     "--data-ascii") and i + 1 < len(toks):
+                body = toks[i + 1]; method = "POST" if method == "GET" else method; i += 2; continue
+            if t in ("-H", "--header") and i + 1 < len(toks):
+                h = toks[i + 1]
+                if ":" in h:
+                    k, v = h.split(":", 1); headers[k.strip()] = v.strip()
+                i += 2; continue
+            if t in ("-b", "--cookie") and i + 1 < len(toks):
+                headers["Cookie"] = toks[i + 1]; i += 2; continue
+            if t.startswith(("http://", "https://")):
+                url = t
+            i += 1
+        return WebAction("request", url=url, method=method, body=body,
+                         headers=headers or {}) if url else None
+
     def run(self, command: str, target: str | None = None, agent: str = "strategist"):
         """Run a command through the gate/cage, record it, and surface the key
         results. Returns (decision, result, new_highlights). `agent` attributes the
@@ -420,6 +455,35 @@ class AssistSession:
         command = self._session_auth_for(command)       # authenticated exploitation
         decision, result = self.executor.run(command, target or self.target,
                                              agent=agent)
+        # Auto-route a web request the shell gate rejected for a metacharacter ('&' in
+        # form data, ';'/'|' in an injection payload) to the GOVERNED WEB path — same
+        # scope+scheme gate, but the payload rides the HTTP client, never a shell. This
+        # lets authenticated form/injection testing actually run without touching the
+        # gate (invariant 1). Only for curl/wget web requests, only on hard:injection.
+        if (result is None and getattr(decision, "layer", "") == "hard:injection"
+                and self.browser is not None):
+            wa = self._curl_to_web_action(command)
+            if wa is not None:
+                wdec, wres = self.browser.run(wa, agent=agent)
+                if wres is not None:
+                    self.executed_cmds.append(command)
+                    self.notes.append(
+                        f"[reroute] shell request blocked (shell metacharacter) → ran as "
+                        f"a governed WEB {wa.method} instead:\n{wa.describe()} "
+                        f"→ status={wres.status}")
+                    body = wres.body or ""
+                    from . import webprobe
+                    new_hl = highlight_findings(body)
+                    for _s, _l, _ln in (list(webprobe.scan_output(body))
+                                        + list(webprobe.scan_exposures(body))):
+                        self._record_vuln_finding(command, _s, _l, _ln)
+                        h = (f"vuln/{_s}", f"{_l}: {_ln}")
+                        if h not in new_hl:
+                            new_hl.append(h)
+                    self.highlights.extend(h for h in new_hl if h not in self.highlights)
+                    self._advance_plan()
+                    from .kali import ExecResult
+                    return wdec, ExecResult(command, 0, body, ""), new_hl
         return self._absorb_shell(command, decision, result)
 
     def plan_context(self) -> str:

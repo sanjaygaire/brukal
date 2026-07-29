@@ -215,3 +215,40 @@ def test_bearer_session_injected_into_shell_tools():
     out = s._session_auth_for("sqlmap -u http://10.10.10.5/api/x")
     assert out == "sqlmap -u http://10.10.10.5/api/x -H 'Authorization: Bearer eyJ.aaa.bbb-ccc_ddd'"
     assert "-H 'Authorization: Bearer" in s._session_auth_for("ffuf -u http://10.10.10.5/FUZZ")
+
+
+# --- denied web-request payloads auto-route to the governed WEB path --------
+
+class _EchoCage:
+    """Echoes the request so an 'injected' payload's effect is visible — stands in
+    for a target that reflects/executes the payload."""
+    def run(self, action: WebAction) -> WebResult:
+        return WebResult(status=200, url=action.url,
+                         body=f"[{action.method}] body={action.body}\nuid=0(root) gid=0(root)")
+
+
+def test_curl_to_web_action_parses_method_url_body_headers():
+    sess, _b = _session()
+    wa = sess._curl_to_web_action(
+        "curl -s -X POST -d 'a=1&b=2' -H 'X-Foo: bar' http://10.10.10.5/x")
+    assert wa.method == "POST" and wa.url == "http://10.10.10.5/x"
+    assert wa.body == "a=1&b=2" and wa.headers.get("X-Foo") == "bar"
+    # a non-curl command doesn't translate
+    assert sess._curl_to_web_action("nmap -sV 10.10.10.5") is None
+
+
+def test_denied_injection_payload_reroutes_and_runs_via_web():
+    sess, _b = _session(_EchoCage())
+    # ';' in a command-injection payload -> shell gate DENIES the raw command
+    dec, result, hl = sess.run(
+        "curl -X POST -d 'ip=127.0.0.1;whoami' http://10.10.10.5/vuln/exec")
+    # ...but it ran through the governed WEB path instead, no shell involved
+    assert result is not None and "uid=0(root)" in result.stdout
+    assert any("reroute" in n.lower() for n in sess.notes)
+
+
+def test_reroute_only_on_injection_not_scope():
+    sess, browser = _session(_EchoCage())
+    # an OUT-OF-SCOPE curl is denied hard:scope — must NOT reroute (stays denied)
+    dec, result, hl = sess.run("curl -d 'x=1&y=2' http://8.8.8.8/x")
+    assert result is None                                # not rerouted; scope wins
