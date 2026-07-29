@@ -214,6 +214,9 @@ class AssistSession:
                 "CAGE TOOLS INSTALLED (use ONLY these exact names; anything NOT listed "
                 "is NOT installed — never invent a module/script path for it, pick an "
                 "installed alternative):\n" + ", ".join(self.cage_tools))
+        if self._ad_detected():
+            from . import adscan
+            parts.append(adscan.METHODOLOGY)
         if self.methodology is not None:
             parts.append(self.methodology.checklist_text())
         if self.lessons is not None:
@@ -271,6 +274,15 @@ class AssistSession:
             ph = f"[{st.phase}] " if st.phase else ""
             lines.append(f"{i + 1}. [{mark}] {ph}{st.text}")
         return "\n".join(lines)
+
+    def _ad_detected(self) -> bool:
+        """True if the recon so far shows a Windows/AD host (SMB/LDAP/Kerberos), so the
+        planner gets the AD methodology and the AD detector's findings are relevant."""
+        blob = " ".join(l for _t, l in self.highlights[-40:]) + " " + " ".join(self.notes[-8:])
+        return bool(re.search(
+            r"\b(?:445|389|88|636|3268|5985)/tcp\s+open|microsoft-ds|active directory|"
+            r"\bkerberos\b|\bldap\b|domain controller|smb signing|netbios-ssn|\bnxc\b|"
+            r"netexec|enum4linux", blob, re.I))
 
     def _highlights_text(self) -> str:
         base = "\n".join(f"{t}: {l}" for t, l in self.highlights) if self.highlights else ""
@@ -531,6 +543,15 @@ class AssistSession:
             # payloads and technique names ("PostgreSQL AND error-based") that trip the
             # content signatures and manufacture false findings, so we never run the
             # raw-response detector on scanner output — scan_output above owns those.
+            # Active Directory / internal: scan AD/SMB/Kerberos tool output for attack
+            # indicators (roast hashes, SMB signing, null session, Pwn3d!, MS17-010, ...).
+            from . import adscan
+            if adscan.is_ad_tool(command):
+                for _sev, _label, _line in adscan.scan_ad_output(raw):
+                    h = (f"ad/{_sev}", f"{_label}: {_line}")
+                    if h not in new_hl:
+                        new_hl.append(h)
+                    self._record_ad_finding(command, _sev, _label, _line)
             exposures = webprobe.scan_exposures(raw) if _is_raw_fetch(command) else []
             for _sev, _label, _line in exposures:
                 h = (f"exposure/{_sev}", f"{_label}: {_line}")
@@ -716,6 +737,28 @@ class AssistSession:
         "Directory listing enabled", "phpinfo() exposed",
         "Apache server-status exposed", "Stack trace / debug info disclosure",
     }
+
+    # AD findings that are proof by construction — the tool captured/achieved it.
+    _CONFIRMED_AD_LABELS = {
+        "Local admin / host compromised", "MS17-010 (EternalBlue) vulnerable",
+        "Zerologon (CVE-2020-1472) vulnerable", "Kerberoastable account (TGS hash captured)",
+        "AS-REP roastable account (hash captured)", "NTLM hash dumped (secretsdump)",
+        "Machine account hash / NTLM secret dumped", "Valid domain credentials",
+        "LAPS password readable", "Readable gMSA password",
+        "Null / anonymous SMB session allowed", "SMB signing not required (NTLM relay)",
+        "Password in an AD object description",
+    }
+
+    def _record_ad_finding(self, command: str, sev: str, label: str, line: str) -> None:
+        """Record one Active Directory attack indicator from real tool output. The target
+        is the IP in the command (a DC/host), not the web target. Definitive results
+        (a captured hash, Pwn3d!, valid creds, a named CVE) are CONFIRMED."""
+        from .findings import Finding
+        m = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", command)
+        target = m.group(1) if m else self.target
+        self.findings.add(Finding(
+            title=label, severity=sev, target=target, evidence=line, source=command,
+            category="active-directory", confirmed=label in self._CONFIRMED_AD_LABELS))
 
     def _record_vuln_finding(self, command: str, sev: str, label: str, line: str) -> None:
         """Turn one vuln SIGNAL from real output into a structured, deduplicated
