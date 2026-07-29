@@ -390,13 +390,22 @@ class GovernedBrowser:
         self._hits = deque()                   # timestamps, for the rate limit
         self.current_url = ""                  # set only by a gated, successful navigate
         self._cookies: dict = {}               # session cookie jar (name -> value)
+        self.auth_header: str = ""             # e.g. "Bearer <jwt>" / "Basic <b64>" (token/basic auth)
 
     def _apply_cookies(self, action: "WebAction") -> None:
-        """Attach the session jar to an outgoing request so authenticated pages are
-        reachable after a login. Never overrides a Cookie the caller set explicitly."""
-        if self._cookies and not any(k.lower() == "cookie" for k in (action.headers or {})):
-            jar = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
-            action.headers = {**(action.headers or {}), "Cookie": jar}
+        """Attach the session to an outgoing request so authenticated pages are reachable
+        after a login — cookies for cookie sessions, an Authorization header for
+        token/bearer/basic auth. Real-world apps use one or the other (or both); this
+        carries whichever the login produced. Never overrides a value the caller set."""
+        hdrs = action.headers or {}
+        have = {k.lower() for k in hdrs}
+        add = {}
+        if self._cookies and "cookie" not in have:
+            add["Cookie"] = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
+        if self.auth_header and "authorization" not in have:
+            add["Authorization"] = self.auth_header
+        if add:
+            action.headers = {**hdrs, **add}
 
     def _absorb_cookies(self, result) -> None:
         """Fold any Set-Cookie from the response into the jar, so the session persists

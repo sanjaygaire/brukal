@@ -376,27 +376,40 @@ class AssistSession:
 
     # -- doing / recording (persisted to the vault) ------------------------- #
 
-    def _session_cookie_for(self, command: str) -> str:
-        """When authenticated, give a shell WEB tool the session cookie so it can test
-        pages BEHIND the login (sqlmap/curl/ffuf/... otherwise run unauthenticated).
-        Only when the cookie string carries NO shell metacharacter — a single session
-        cookie, the common case — because the gate rejects ';' in a raw command
-        (invariant 1, unchanged); a multi-cookie session must use WEB actions, which
-        carry the jar natively. The gate still re-reads and governs the result."""
+    def _session_auth_for(self, command: str) -> str:
+        """When authenticated, give a shell WEB tool the session so it can test pages
+        BEHIND the login (sqlmap/curl/ffuf/... otherwise run unauthenticated). Carries
+        whichever auth the login produced: a bearer/basic Authorization HEADER (token
+        APIs) or a session COOKIE. Only when the injected value has NO shell metacharacter
+        (a single cookie / a token — the common case), because the gate rejects ';'/'&'
+        in a raw command (invariant 1, unchanged); anything richer uses WEB actions,
+        which carry the session natively. The gate still re-reads and governs the result."""
         if not self.authenticated or self.browser is None or "http" not in command:
             return command
+        tool = _tool_of(command)
+        # Already carrying auth? (NB: not -u/--user — sqlmap's -u is the target URL.)
+        if re.search(r"(?:^|\s)(?:-b|--cookie|--cookie-string|-c|-H|--header)\b"
+                     r"|Cookie:|Authorization:", command, re.I):
+            return command
+        # Reject only what would break out of the quoted arg or trip the gate: the
+        # shell metacharacters (;|&`<>$) plus our single-quote wrapper. Spaces/colons
+        # are fine inside '...' (a Bearer header has them).
+        _bad = "'\";&|`$<>\n\r"
+        # token / bearer / basic session -> Authorization header
+        ah = getattr(self.browser, "auth_header", "") or ""
+        if ah and not any(c in ah for c in _bad):
+            tmpl = _HEADER_INJECT.get(tool)
+            if tmpl:
+                return f"{command} {tmpl.replace('{H}', 'Authorization: ' + ah)}"
+        # cookie session
         jar = getattr(self.browser, "_cookies", {}) or {}
-        if not jar:
-            return command
-        cookies = "; ".join(f"{k}={v}" for k, v in jar.items())
-        if any(c in cookies for c in ";|&`$<>() "):     # can't pass the shell gate
-            return command
-        tmpl = _COOKIE_INJECT.get(_tool_of(command))
-        if not tmpl:
-            return command
-        if re.search(r"(?:^|\s)(?:-b|--cookie|--cookie-string|-c)\b|Cookie:", command, re.I):
-            return command                              # already carrying a cookie
-        return f"{command} {tmpl.replace('{C}', cookies)}"
+        if jar:
+            cookies = "; ".join(f"{k}={v}" for k, v in jar.items())
+            if not any(c in cookies for c in _bad):
+                tmpl = _COOKIE_INJECT.get(tool)
+                if tmpl:
+                    return f"{command} {tmpl.replace('{C}', cookies)}"
+        return command
 
     def run(self, command: str, target: str | None = None, agent: str = "strategist"):
         """Run a command through the gate/cage, record it, and surface the key
@@ -404,7 +417,7 @@ class AssistSession:
         action to a role (recon/exploit/verify in multi-agent mode) so the gate's
         per-agent trust modulates its soft-risk score — it never changes the hard
         checks or the single execution path."""
-        command = self._session_cookie_for(command)     # authenticated exploitation
+        command = self._session_auth_for(command)       # authenticated exploitation
         decision, result = self.executor.run(command, target or self.target,
                                              agent=agent)
         return self._absorb_shell(command, decision, result)
@@ -772,27 +785,67 @@ class AssistSession:
                               [("site-map", head)])
         return surface
 
+    @staticmethod
+    def _extract_token(body: str) -> str:
+        """Pull a bearer/JWT/session token out of a login response body — how token
+        (non-cookie) APIs authenticate. Handles a top-level or one-level-nested JSON
+        token field, with a regex fallback for non-JSON bodies. Real-world key names."""
+        if not body:
+            return ""
+        keys = ("access_token", "accessToken", "id_token", "idToken", "token",
+                "jwt", "authToken", "auth_token", "session_token", "sessionToken")
+        try:
+            import json as _json
+            d = _json.loads(body)
+            stack = [d]
+            while stack:
+                cur = stack.pop()
+                if isinstance(cur, dict):
+                    for k in keys:
+                        v = cur.get(k)
+                        if isinstance(v, str) and len(v) >= 12:
+                            return v
+                    stack.extend(v for v in cur.values() if isinstance(v, dict))
+        except Exception:
+            pass
+        m = re.search(r'"?(?:access_?token|id_?token|token|jwt)"?\s*[:=]\s*"?'
+                      r'([A-Za-z0-9._~+/-]{16,})"?', body, re.I)
+        return m.group(1) if m else ""
+
     def login(self, login_url: str, username: str, password: str,
               user_field: str = "username", pass_field: str = "password",
-              extra_fields: dict | None = None) -> bool:
-        """Authenticate to a form login THROUGH the governed browser, so the crawl and
-        every later web action run WITH the session — this is how Brukal tests pages
-        behind a login. Operator-supplied credentials only. The browser's cookie jar
-        carries the session; hidden/submit form fields (incl. a CSRF token like DVWA's
-        user_token) are read off the login page and echoed back. The gate is untouched —
-        each request still passes check_web (scope + scheme); the '&'-laden body goes
-        through the HTTP client, never a shell. Returns True if we appear authenticated.
-        """
+              extra_fields: dict | None = None, login_type: str = "form") -> bool:
+        """Authenticate to a web app THROUGH the governed browser so the crawl and every
+        later web action run WITH the session. Handles the real-world spread rather than
+        one platform:
+          - form  (default): POST url-encoded form data; reads the login page's hidden/
+                    submit fields (CSRF tokens etc.) and echoes them back. Cookie session.
+          - json  : POST a JSON body {user_field, pass_field, ...}; extracts a bearer/JWT
+                    token from the JSON response (token/access_token/...). Token session.
+          - basic : HTTP Basic — no request; sets Authorization: Basic base64(user:pass).
+        Cookie sessions AND token/bearer/basic auth are propagated (see GovernedBrowser).
+        Gate untouched — each request passes check_web (scope+scheme), never a shell.
+        Returns True if we appear authenticated."""
+        import base64
         from urllib.parse import urlencode
 
         from .web import WebAction
         if self.browser is None:
             self.notes.append("[login] no governed browser wired — cannot authenticate.")
             return False
-        # 1) GET the login page: seeds the session cookie + carries CSRF/submit fields.
+        lt = (login_type or "form").lower()
+
+        if lt == "basic":                          # HTTP Basic — no request needed
+            tok = base64.b64encode(f"{username}:{password}".encode()).decode()
+            self.browser.auth_header = f"Basic {tok}"
+            self.authenticated = True
+            self.notes.append(f"[login] HTTP Basic as {username} → Authorization header set")
+            return True
+
+        # 1) GET the login endpoint: seeds a cookie session + (form) carries CSRF/submit.
         _d, res = self.browser.run(WebAction("request", url=login_url, method="GET"))
         carried: dict = {}
-        if res is not None and res.body:
+        if lt == "form" and res is not None and res.body:
             for tag in re.finditer(r"<input\b[^>]*>", res.body, re.I):
                 t = tag.group(0)
                 typ = (re.search(r'type=["\']?([\w-]+)', t, re.I) or [None, "text"])[1].lower()
@@ -800,15 +853,28 @@ class AssistSession:
                 vl = re.search(r'value=["\']([^"\']*)["\']', t, re.I)
                 if nm and typ in ("hidden", "submit") and nm.group(1) not in (user_field, pass_field):
                     carried[nm.group(1)] = vl.group(1) if vl else ""
-        # 2) POST the credentials (+ carried tokens/submit + operator extras).
-        form = {user_field: username, pass_field: password, **carried, **(extra_fields or {})}
+
+        # 2) POST the credentials — JSON body for an API login, else url-encoded form.
+        if lt == "json":
+            import json as _json
+            body = _json.dumps({user_field: username, pass_field: password, **(extra_fields or {})})
+            ctype = "application/json"
+        else:
+            form = {user_field: username, pass_field: password, **carried, **(extra_fields or {})}
+            body, ctype = urlencode(form), "application/x-www-form-urlencoded"
         _d2, res2 = self.browser.run(WebAction(
-            "request", url=login_url, method="POST", body=urlencode(form),
-            headers={"Content-Type": "application/x-www-form-urlencoded"}))
-        # 3) Heuristic auth check: a successful form login redirects AWAY from the login
-        #    page, or the response no longer contains the password field.
-        ok = False
-        if res2 is not None:
+            "request", url=login_url, method="POST", body=body,
+            headers={"Content-Type": ctype}))
+
+        # 3) A token (bearer/JWT) session: extract it and carry it as Authorization.
+        token = self._extract_token(res2.body if res2 is not None else "")
+        if token:
+            self.browser.auth_header = f"Bearer {token}"
+
+        # 4) Confirm: a token, OR a redirect away from the login page, OR the response no
+        #    longer shows the password field (cookie session established).
+        ok = bool(token)
+        if not ok and res2 is not None:
             hdrs = res2.headers or {}
             loc = hdrs.get("Location", "") or hdrs.get("location", "")
             redirected_away = (res2.status in (301, 302, 303, 307, 308)
@@ -817,10 +883,10 @@ class AssistSession:
             ok = bool(redirected_away or no_login_form)
         self.authenticated = ok
         jar = len(getattr(self.browser, "_cookies", {}) or {})
+        how = "bearer token" if token else f"{jar} cookie(s)"
         self.notes.append(
-            f"[login] {login_url} as {username} → "
-            f"{'AUTHENTICATED' if ok else 'login may have FAILED — check creds/field names'} "
-            f"(session cookies held: {jar})")
+            f"[login] {login_url} as {username} ({lt}) → "
+            f"{'AUTHENTICATED via ' + how if ok else 'login may have FAILED — check creds/field names/type'}")
         return ok
 
     def learn(self, query: str) -> str:
@@ -2121,6 +2187,13 @@ _COOKIE_INJECT = {
     "nuclei": "-H 'Cookie: {C}'", "nikto": "-H 'Cookie: {C}'", "dirb": "-H 'Cookie: {C}'",
     "wpscan": "--cookie-string '{C}'", "dirsearch": "--cookie '{C}'",
 }
+# How each web tool takes an arbitrary header, for a bearer/basic Authorization session
+# (token APIs). `{H}` is the full header line "Authorization: Bearer <token>".
+_HEADER_INJECT = {
+    "curl": "-H '{H}'", "sqlmap": "-H '{H}'", "ffuf": "-H '{H}'", "nuclei": "-H '{H}'",
+    "gobuster": "-H '{H}'", "feroxbuster": "-H '{H}'", "wget": "--header='{H}'",
+    "dirsearch": "-H '{H}'", "wfuzz": "-H '{H}'", "httpie": "'{H}'",
+}
 
 # Pure path-discovery scanners: they only tell you a path "exists". On a soft-404 host
 # (200 for everything) that verdict is meaningless, so their findings are downgraded.
@@ -2311,7 +2384,8 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     if login and login.get("url") and session.browser is not None:
         ok = session.login(login["url"], login.get("user", ""), login.get("password", ""),
                            user_field=login.get("user_field", "username"),
-                           pass_field=login.get("pass_field", "password"))
+                           pass_field=login.get("pass_field", "password"),
+                           login_type=login.get("type", "form"))
         _emit(console, f"  {'✓ authenticated' if ok else '⚠ login failed'} at {login['url']}")
     return session, audit, target, cage
 

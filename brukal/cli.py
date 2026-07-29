@@ -186,6 +186,9 @@ def _add_login_args(p) -> None:
                    help="username form-field name (default: username)")
     p.add_argument("--login-field-pass", default="password", metavar="NAME",
                    help="password form-field name (default: password)")
+    p.add_argument("--login-type", default="form", choices=["form", "json", "basic"],
+                   help="auth type: form (default), json (API login → bearer token), "
+                        "or basic (HTTP Basic)")
 
 
 def _login_from_args(args):
@@ -196,7 +199,8 @@ def _login_from_args(args):
     return {"url": url, "user": getattr(args, "login_user", "") or "",
             "password": getattr(args, "login_pass", "") or "",
             "user_field": getattr(args, "login_field_user", "username"),
-            "pass_field": getattr(args, "login_field_pass", "password")}
+            "pass_field": getattr(args, "login_field_pass", "password"),
+            "type": getattr(args, "login_type", "form")}
 
 
 def _resolve_scope(scope_arg):

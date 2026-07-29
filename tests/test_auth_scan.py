@@ -137,30 +137,81 @@ def _authed_session(cookies):
 
 def test_single_session_cookie_injected_into_shell_web_tools():
     s = _authed_session({"PHPSESSID": "abc123"})
-    assert s._session_cookie_for("sqlmap -u http://10.10.10.5/x?id=1") == \
+    assert s._session_auth_for("sqlmap -u http://10.10.10.5/x?id=1") == \
         "sqlmap -u http://10.10.10.5/x?id=1 --cookie='PHPSESSID=abc123'"
-    assert "-b 'PHPSESSID=abc123'" in s._session_cookie_for("curl -s http://10.10.10.5/x")
+    assert "-b 'PHPSESSID=abc123'" in s._session_auth_for("curl -s http://10.10.10.5/x")
     # already carrying a cookie -> untouched
-    assert s._session_cookie_for("curl -b 'X=1' http://10.10.10.5/x") == \
+    assert s._session_auth_for("curl -b 'X=1' http://10.10.10.5/x") == \
         "curl -b 'X=1' http://10.10.10.5/x"
     # non-web tool / unknown tool -> untouched
-    assert s._session_cookie_for("nmap -sV 10.10.10.5") == "nmap -sV 10.10.10.5"
+    assert s._session_auth_for("nmap -sV 10.10.10.5") == "nmap -sV 10.10.10.5"
 
 
 def test_multi_cookie_not_injected_would_break_the_gate():
     # Two cookies -> the '; ' separator would trip the injection guard, so we DON'T
     # inject (multi-cookie sessions must use WEB actions). Gate stays untouched.
     s = _authed_session({"PHPSESSID": "abc", "security": "low"})
-    assert s._session_cookie_for("sqlmap -u http://10.10.10.5/x") == "sqlmap -u http://10.10.10.5/x"
+    assert s._session_auth_for("sqlmap -u http://10.10.10.5/x") == "sqlmap -u http://10.10.10.5/x"
 
 
 def test_unauthenticated_session_injects_nothing():
     s = _authed_session({"PHPSESSID": "abc123"})
     s.authenticated = False
-    assert s._session_cookie_for("curl http://10.10.10.5/x") == "curl http://10.10.10.5/x"
+    assert s._session_auth_for("curl http://10.10.10.5/x") == "curl http://10.10.10.5/x"
 
 
 def test_planner_reference_announces_authenticated_session():
     s = _authed_session({"PHPSESSID": "abc123"})
     ref = s._reference("")
     assert "AUTHENTICATED SESSION ACTIVE" in ref and "do not log in again" in ref.lower()
+
+
+# --- generalized auth: JSON/token APIs, bearer, HTTP basic (not just forms) -
+
+class _JsonApiCage:
+    """A token API: POST /api/login with JSON creds returns {access_token: JWT};
+    a protected endpoint returns data only with the right Bearer header."""
+    def run(self, action: WebAction) -> WebResult:
+        if action.kind == "request" and action.method == "POST" and "login" in action.url:
+            if '"password": "secret"' in (action.body or "") or '"password":"secret"' in (action.body or ""):
+                return WebResult(status=200, url=action.url,
+                                 body='{"access_token":"eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIG","ok":true}')
+            return WebResult(status=401, url=action.url, body='{"error":"bad creds"}')
+        if (action.headers or {}).get("Authorization") == "Bearer eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIG":
+            return WebResult(status=200, url=action.url, body='{"secret":"admin data"}')
+        return WebResult(status=401, url=action.url, body='{"error":"unauthorized"}')
+
+
+def test_extract_token_from_various_json_shapes():
+    from brukal.assist import AssistSession
+    E = AssistSession._extract_token
+    assert E('{"access_token":"abcdefghijkl123"}') == "abcdefghijkl123"
+    assert E('{"data":{"token":"nested-tok-abcdefgh"}}') == "nested-tok-abcdefgh"
+    assert E('{"jwt": "eyJ.aaaa.bbbb-cccc_dddd"}') == "eyJ.aaaa.bbbb-cccc_dddd"
+    assert E('{"user":"x","role":"admin"}') == ""        # no token field
+    assert E("not json but token=deadbeefcafebabe123 here") == "deadbeefcafebabe123"
+
+
+def test_json_login_extracts_bearer_and_propagates_it():
+    sess, browser = _session(_JsonApiCage())
+    ok = sess.login("http://10.10.10.5/api/login", "admin", "secret", login_type="json")
+    assert ok and sess.authenticated
+    assert browser.auth_header == "Bearer eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIG"
+    # a later web action carries the bearer header -> protected data
+    a = WebAction("request", url="http://10.10.10.5/api/me", method="GET")
+    _d, res = browser.run(a)
+    assert res.status == 200 and "admin data" in res.body
+
+
+def test_basic_auth_sets_header_without_a_request():
+    sess, browser = _session(_JsonApiCage())
+    ok = sess.login("http://10.10.10.5/", "admin", "pw", login_type="basic")
+    assert ok and browser.auth_header.startswith("Basic ")
+
+
+def test_bearer_session_injected_into_shell_tools():
+    s = _authed_session({})
+    s.browser.auth_header = "Bearer eyJ.aaa.bbb-ccc_ddd"
+    out = s._session_auth_for("sqlmap -u http://10.10.10.5/api/x")
+    assert out == "sqlmap -u http://10.10.10.5/api/x -H 'Authorization: Bearer eyJ.aaa.bbb-ccc_ddd'"
+    assert "-H 'Authorization: Bearer" in s._session_auth_for("ffuf -u http://10.10.10.5/FUZZ")
