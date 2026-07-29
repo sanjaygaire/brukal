@@ -45,6 +45,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         jadx apktool aapt \
     && rm -rf /var/lib/apt/lists/*
 
+# Cloud (AWS/Azure/GCP) recon: awscli + s3 tooling. Bucket listing / IMDS-via-SSRF work
+# with curl on any cage; these give first-class cloud enumeration once installed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        awscli s3cmd \
+    && rm -rf /var/lib/apt/lists/*
+
 # Least-privilege raw-socket scanning: grant the capability to the nmap binary ONLY,
 # so SYN/service/OS scans work without privileging the whole container.
 RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip "$(command -v nmap)"

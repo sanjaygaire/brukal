@@ -217,6 +217,9 @@ class AssistSession:
         if self._ad_detected():
             from . import adscan
             parts.append(adscan.METHODOLOGY)
+        if self._cloud_detected():
+            from . import cloudscan
+            parts.append(cloudscan.METHODOLOGY)
         if self.methodology is not None:
             parts.append(self.methodology.checklist_text())
         if self.lessons is not None:
@@ -283,6 +286,15 @@ class AssistSession:
             r"\b(?:445|389|88|636|3268|5985)/tcp\s+open|microsoft-ds|active directory|"
             r"\bkerberos\b|\bldap\b|domain controller|smb signing|netbios-ssn|\bnxc\b|"
             r"netexec|enum4linux", blob, re.I))
+
+    def _cloud_detected(self) -> bool:
+        """True if a cloud asset has been seen (a cloud fingerprint, bucket URL, cloud
+        CNAME/host, or metadata endpoint), so the planner gets the cloud methodology."""
+        blob = " ".join(l for _t, l in self.highlights[-40:]) + " " + " ".join(self.notes[-8:])
+        return bool(re.search(
+            r"amazonaws\.com|s3\b|blob\.core\.windows|storage\.googleapis|cloudfront|"
+            r"\bx-amz-|x-ms-request-id|x-goog-|169\.254\.169\.254|AmazonS3|azurewebsites|"
+            r"\bAKIA[0-9A-Z]{16}\b|service_account", blob, re.I))
 
     def _highlights_text(self) -> str:
         base = "\n".join(f"{t}: {l}" for t, l in self.highlights) if self.highlights else ""
@@ -552,6 +564,15 @@ class AssistSession:
                     if h not in new_hl:
                         new_hl.append(h)
                     self._record_ad_finding(command, _sev, _label, _line)
+            # Cloud / infrastructure: scan cloud recon output (HTTP or CLI) for public
+            # storage, IMDS/SSRF creds, leaked cloud secrets, over-permissive IAM.
+            from . import cloudscan
+            if cloudscan.is_cloud_tool(command):
+                for _sev, _label, _line in cloudscan.scan_cloud_output(raw):
+                    h = (f"cloud/{_sev}", f"{_label}: {_line}")
+                    if h not in new_hl:
+                        new_hl.append(h)
+                    self._record_cloud_finding(command, _sev, _label, _line)
             exposures = webprobe.scan_exposures(raw) if _is_raw_fetch(command) else []
             for _sev, _label, _line in exposures:
                 h = (f"exposure/{_sev}", f"{_label}: {_line}")
@@ -759,6 +780,18 @@ class AssistSession:
         self.findings.add(Finding(
             title=label, severity=sev, target=target, evidence=line, source=command,
             category="active-directory", confirmed=label in self._CONFIRMED_AD_LABELS))
+
+    def _record_cloud_finding(self, command: str, sev: str, label: str, line: str) -> None:
+        """Record one cloud/infra finding. Target = the bucket/host/URL in the command
+        if present, else the engagement target. Definitive results (a leaked SA key, a
+        listable bucket, IMDS creds, a live ARN) are CONFIRMED."""
+        from . import cloudscan
+        from .findings import Finding
+        m = re.search(r"https?://[^\s\"']+", command)
+        target = m.group(0) if m else self.target
+        self.findings.add(Finding(
+            title=label, severity=sev, target=target, evidence=line, source=command,
+            category="cloud", confirmed=label in cloudscan.CONFIRMED_CLOUD_LABELS))
 
     def _record_vuln_finding(self, command: str, sev: str, label: str, line: str) -> None:
         """Turn one vuln SIGNAL from real output into a structured, deduplicated
