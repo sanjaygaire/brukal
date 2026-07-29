@@ -328,3 +328,53 @@ def test_confirm_surface_probes_discovered_params():
     assert n == 1
     assert any(f.title == "SQL injection (boolean-based)" and f.confirmed
                for f in sess.findings.all())
+
+
+# --- extended vuln confirmation: cmdi / LFI / SSTI / open redirect ----------
+
+def _pcage(fn):
+    """Build a session over a cage whose response body is fn(param_value)."""
+    class _C:
+        def run(self, a):
+            from urllib.parse import parse_qsl, urlsplit
+            q = dict(parse_qsl(urlsplit(a.url).query))
+            val = q.get("p", "") or (a.body or "")
+            return WebResult(status=200, url=a.url, body=fn(val), headers={})
+    return _session(_C())[0]
+
+def test_confirm_cmdi():
+    # a vulnerable endpoint runs the injected command after the separator
+    def vuln(v):
+        return "ping output... uid=33(www-data) gid=33(www-data) groups=33" if "id" in v else "ping"
+    sess = _pcage(vuln)
+    assert sess.confirm_cmdi("http://10.10.10.5/exec?p=1", "p") is True
+    assert any(f.title == "OS command injection" and f.confirmed for f in sess.findings.all())
+
+def test_confirm_lfi():
+    def vuln(v):
+        return "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:" if "passwd" in v else "home page"
+    sess = _pcage(vuln)
+    assert sess.confirm_lfi("http://10.10.10.5/fi?p=include.php", "p") is True
+
+def test_confirm_ssti():
+    def vuln(v):
+        import re as _r
+        m = _r.fullmatch(r"[{$#<%= ]*?(\d+)\*(\d+)[}>%= ]*", v.strip())
+        return f"result: {int(m.group(1))*int(m.group(2))}" if m else "hello"
+    sess = _pcage(vuln)
+    assert sess.confirm_ssti("http://10.10.10.5/greet?p=x", "p") is True
+
+def test_confirm_open_redirect_via_location_header():
+    class _R:
+        def run(self, a):
+            from urllib.parse import parse_qsl, urlsplit
+            dest = dict(parse_qsl(urlsplit(a.url).query)).get("next","")
+            return WebResult(status=302, url=a.url, headers={"Location": dest}, body="")
+    sess, _b = _session(_R())
+    assert sess.confirm_open_redirect("http://10.10.10.5/go?next=/home", "next") is True
+
+def test_confirmations_negative_on_safe_endpoint():
+    sess = _pcage(lambda v: "<html>static, safe, no eval, no file</html>")
+    assert not sess.confirm_cmdi("http://10.10.10.5/x?p=1","p")
+    assert not sess.confirm_lfi("http://10.10.10.5/x?p=1","p")
+    assert not sess.confirm_ssti("http://10.10.10.5/x?p=1","p")

