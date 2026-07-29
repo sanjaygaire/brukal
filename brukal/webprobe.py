@@ -166,6 +166,16 @@ _EXPOSURES = (
      "critical", "Private key exposed"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "critical", "AWS access key exposed"),
     (re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b"), "critical", "Slack token exposed"),
+    (re.compile(r"\bghp_[0-9A-Za-z]{36}\b|\bgithub_pat_[0-9A-Za-z_]{20,}\b"),
+     "critical", "GitHub token exposed"),
+    (re.compile(r"\bglpat-[0-9A-Za-z_-]{20}\b"), "critical", "GitLab token exposed"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "critical", "Google API key exposed"),
+    (re.compile(r"\bsk_live_[0-9A-Za-z]{16,}\b"), "critical", "Stripe live secret key exposed"),
+    (re.compile(r"\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?|redis|amqp)://"
+                r"[^\s:@/]+:[^\s:@/]+@[^\s/]+"), "critical", "DB/service credentials in URI"),
+    (re.compile(r"\bSG\.[0-9A-Za-z_-]{22}\.[0-9A-Za-z_-]{43}\b"),
+     "critical", "SendGrid API key exposed"),
+    (re.compile(r"\b169\.254\.169\.254\b"), "medium", "Cloud metadata endpoint referenced"),
     (re.compile(r"repositoryformatversion\s*=", re.I), "high", "Exposed .git repository"),
     (re.compile(r"^ref:\s*refs/heads/", re.I | re.M), "high", "Exposed .git repository"),
     (re.compile(r"(?im)^\s*(?:DB_PASSWORD|DATABASE_URL|SECRET_KEY|APP_KEY|API_KEY|"

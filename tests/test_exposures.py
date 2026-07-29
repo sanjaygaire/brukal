@@ -230,3 +230,28 @@ def test_soft404_downgraded_finding_is_not_confirmed():
                               "medium", "Directory listing enabled", "Index of /")
     f = _find(sess, "Directory listing enabled")
     assert f.severity == "info" and f.confirmed is False
+
+
+# --- broadened real-world secret coverage -----------------------------------
+
+def test_broadened_secret_signatures():
+    from brukal import webprobe
+    cases = {
+        "ghp_0123456789abcdefghijklmnopqrstuvwxyz": "GitHub token exposed",
+        "glpat-abcdefghij1234567890": "GitLab token exposed",
+        "AIzaSyD" + "a" * 32: "Google API key exposed",
+        "sk_live_0123456789abcdefghij": "Stripe live secret key exposed",
+        "postgres://admin:s3cr3t@db.internal:5432/app": "DB/service credentials in URI",
+    }
+    for blob, label in cases.items():
+        labels = [l for _s, l, _e in webprobe.scan_exposures(blob)]
+        assert label in labels, (blob, labels)
+    # ordinary HTML still clean
+    assert webprobe.scan_exposures("<html>welcome to the shop</html>") == []
+
+
+def test_leaked_cloud_and_vcs_secrets_are_confirmed_critical():
+    sess = _session("config: github_token=ghp_0123456789abcdefghijklmnopqrstuvwxyz")
+    sess.run("curl -s http://10.10.10.5/.env")
+    f = next((f for f in sess.findings.all() if f.title == "GitHub token exposed"), None)
+    assert f is not None and f.severity == "critical" and f.confirmed is True

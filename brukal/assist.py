@@ -709,6 +709,9 @@ class AssistSession:
     # JWTs and API schemas stay CANDIDATE — an error/token isn't proof of a bug on its own.
     _SELF_EVIDENT_EXPOSURES = {
         "Private key exposed", "AWS access key exposed", "Slack token exposed",
+        "GitHub token exposed", "GitLab token exposed", "Google API key exposed",
+        "Stripe live secret key exposed", "SendGrid API key exposed",
+        "DB/service credentials in URI",
         "Exposed .git repository", "Secret in exposed env/config",
         "Directory listing enabled", "phpinfo() exposed",
         "Apache server-status exposed", "Stack trace / debug info disclosure",
