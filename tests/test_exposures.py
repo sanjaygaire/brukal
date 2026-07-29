@@ -189,3 +189,44 @@ def test_local_injection_still_steers_to_session():
     sess.run("cat /tmp/dump/config && grep pass /tmp/dump/config")   # local chain
     last = sess.notes[-1].lower()
     assert "session" in last and "web action" not in last
+
+
+# --- auto-confirm: self-evident exposures become CONFIRMED, not just candidate ---
+
+def _find(sess, title):
+    return next((f for f in sess.findings.all() if f.title == title), None)
+
+def test_self_evident_exposures_are_confirmed():
+    sess = _session("-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbn...")
+    sess.run("curl -s http://10.10.10.5/id_rsa")
+    assert _find(sess, "Private key exposed").confirmed is True
+
+    sess2 = _session("<html><title>Index of /backup</title>")
+    sess2.run("curl -s http://10.10.10.5/backup/")
+    assert _find(sess2, "Directory listing enabled").confirmed is True
+
+    sess3 = _session("[core]\nrepositoryformatversion = 0")
+    sess3.run("curl -s http://10.10.10.5/.git/config")
+    assert _find(sess3, "Exposed .git repository").confirmed is True
+
+
+def test_non_self_evident_stays_candidate():
+    # a SQL error is a LEAD, not proof of an exploitable bug -> candidate
+    sess = _session("You have an error in your SQL syntax near '' (MySQL)")
+    sess.run("curl -s http://10.10.10.5/x")
+    f = _find(sess, "SQL error (possible injection)")
+    assert f is not None and f.confirmed is False
+
+
+def test_soft404_downgraded_finding_is_not_confirmed():
+    import brukal.webmap as webmap
+    # a directory-listing signature but on a soft-404 host via a path scanner -> not
+    # confirmed (and downgraded). scan_exposures only runs on raw fetch, so drive the
+    # downgrade path directly through _record_vuln_finding.
+    sess = _session("x")
+    sess.surface = webmap.AttackSurface(seed="http://10.10.10.5/")
+    sess.surface.soft_404 = True
+    sess._record_vuln_finding("gobuster dir -u http://10.10.10.5/",
+                              "medium", "Directory listing enabled", "Index of /")
+    f = _find(sess, "Directory listing enabled")
+    assert f.severity == "info" and f.confirmed is False

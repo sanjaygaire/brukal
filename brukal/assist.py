@@ -638,6 +638,17 @@ class AssistSession:
     # are candidates a human/Verifier should confirm.
     _CONFIRMED_VULN_LABELS = {"SQL injection", "SQLi (DBMS identified)", "XSS PoC",
                               "vulnerable"}
+    # Exposures whose EVIDENCE is itself the proof — a private key, a .git repo, or a
+    # directory listing IN the response body confirms the exposure; no further probe is
+    # needed. Promoted to a CONFIRMED finding (not a lead to verify) when it came from a
+    # raw fetch. Signatures are specific and the raw response is the receipt. SQL errors,
+    # JWTs and API schemas stay CANDIDATE — an error/token isn't proof of a bug on its own.
+    _SELF_EVIDENT_EXPOSURES = {
+        "Private key exposed", "AWS access key exposed", "Slack token exposed",
+        "Exposed .git repository", "Secret in exposed env/config",
+        "Directory listing enabled", "phpinfo() exposed",
+        "Apache server-status exposed", "Stack trace / debug info disclosure",
+    }
 
     def _record_vuln_finding(self, command: str, sev: str, label: str, line: str) -> None:
         """Turn one vuln SIGNAL from real output into a structured, deduplicated
@@ -657,10 +668,12 @@ class AssistSession:
                 and tool in _PATH_SCANNERS and sev in ("high", "medium")):
             sev = "info"
             line = f"{line} — UNVERIFIED (host soft-404s: 200 for any path)"
+        confirmed = (label in self._CONFIRMED_VULN_LABELS
+                     or (label in self._SELF_EVIDENT_EXPOSURES and _is_raw_fetch(command)
+                         and not line.endswith("200 for any path)")))
         self.findings.add(Finding(
             title=label, severity=sev, target=target, evidence=line,
-            source=command, param=param, category="web",
-            confirmed=label in self._CONFIRMED_VULN_LABELS))
+            source=command, param=param, category="web", confirmed=confirmed))
 
     def web_urls_from_findings(self) -> list[str]:
         """Deterministically pull web-service URLs out of the findings — open
