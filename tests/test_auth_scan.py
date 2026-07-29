@@ -411,3 +411,19 @@ def test_confirm_idor_negative_on_authz_block():
         return "<html>Profile</html>" if v == "1" else "403 Forbidden - access denied"
     sess = _pcage(guarded)
     assert sess.confirm_idor("http://10.10.10.5/profile?p=1", "p") is False
+
+
+# --- out-of-band blind confirmation -----------------------------------------
+
+def test_blind_checks_noop_without_a_cage():
+    # a fake/test executor has no cage container -> _oob is None -> graceful False
+    sess, _b = _session(_EchoCage())
+    assert sess.confirm_blind_rce("http://10.10.10.5/x?p=1", "p") is False
+    assert sess.confirm_blind_ssrf("http://10.10.10.5/x?p=1", "p") is False
+
+def test_oob_listener_url_and_hit(monkeypatch):
+    import brukal.oob as oob
+    calls = {"log": "/tmp/L", "hits": {"tok": True}}
+    lis = oob.OOBListener("c", port=31337)
+    lis.ip = "172.20.0.2"
+    assert lis.callback_url("tok") == "http://172.20.0.2:31337/tok"

