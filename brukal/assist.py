@@ -969,6 +969,82 @@ class AssistSession:
             f"{'AUTHENTICATED via ' + how if ok else 'login may have FAILED — check creds/field names/type'}")
         return ok
 
+    @staticmethod
+    def _set_param(url: str, param: str, value: str) -> str:
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+        sp = urlsplit(url)
+        q = dict(parse_qsl(sp.query, keep_blank_values=True))
+        q[param] = value
+        return urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(q), sp.fragment))
+
+    def _record_confirmed(self, target, title, sev, param, evidence) -> None:
+        from .findings import Finding
+        self.findings.add(Finding(title=title, severity=sev, target=target,
+                                  evidence=evidence, source=f"active confirmation · param={param}",
+                                  param=param, category="web", confirmed=True))
+        self.highlights.append(("confirmed", f"{title}: {target} ({param})"))
+        self.notes.append(f"[confirm] {title} CONFIRMED on {target} param '{param}' — {evidence}")
+
+    def confirm_sqli(self, url: str, param: str, base: str = "1") -> bool:
+        """Boolean-based SQL injection confirmation through the GOVERNED browser: fetch a
+        baseline, then a TRUE and a FALSE condition; if TRUE ≈ baseline and FALSE differs
+        (across string/numeric/double-quote contexts), the parameter is injectable. Turns
+        a 'SQL error' CANDIDATE into a CONFIRMED finding with a differential proof — no
+        LLM in the decision. Governed WEB GETs only (scope + scheme)."""
+        import difflib
+
+        from .web import WebAction
+        if self.browser is None:
+            return False
+        def body(val):
+            _d, r = self.browser.run(WebAction("get", url=self._set_param(url, param, val)))
+            return (r.body or "") if r is not None else None
+        b = body(base)
+        if b is None:
+            return False
+        pairs = ((f"{base}' AND '1'='1", f"{base}' AND '1'='2"),
+                 (f"{base} AND 1=1", f"{base} AND 1=2"),
+                 (f'{base}" AND "1"="1', f'{base}" AND "1"="2'))
+        for tp, fp in pairs:
+            t, f = body(tp), body(fp)
+            if t is None or f is None:
+                continue
+            # Normalise out the reflected payload text (many apps echo the input), so
+            # what's left is the app's actual behaviour. If TRUE and FALSE are then
+            # identical, the earlier difference was pure reflection — NOT injection.
+            tn, fn = t.replace(tp, "§"), f.replace(fp, "§")
+            if tn == fn:
+                continue
+            st = difflib.SequenceMatcher(None, b, tn).ratio()   # TRUE vs baseline
+            sf = difflib.SequenceMatcher(None, b, fn).ratio()   # FALSE vs baseline
+            # Injectable: with the payload removed, TRUE still tracks the baseline while
+            # FALSE diverges — relative, so it holds on template-heavy pages where the
+            # differing row is a small fraction of the response.
+            if st >= 0.9 and st > sf:
+                self._record_confirmed(
+                    url, "SQL injection (boolean-based)", "critical", param,
+                    f"TRUE tracks baseline ({st:.3f}) while FALSE diverges ({sf:.3f}); "
+                    f"payload {tp!r}")
+                return True
+        return False
+
+    def confirm_xss(self, url: str, param: str) -> bool:
+        """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
+        back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
+        CONFIRMED finding. Governed WEB GET only."""
+        from .web import WebAction
+        if self.browser is None:
+            return False
+        marker = "brukalXSS" + str(abs(hash(url + param)) % 100000)
+        payload = f"<{marker}>"
+        _d, r = self.browser.run(WebAction("get", url=self._set_param(url, param, payload)))
+        body = (r.body or "") if r is not None else ""
+        if payload in body:                         # reflected unencoded => executable
+            self._record_confirmed(url, "Reflected XSS", "high", param,
+                                   f"injected {payload} reflected UNENCODED in the response")
+            return True
+        return False
+
     def learn(self, query: str) -> str:
         """First-class internet learning. Look `query` up from the allowlisted
         CONTROL-PLANE sources (verified + web; NEVER the cage), fold the UNTRUSTED

@@ -252,3 +252,68 @@ def test_reroute_only_on_injection_not_scope():
     # an OUT-OF-SCOPE curl is denied hard:scope — must NOT reroute (stays denied)
     dec, result, hl = sess.run("curl -d 'x=1&y=2' http://8.8.8.8/x")
     assert result is None                                # not rerouted; scope wins
+
+
+# --- active differential vuln confirmation (candidate -> confirmed) ---------
+
+class _SqliCage:
+    """Vulnerable endpoint: a FALSE boolean condition returns no rows; anything else
+    returns the record — the classic boolean-based SQLi differential."""
+    def run(self, action: WebAction) -> WebResult:
+        from urllib.parse import parse_qsl, urlsplit
+        idv = dict(parse_qsl(urlsplit(action.url).query)).get("id", "")   # decoded param
+        false_cond = ("'1'='2" in idv or "1=2" in idv or '"1"="2' in idv)
+        body = "<html>no results found</html>" if false_cond \
+            else "<html>User: admin | Email: admin@corp.local | active</html>"
+        return WebResult(status=200, url=action.url, body=body)
+
+
+class _XssCage:
+    def run(self, action: WebAction) -> WebResult:
+        from urllib.parse import parse_qsl, urlsplit
+        q = dict(parse_qsl(urlsplit(action.url).query))
+        return WebResult(status=200, url=action.url,
+                         body=f"<html>You searched for: {q.get('q','')}</html>")  # reflected raw
+
+
+def test_confirm_sqli_boolean_differential():
+    sess, _b = _session(_SqliCage())
+    assert sess.confirm_sqli("http://10.10.10.5/vuln/sqli/?id=1", "id") is True
+    f = next(f for f in sess.findings.all() if f.title == "SQL injection (boolean-based)")
+    assert f.confirmed is True and f.severity == "critical" and f.param == "id"
+
+
+def test_confirm_sqli_negative_on_safe_endpoint():
+    class Safe:
+        def run(self, a): return WebResult(status=200, url=a.url, body="<html>static page</html>")
+    sess, _b = _session(Safe())
+    assert sess.confirm_sqli("http://10.10.10.5/x?id=1", "id") is False
+
+
+def test_confirm_reflected_xss():
+    sess, _b = _session(_XssCage())
+    assert sess.confirm_xss("http://10.10.10.5/search?q=hi", "q") is True
+    assert any(f.title == "Reflected XSS" and f.confirmed for f in sess.findings.all())
+
+
+def test_confirm_xss_negative_when_encoded():
+    class Enc:
+        def run(self, a):
+            from urllib.parse import parse_qsl, urlsplit
+            v = dict(parse_qsl(urlsplit(a.url).query)).get("q","")
+            v = v.replace("<","&lt;").replace(">","&gt;")   # properly encoded output
+            return WebResult(status=200, url=a.url, body=f"<html>{v}</html>")
+    sess, _b = _session(Enc())
+    assert sess.confirm_xss("http://10.10.10.5/s?q=x", "q") is False
+
+
+def test_confirm_sqli_rejects_pure_reflection():
+    # an endpoint that merely REFLECTS the id (no DB) must NOT be confirmed as SQLi:
+    # after removing the reflected payload, true and false responses are identical.
+    class Reflect:
+        def run(self, a):
+            from urllib.parse import parse_qsl, urlsplit
+            idv = dict(parse_qsl(urlsplit(a.url).query)).get("id","")
+            return WebResult(status=200, url=a.url, body=f"<html>you passed id={idv}</html>")
+    sess, _b = _session(Reflect())
+    assert sess.confirm_sqli("http://10.10.10.5/x?id=1", "id") is False
