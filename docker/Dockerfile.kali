@@ -38,6 +38,13 @@ RUN [ -f /usr/share/wordlists/rockyou.txt.gz ] && \
 RUN apt-get update && apt-get install -y ${KALI_METAPACKAGE} \
     && rm -rf /var/lib/apt/lists/*
 
+# Mobile (APK) static analysis: jadx (decompiler) + apktool (manifest/resources) + aapt,
+# so `brukal apk <file>` gets full source + a decoded AndroidManifest.xml (a cage without
+# them falls back to unzip+strings).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        jadx apktool aapt \
+    && rm -rf /var/lib/apt/lists/*
+
 # Least-privilege raw-socket scanning: grant the capability to the nmap binary ONLY,
 # so SYN/service/OS scans work without privileging the whole container.
 RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip "$(command -v nmap)"

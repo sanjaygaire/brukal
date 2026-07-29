@@ -273,6 +273,38 @@ def _cmd_auto(args) -> int:
         login=_login_from_args(args))
 
 
+def _cmd_apk(args) -> int:
+    # Static-analyse an Android APK: decompile in the cage, then scan the manifest +
+    # source for dangerous config and hardcoded secrets. Offline analysis of a file the
+    # operator supplied — no network target, so no scope needed.
+    import os
+
+    from brukal.apkscan import analyze_apk
+    from brukal.kali import DockerKali, FakeKali
+    kali = FakeKali() if args.fake else DockerKali(container=args.container)
+    apk = args.apk
+    if not args.fake and os.path.isfile(apk):          # a host file → copy it into the cage
+        dest = "/tmp/brukal_target.apk"
+        import subprocess
+        subprocess.run(["docker", "cp", apk, f"{args.container}:{dest}"],
+                       capture_output=True)
+        apk = dest
+    print(f"\n  Analysing APK: {args.apk}\n")
+    out = analyze_apk(kali, apk)
+    findings = sorted(out["findings"],
+                      key=lambda f: ["critical", "high", "medium", "low", "info"].index(f[0]))
+    if not findings:
+        print("  No static findings (or decompiler unavailable — rebuild the cage with "
+              "jadx+apktool for full coverage).")
+        return 0
+    print(f"  {len(findings)} finding(s):\n")
+    for sev, label, ev, where in findings:
+        print(f"  [{sev.upper():8}] {label}  ({where})")
+        if ev:
+            print(f"             {ev[:100]}")
+    return 0
+
+
 def _cmd_report(args) -> int:
     # Build a deliverable report from a target's persisted findings vault.
     from pathlib import Path
@@ -597,6 +629,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="anthropic (default) | ollama | openai | openrouter | ...")
     pa.add_argument("--base-url", default=None)
     pa.set_defaults(func=_cmd_auto)
+
+    pk = sub.add_parser("apk", help="static-analyse an Android APK (mobile app testing)")
+    pk.add_argument("apk", help="path to the .apk (a host file is copied into the cage)")
+    pk.add_argument("--container", default="brukal-kali")
+    pk.add_argument("--fake", action="store_true", help="dry-run the wiring (no cage)")
+    pk.set_defaults(func=_cmd_apk)
 
     prep = sub.add_parser("report",
                           help="build a pentest report (findings + evidence) from a "
