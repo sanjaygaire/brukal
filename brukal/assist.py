@@ -1061,20 +1061,18 @@ class AssistSession:
         self.highlights.append(("confirmed", f"{title}: {target} ({param})"))
         self.notes.append(f"[confirm] {title} CONFIRMED on {target} param '{param}' — {evidence}")
 
-    def confirm_sqli(self, url: str, param: str, base: str = "1") -> bool:
+    def confirm_sqli(self, url: str, param: str, base: str = "1",
+                     method: str = "GET", extra=None) -> bool:
         """Boolean-based SQL injection confirmation through the GOVERNED browser: fetch a
         baseline, then a TRUE and a FALSE condition; if TRUE ≈ baseline and FALSE differs
         (across string/numeric/double-quote contexts), the parameter is injectable. Turns
         a 'SQL error' CANDIDATE into a CONFIRMED finding with a differential proof — no
-        LLM in the decision. Governed WEB GETs only (scope + scheme)."""
+        LLM in the decision. GET query or POST form param; governed (scope + scheme)."""
         import difflib
-
-        from .web import WebAction
         if self.browser is None:
             return False
         def body(val):
-            _d, r = self.browser.run(WebAction("get", url=self._set_param(url, param, val)))
-            return (r.body or "") if r is not None else None
+            return self._probe(url, param, val, method, extra)[0]
         b = body(base)
         if b is None:
             return False
@@ -1104,17 +1102,15 @@ class AssistSession:
                 return True
         return False
 
-    def confirm_xss(self, url: str, param: str) -> bool:
+    def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
-        CONFIRMED finding. Governed WEB GET only."""
-        from .web import WebAction
+        CONFIRMED finding. GET query or POST form param; governed."""
         if self.browser is None:
             return False
         marker = "brukalXSS" + str(abs(hash(url + param)) % 100000)
         payload = f"<{marker}>"
-        _d, r = self.browser.run(WebAction("get", url=self._set_param(url, param, payload)))
-        body = (r.body or "") if r is not None else ""
+        body = self._probe(url, param, payload, method, extra)[0] or ""
         if payload in body:                         # reflected unencoded => executable
             self._record_confirmed(url, "Reflected XSS", "high", param,
                                    f"injected {payload} reflected UNENCODED in the response")
@@ -1131,6 +1127,12 @@ class AssistSession:
         from .web import WebAction
         if self.browser is None:
             return None, None, {}
+        # Bounded active probing: confirm_surface sets a request budget so the reflex
+        # can't run away against a real target (each probe is a governed cage request).
+        if getattr(self, "_confirm_budget", None) is not None:
+            if self._confirm_budget <= 0:
+                return None, None, {}
+            self._confirm_budget -= 1
         if method.upper() == "GET":
             act = WebAction("get", url=self._set_param(url, param, value))
         else:
@@ -1261,30 +1263,55 @@ class AssistSession:
                                   category="web", confirmed=False))
         self.notes.append(f"[lead] {title} on {target} param '{param}' — {evidence}")
 
-    def confirm_surface(self, max_params: int = 8) -> int:
-        """Autonomously confirm boolean SQLi + reflected XSS on the GET parameters the
-        crawl discovered — turning candidates into CONFIRMED findings without waiting
-        for the model to ask. Bounded (cost) and governed (WEB GETs, scope+scheme).
+    def confirm_surface(self, max_params: int = 12) -> int:
+        """Autonomously confirm the web vuln classes (SQLi · cmdi · LFI · SSTI · XSS ·
+        SSRF · open-redirect · IDOR) on BOTH the GET query parameters AND the POST/GET
+        FORM fields the crawl discovered — turning candidates into CONFIRMED findings
+        without waiting for the model. Bounded (cost) and governed (scope+scheme).
         Returns how many were confirmed."""
         if self.browser is None or self.surface is None:
             return 0
         checks = (self.confirm_sqli, self.confirm_cmdi, self.confirm_lfi,
                   self.confirm_ssti, self.confirm_xss, self.confirm_ssrf,
                   self.confirm_open_redirect, self.confirm_idor)
+        self._confirm_budget = 120        # cap total governed requests for the reflex
         confirmed = tried = 0
-        for base, names in list(self.surface.params.items()):
-            for p in list(names):
-                if tried >= max_params:
-                    return confirmed
-                tried += 1
-                for check in checks:
-                    try:
-                        if check(base, p):
-                            confirmed += 1
-                            break               # one confirmed class per param is enough
-                    except Exception:
-                        pass
-        return confirmed
+
+        def probe(target, param, method="GET", extra=None):
+            nonlocal confirmed
+            for check in checks:
+                try:
+                    if check(target, param, method=method, extra=extra):
+                        confirmed += 1
+                        return               # one confirmed class per param is enough
+                except Exception:
+                    pass
+
+        try:
+            # 1) GET query parameters
+            for base, names in list(self.surface.params.items()):
+                for p in list(names):
+                    if tried >= max_params or self._confirm_budget <= 0:
+                        return confirmed
+                    tried += 1
+                    probe(base, p)
+            # 2) FORM fields — test each user-controllable input with the form's method,
+            #    filling the other fields so the request is well-formed (POST-based SQLi/
+            #    cmdi/XSS the query-only pass misses).
+            for form in list(getattr(self.surface, "forms", [])):
+                action = getattr(form, "action", "") or self.target
+                method = (getattr(form, "method", "GET") or "GET").upper()
+                fields = [(n, t) for n, t in getattr(form, "inputs", ())]
+                testable = [n for n, t in fields if t.lower() not in ("submit", "hidden", "file")]
+                for field in testable:
+                    if tried >= max_params or self._confirm_budget <= 0:
+                        return confirmed
+                    tried += 1
+                    others = {n: "1" for n, t in fields if n != field and t.lower() != "file"}
+                    probe(action, field, method=method, extra=others)
+            return confirmed
+        finally:
+            self._confirm_budget = None       # standalone confirm_* calls stay unbounded
 
     def learn(self, query: str) -> str:
         """First-class internet learning. Look `query` up from the allowlisted
