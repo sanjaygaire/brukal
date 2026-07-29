@@ -317,3 +317,14 @@ def test_confirm_sqli_rejects_pure_reflection():
             return WebResult(status=200, url=a.url, body=f"<html>you passed id={idv}</html>")
     sess, _b = _session(Reflect())
     assert sess.confirm_sqli("http://10.10.10.5/x?id=1", "id") is False
+
+
+def test_confirm_surface_probes_discovered_params():
+    import brukal.webmap as webmap
+    sess, _b = _session(_SqliCage())
+    sess.surface = webmap.AttackSurface(seed="http://10.10.10.5/")
+    sess.surface.params = {"http://10.10.10.5/vuln/sqli/": {"id"}}
+    n = sess.confirm_surface()
+    assert n == 1
+    assert any(f.title == "SQL injection (boolean-based)" and f.confirmed
+               for f in sess.findings.all())

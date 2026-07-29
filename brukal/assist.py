@@ -1045,6 +1045,26 @@ class AssistSession:
             return True
         return False
 
+    def confirm_surface(self, max_params: int = 8) -> int:
+        """Autonomously confirm boolean SQLi + reflected XSS on the GET parameters the
+        crawl discovered — turning candidates into CONFIRMED findings without waiting
+        for the model to ask. Bounded (cost) and governed (WEB GETs, scope+scheme).
+        Returns how many were confirmed."""
+        if self.browser is None or self.surface is None:
+            return 0
+        confirmed = tried = 0
+        for base, names in list(self.surface.params.items()):
+            for p in list(names):
+                if tried >= max_params:
+                    return confirmed
+                tried += 1
+                try:
+                    if self.confirm_sqli(base, p) or self.confirm_xss(base, p):
+                        confirmed += 1
+                except Exception:
+                    pass
+        return confirmed
+
     def learn(self, query: str) -> str:
         """First-class internet learning. Look `query` up from the allowlisted
         CONTROL-PLANE sources (verified + web; NEVER the cage), fold the UNTRUSTED

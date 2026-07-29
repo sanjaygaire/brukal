@@ -181,6 +181,7 @@ class GroundedLoop:
         self._stalls = 0                      # consecutive blocked proposals
         self._coach_streak = 0                # consecutive coached repeats without a new move
         self._probe_queue = None              # passive vuln probes to drain after the crawl
+        self._confirmed_done = False          # active SQLi/XSS confirmation runs once
 
     def _emit(self, kind: str, **payload) -> None:
         if self._observer is not None:
@@ -374,6 +375,32 @@ class GroundedLoop:
                     self.steps.append(step)
                     self._emit("step", step=step)
                     continue                     # re-plan with the full site map in hand
+
+            # REFLEX 0b: once the surface has PARAMETERS, actively CONFIRM boolean SQLi
+            # and reflected XSS on them — deterministic differential proofs that promote
+            # candidates to CONFIRMED findings without waiting for the model. Runs once,
+            # bounded, governed (WEB GETs; scope+scheme).
+            surface = self.session.surface
+            if surface is not None and surface.params and not self._confirmed_done:
+                self._confirmed_done = True
+                n = 0
+                try:
+                    n = self.session.confirm_surface()
+                except Exception:
+                    n = 0
+                if n:
+                    step = LoopStep(
+                        index=len(self.steps) + 1, phase="exploitation",
+                        goal="actively confirm injectable parameters",
+                        rationale="differential boolean-SQLi / reflected-XSS probes on "
+                                  "the discovered parameters",
+                        command="CONFIRM: SQLi/XSS on mapped params",
+                        verdict="ALLOW", executed=True,
+                        summary=f"{n} vulnerability(ies) CONFIRMED by differential proof",
+                        highlights=[("confirmed", f"{n} confirmed")])
+                    self.steps.append(step)
+                    self._emit("step", step=step)
+                    continue
 
             # REFLEX 1: after the crawl, drain the PASSIVE vuln probes (whatweb /
             # nuclei / nikto against each mapped root) — one per turn so they interleave
