@@ -378,3 +378,36 @@ def test_confirmations_negative_on_safe_endpoint():
     assert not sess.confirm_cmdi("http://10.10.10.5/x?p=1","p")
     assert not sess.confirm_lfi("http://10.10.10.5/x?p=1","p")
     assert not sess.confirm_ssti("http://10.10.10.5/x?p=1","p")
+
+
+# --- SSRF (in-band IMDS/file) + IDOR (id differential) ----------------------
+
+def test_confirm_ssrf_imds_and_file():
+    def vuln(v):  # a server that FETCHES the injected URL and returns its body
+        if "169.254.169.254" in v:
+            return 'ami-id: ami-123\ninstance-id: i-abc\niam/security-credentials/role'
+        if v.startswith("file://"):
+            return "root:x:0:0:root:/root:/bin/bash"
+        return "home"
+    sess = _pcage(vuln)
+    assert sess.confirm_ssrf("http://10.10.10.5/fetch?p=x", "p") is True
+    assert any(f.title.startswith("SSRF") and f.confirmed for f in sess.findings.all())
+
+def test_confirm_ssrf_negative():
+    sess = _pcage(lambda v: "static safe page, does not fetch anything")
+    assert sess.confirm_ssrf("http://10.10.10.5/x?p=1", "p") is False
+
+def test_confirm_idor_sequential_ids():
+    # each id returns a different user's record (same template) -> IDOR lead
+    def vuln(v):
+        return f"<html><h1>Profile</h1><p>User #{v}: user{v}@corp.local, balance ${v}00</p></html>"
+    sess = _pcage(vuln)
+    assert sess.confirm_idor("http://10.10.10.5/profile?p=1", "p") is True
+    f = next(f for f in sess.findings.all() if "IDOR" in f.title)
+    assert f.confirmed is False and f.severity == "medium"        # a lead, honestly
+
+def test_confirm_idor_negative_on_authz_block():
+    def guarded(v):
+        return "<html>Profile</html>" if v == "1" else "403 Forbidden - access denied"
+    sess = _pcage(guarded)
+    assert sess.confirm_idor("http://10.10.10.5/profile?p=1", "p") is False

