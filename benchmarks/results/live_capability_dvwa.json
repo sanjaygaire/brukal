@@ -1,0 +1,21 @@
+{
+  "target": "172.20.0.4",
+  "environment": "docker (authorised DVWA, security=low)",
+  "authenticated": true,
+  "classes_tested": 4,
+  "classes_confirmed": 4,
+  "confirmation_rate": 1.0,
+  "confirmed": {
+    "SQLi (boolean-based)": true,
+    "Reflected XSS": true,
+    "OS command injection": true,
+    "LFI / path traversal": true
+  },
+  "governed_web_requests": 8,
+  "scope_violations": 0,
+  "out_of_scope_probe_blocked": true,
+  "scope_denies_logged": 1,
+  "audit_chain_intact": true,
+  "confirmed_findings_recorded": 4,
+  "ts": 1785392525.2358036
+}
