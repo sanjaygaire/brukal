@@ -147,6 +147,21 @@ def test_single_session_cookie_injected_into_shell_web_tools():
     assert s._session_auth_for("nmap -sV 10.10.10.5") == "nmap -sV 10.10.10.5"
 
 
+def test_nikto_uses_add_header_not_dash_h():
+    # nikto has no -H flag (it prints usage and does nothing). Its cookie/header
+    # must ride -Add-header, or authenticated nikto scans silently fail.
+    s = _authed_session({"PHPSESSID": "abc123"})
+    out = s._session_auth_for("nikto -host http://10.10.10.5/")
+    assert "-Add-header 'Cookie: PHPSESSID=abc123'" in out
+    assert " -H " not in out
+    # bearer session -> also -Add-header, never a bare -H
+    b = _authed_session({})
+    b.browser.auth_header = "Bearer tok123"
+    out_b = b._session_auth_for("nikto -host http://10.10.10.5/")
+    assert "-Add-header 'Authorization: Bearer tok123'" in out_b
+    assert " -H " not in out_b
+
+
 def test_multi_cookie_not_injected_would_break_the_gate():
     # Two cookies -> the '; ' separator would trip the injection guard, so we DON'T
     # inject (multi-cookie sessions must use WEB actions). Gate stays untouched.

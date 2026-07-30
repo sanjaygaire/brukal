@@ -2671,7 +2671,7 @@ _RAW_FETCH_TOOLS = frozenset({"curl", "wget", "http", "https", "httpie", "cat",
 _COOKIE_INJECT = {
     "curl": "-b '{C}'", "wget": "--header='Cookie: {C}'", "sqlmap": "--cookie='{C}'",
     "ffuf": "-H 'Cookie: {C}'", "gobuster": "-c '{C}'", "feroxbuster": "-b '{C}'",
-    "nuclei": "-H 'Cookie: {C}'", "nikto": "-H 'Cookie: {C}'", "dirb": "-H 'Cookie: {C}'",
+    "nuclei": "-H 'Cookie: {C}'", "nikto": "-Add-header 'Cookie: {C}'", "dirb": "-H 'Cookie: {C}'",
     "wpscan": "--cookie-string '{C}'", "dirsearch": "--cookie '{C}'",
 }
 # How each web tool takes an arbitrary header, for a bearer/basic Authorization session
@@ -2680,6 +2680,7 @@ _HEADER_INJECT = {
     "curl": "-H '{H}'", "sqlmap": "-H '{H}'", "ffuf": "-H '{H}'", "nuclei": "-H '{H}'",
     "gobuster": "-H '{H}'", "feroxbuster": "-H '{H}'", "wget": "--header='{H}'",
     "dirsearch": "-H '{H}'", "wfuzz": "-H '{H}'", "httpie": "'{H}'",
+    "nikto": "-Add-header '{H}'",
 }
 
 # Pure path-discovery scanners: they only tell you a path "exists". On a soft-404 host

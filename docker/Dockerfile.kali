@@ -30,12 +30,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN [ -f /usr/share/wordlists/rockyou.txt.gz ] && \
         gunzip -k /usr/share/wordlists/rockyou.txt.gz || true
 
-# THE FULL KALI TOOLSET — nmap, ffuf, gobuster, sqlmap, hydra, nuclei, metasploit,
+# THE FULL KALI TOOLSET — nmap, ffuf, gobuster, sqlmap, hydra, metasploit,
 # crackmapexec, impacket, wpscan, john, hashcat, enum4linux-ng, responder,
 # evil-winrm, and hundreds more. Recommends are kept ON PURPOSE: the metapackage
 # pulls its tools through them. This is a LARGE, LONG build (several GB) — that is
 # the cost of a batteries-included cage. Capability grows; the gate is unchanged.
 RUN apt-get update && apt-get install -y ${KALI_METAPACKAGE} \
+    && rm -rf /var/lib/apt/lists/*
+
+# nuclei — the template-driven vuln scanner. NOT in kali-linux-headless (only the
+# larger metapackages pull it), so install it explicitly: the recon agent leans on it
+# and a cage without it fails those steps with exit 127.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nuclei \
     && rm -rf /var/lib/apt/lists/*
 
 # Mobile (APK) static analysis: jadx (decompiler) + apktool (manifest/resources) + aapt,
