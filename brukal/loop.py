@@ -182,6 +182,7 @@ class GroundedLoop:
         self._coach_streak = 0                # consecutive coached repeats without a new move
         self._probe_queue = None              # passive vuln probes to drain after the crawl
         self._confirmed_done = False          # active SQLi/XSS confirmation runs once
+        self._domain_enum_queue = None        # proactive AD/cloud enumeration (drains once)
 
     def _emit(self, kind: str, **payload) -> None:
         if self._observer is not None:
@@ -436,6 +437,42 @@ class GroundedLoop:
                             return solved
                         self._ran.add(_norm_cmd(probe.command))
                     continue                     # re-plan (or drain the next probe)
+
+            # REFLEX 1b: PROACTIVE internal / cloud enumeration. The web path crawls and
+            # confirms on its own; give an AD/SMB host or a cloud asset the same reflex —
+            # run the bounded, READ-ONLY enumeration set (netexec/enum4linux, anonymous
+            # bucket listing) so internal & cloud coverage doesn't wait on the model.
+            # Builds once when a domain asset is first seen, drains one command per turn;
+            # each is gated (an out-of-scope cloud host is DENIED — Brukal never touches
+            # an unauthorised host), and the AD/cloud detectors turn output into findings.
+            if self._domain_enum_queue is None and (
+                    self.session._ad_detected() or self.session._cloud_detected()):
+                self._domain_enum_queue = (self.session.ad_enum_commands()
+                                           + self.session.cloud_enum_commands())
+            if self._domain_enum_queue:
+                cmd = self._domain_enum_queue.pop(0)
+                self._emit("running", action=cmd, web=False, agent="recon",
+                           phase="enumeration", goal="internal/cloud enumeration")
+                decision, result, highlights = self.session.run(cmd, agent="recon")
+                step = LoopStep(
+                    index=len(self.steps) + 1, phase="enumeration",
+                    goal="internal / cloud enumeration (proactive)",
+                    rationale="an AD/SMB or cloud asset was detected — running the "
+                              "read-only enumeration set before asking the model",
+                    command=cmd,
+                    verdict=(decision.verdict if decision else "NOOP"),
+                    executed=(result is not None),
+                    summary=self._summarise(decision, result, highlights) if decision
+                    else "enumeration could not run",
+                    highlights=list(highlights))
+                self.steps.append(step)
+                self._emit("step", step=step)
+                if result is not None:
+                    solved = self._check_solved(cmd, result, "shell")
+                    if solved is not None:
+                        return solved
+                    self._ran.add(_norm_cmd(cmd))
+                continue                         # re-plan (or drain the next enum command)
 
             # REFLEX 2: LEARN what we don't know. When a new CVE or service+version
             # appears in the findings, look it up (CONTROL-PLANE, untrusted, candidate

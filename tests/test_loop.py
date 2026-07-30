@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from brukal import AuditLog, Executor, FakeKali, Gate, load_scope
 from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession
+from brukal.kali import ExecResult
 from brukal.loop import GroundedLoop, _norm_cmd
 
 SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
@@ -113,6 +114,55 @@ def test_loop_pauses_on_escalation_and_never_self_approves():
         assert result.stop_reason == "escalation"
         assert kali.executed == []                                   # nothing ran
         assert result.executed == 0 and result.paused_for_human
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+class _ADKali(FakeKali):
+    """A cage that answers netexec SMB with a real-format Pwn3d! + signing-off line,
+    so the proactive AD reflex has something to detect. Everything else echoes."""
+    def run(self, command):
+        self.executed.append(command)
+        if command.startswith("netexec smb") and "--" not in command:
+            out = ("SMB  10.10.10.5  445  DC01  [*] Windows Server 2019 (name:DC01) "
+                   "(domain:corp.local) (signing:False) (SMBv1:True)\n"
+                   "SMB  10.10.10.5  445  DC01  [+] corp.local\\admin:Password123 (Pwn3d!)")
+            return ExecResult(command, 0, out, "")
+        return ExecResult(command, 0, f"[fake-exec] {command}", "")
+
+
+def test_ad_enum_reflex_fires_proactively_and_records_finding():
+    # The AD analogue of the crawl reflex: once an SMB/DC host is detected, the loop
+    # runs the read-only enumeration set ITSELF (no model prompt) and the detector turns
+    # the output into an AD finding — governance intact (every command through the gate).
+    from brukal.assist import _full_send_approver
+    tmp = tempfile.mkdtemp()
+    kali = _ADKali()
+    # A real authorised internal engagement runs under --full-send; the netexec enum is
+    # scored irreversible and ESCALATEs, and full-send approves it (auto-mode would pause
+    # for sign-off — that is the governance guarantee, tested elsewhere).
+    ex = Executor(Gate(load_scope(SCOPE)), kali, AuditLog(Path(tmp) / "a.jsonl"),
+                  approver=_full_send_approver)
+    sess = AssistSession("10.10.10.5", ex, StrategistAgent(SeqLLM([
+        "1. [recon] internal enumeration",                           # make_plan()
+        _adv("hand off", manual="continue AD attack manually"),      # stop after reflexes
+    ])))
+    sess.highlights.append(("port", "445/tcp open microsoft-ds"))    # AD detected
+    loop = GroundedLoop(sess, max_steps=20)
+    try:
+        sess.make_plan()
+        result = loop.run()
+        # the reflex ran the read-only netexec set on its own, before the model was asked
+        assert any(c.startswith("netexec smb 10.10.10.5") for c in kali.executed)
+        assert any("enum4linux-ng" in c for c in kali.executed)
+        # and the detector recorded the compromise as a CONFIRMED AD finding
+        titles = {f.title: f for f in sess.findings.all()}
+        assert "Local admin / host compromised" in titles
+        assert titles["Local admin / host compromised"].category == "active-directory"
+        # governance held: no reflex command was DENIED (all in-scope, allowlisted); the
+        # netexec enum ran via an approved ESCALATE, never bypassing the gate.
+        assert all(s.verdict != "DENY" for s in result.steps
+                   if s.command.startswith(("netexec", "enum4linux")))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

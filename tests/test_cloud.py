@@ -89,3 +89,21 @@ def test_cloud_methodology_surfaces_when_cloud_detected():
     assert "CLOUD / INFRASTRUCTURE" not in sess._reference("")
     sess.highlights.append(("hdr", "Server: AmazonS3 x-amz-request-id: ABC"))
     assert "CLOUD / INFRASTRUCTURE" in sess._reference("")
+
+
+def test_cloud_enum_reflex_lists_discovered_buckets_readonly():
+    # Proactive cloud enumeration — the cloud analogue of the crawl reflex: once a bucket
+    # is seen, Brukal proposes anonymous (read-only) listing on its own. Each command is
+    # still gated at run time (an out-of-scope cloud host is DENIED — that is the point).
+    sess = _session()
+    assert sess.cloud_enum_commands() == []            # nothing until a cloud asset is seen
+    sess.highlights.append(("link", "found https://corp-backups.s3.amazonaws.com/db.sql"))
+    cmds = sess.cloud_enum_commands()
+    assert cmds
+    joined = " ".join(cmds)
+    assert "corp-backups" in joined                    # the discovered bucket name
+    assert "--no-sign-request" in joined               # anonymous, read-only
+    # read-only ONLY: never a write/delete/put in the proactive set
+    for c in cmds:
+        assert not any(x in c for x in ("rm ", "cp ", "put-object", "mv ", "delete",
+                                        "sync ", "rb "))

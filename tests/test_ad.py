@@ -90,3 +90,21 @@ def test_ad_methodology_surfaces_when_ad_host_detected():
     sess.highlights.append(("port", "445/tcp open microsoft-ds"))
     ref = sess._reference("")
     assert "ACTIVE DIRECTORY" in ref and "kerberoast" in ref.lower()
+
+
+def test_ad_enum_reflex_emits_readonly_commands_when_ad_detected():
+    # Proactive internal enumeration — the AD analogue of the web crawl reflex: once a
+    # DC/SMB host is seen, Brukal proposes the read-only enum set on its own.
+    sess = _session()                                  # target 10.10.10.5
+    assert sess.ad_enum_commands() == []               # nothing until AD is detected
+    sess.highlights.append(("port", "445/tcp open microsoft-ds"))
+    cmds = sess.ad_enum_commands()
+    assert cmds                                        # enumeration is now proposed
+    assert all("10.10.10.5" in c for c in cmds)        # only the in-scope host
+    joined = " ".join(cmds)
+    assert "netexec smb" in joined and "enum4linux-ng" in joined
+    # PROACTIVE set is read-only ONLY: no auth spray (lockout risk), no dump/relay/exploit.
+    for c in cmds:
+        assert " -p " not in c and " -u " not in c
+        assert not any(x in c for x in ("secretsdump", "ntlmrelayx", "--sam", "--lsa",
+                                        "GetUserSPNs", "GetNPUsers", "spray"))

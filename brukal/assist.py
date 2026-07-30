@@ -297,6 +297,50 @@ class AssistSession:
             r"\bx-amz-|x-ms-request-id|x-goog-|169\.254\.169\.254|AmazonS3|azurewebsites|"
             r"\bAKIA[0-9A-Z]{16}\b|service_account", blob, re.I))
 
+    def ad_enum_commands(self) -> list[str]:
+        """Read-only Active Directory enumeration the loop fires PROACTIVELY once a
+        DC/SMB/LDAP/Kerberos host is detected — the internal-network analogue of the web
+        crawl+confirm reflexes, so AD coverage doesn't depend on the model proposing it.
+
+        The proactive set is UNAUTHENTICATED and read-only ONLY: null/guest-session host
+        info, share and RID-cycled user enumeration, password policy, LDAP anonymous
+        bind. No credential spray (so no account-lockout risk), no dump/relay/roast/
+        exploit — those stay with the planner (they ESCALATE, or run under --full-send).
+        Every command still passes the gate (scope + allowlist) at run time."""
+        if not self._ad_detected():
+            return []
+        t = self.target
+        return [
+            f"netexec smb {t}",              # host/domain, SMB signing, SMBv1, null session
+            f"netexec smb {t} --shares",     # anonymous / guest share listing
+            f"netexec smb {t} --users",      # RID-cycle domain users (read-only)
+            f"netexec smb {t} --pass-pol",   # password policy (lockout threshold)
+            f"netexec ldap {t}",             # LDAP anonymous bind / naming contexts
+            f"enum4linux-ng -A {t}",         # comprehensive read-only enumeration
+        ]
+
+    _BUCKET_RE = re.compile(r"([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])\.s3[.\-]", re.I)
+    _BUCKET_URI_RE = re.compile(r"s3://([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])", re.I)
+
+    def cloud_enum_commands(self) -> list[str]:
+        """Read-only cloud enumeration the loop fires PROACTIVELY once a cloud asset is
+        seen — anonymous object-storage listing of any S3 bucket named in the recon so
+        far. Read-only ONLY (no writes). Each command is still gated: a cloud host
+        OUTSIDE the authorised scope is DENIED — Brukal never touches an asset you did
+        not authorise, which is the trust guarantee, not a limitation. So this yields
+        autonomous cloud coverage exactly when the operator has scoped the cloud in."""
+        if not self._cloud_detected():
+            return []
+        blob = (" ".join(l for _t, l in self.highlights[-40:]) + " "
+                + " ".join(self.notes[-8:]))
+        buckets = {b.lower() for b in self._BUCKET_RE.findall(blob)}
+        buckets |= {b.lower() for b in self._BUCKET_URI_RE.findall(blob)}
+        cmds: list[str] = []
+        for b in sorted(buckets)[:3]:
+            cmds.append(f"curl -s https://{b}.s3.amazonaws.com/")
+            cmds.append(f"aws s3 ls s3://{b} --no-sign-request")
+        return cmds
+
     def _highlights_text(self) -> str:
         base = "\n".join(f"{t}: {l}" for t, l in self.highlights) if self.highlights else ""
         # If the site has been crawled, hand the FULL attack surface (forms, params,
