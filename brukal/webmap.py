@@ -18,6 +18,7 @@ Two rules keep it safe, and they are why this file lives in the stdlib-only core
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -184,6 +185,43 @@ _HOT_ROUTE_RE = re.compile(
     r"basket|cart|payment|card|wallet|coupon|key|secret|credential|config|debug|"
     r"internal|actuator|metrics|swagger|api-docs|oauth|profile|export|import|whoami",
     re.I)
+
+
+# Where an API publishes its own contract. A JSON API has no HTML to crawl and no JS
+# bundle to mine — its root is a bare JSON blob — so without this an entire target maps
+# to zero endpoints. When one of these answers, the app hands over its whole surface.
+SPEC_PATHS = ("/openapi.json", "/swagger.json", "/v2/swagger.json", "/v3/api-docs",
+              "/api-docs", "/api/openapi.json", "/swagger/v1/swagger.json",
+              "/api/swagger.json")
+
+
+def routes_from_openapi(text: str) -> list[str]:
+    """Endpoint paths declared by an OpenAPI/Swagger JSON document, prefixed with the
+    document's own base path. Pure parsing of UNTRUSTED text — the paths become leads,
+    and every request to one still goes through the gate."""
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return []
+    if not isinstance(doc, dict) or not isinstance(doc.get("paths"), dict):
+        return []
+    prefix = ""
+    base = doc.get("basePath")
+    if isinstance(base, str) and base.startswith("/"):
+        prefix = base.rstrip("/")                       # Swagger 2
+    else:                                               # OpenAPI 3: servers[0].url
+        servers = doc.get("servers")
+        if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+            url = servers[0].get("url")
+            if isinstance(url, str) and url.startswith("/"):
+                prefix = url.rstrip("/")
+    out: list[str] = []
+    for p in doc["paths"]:
+        if isinstance(p, str) and p.startswith("/"):
+            r = f"{prefix}{p}" if prefix else p
+            if r not in out:
+                out.append(r)
+    return out
 
 
 def extract_api_routes(text: str, max_routes: int = 40) -> list[str]:

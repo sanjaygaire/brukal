@@ -1064,6 +1064,29 @@ class AssistSession:
         except Exception:
             pass
 
+        # An API that ships no HTML and no JS bundle still documents itself. Fetch the
+        # well-known OpenAPI/Swagger paths and turn the declared endpoints into routes —
+        # without this a pure JSON API (root = a one-line blob, no links) maps to nothing
+        # at all. Bounded: stops at the first document that parses.
+        try:
+            from urllib.parse import urlsplit as _us
+            sp = _us(surface.seed)
+            if sp.scheme and sp.netloc:
+                origin = f"{sp.scheme}://{sp.netloc}"
+                for spec in webmap.SPEC_PATHS:
+                    _d, sr, _h = self.run_web(f"get {origin}{spec}")
+                    if sr is None or getattr(sr, "status", None) != 200:
+                        continue
+                    spec_routes = webmap.routes_from_openapi(sr.body or "")
+                    if spec_routes:
+                        surface.add_routes(spec_routes)
+                        surface.techs.add("openapi")
+                        self.notes.append(
+                            f"[api-spec] {spec} declared {len(spec_routes)} endpoint(s)")
+                        break
+        except Exception:
+            pass
+
         # A second web surface (another port/vhost found later) ADDS to the map rather
         # than replacing it — otherwise crawling the app on :3000 would erase whatever
         # was learned from :80, and whichever ran last would win.

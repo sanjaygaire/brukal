@@ -13,6 +13,7 @@ Two things are pinned here:
 """
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -347,3 +348,51 @@ def test_loop_sweeps_for_the_web_surface_when_nothing_is_known():
         assert ",3000," in cmd and ",8080," in cmd      # the common app ports
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_routes_from_openapi_spec():
+    """A JSON API has no HTML and no bundle — its own spec is the only surface map."""
+    spec = json.dumps({
+        "openapi": "3.0.0",
+        "servers": [{"url": "/api/v1"}],
+        "paths": {"/users": {"get": {}}, "/users/{id}": {"delete": {}},
+                  "/books/v1/{book}": {"get": {}}},
+    })
+    routes = webmap.routes_from_openapi(spec)
+    assert "/api/v1/users" in routes and "/api/v1/users/{id}" in routes
+    # Swagger 2 uses basePath instead of servers
+    sw2 = json.dumps({"swagger": "2.0", "basePath": "/v2", "paths": {"/pet": {}}})
+    assert webmap.routes_from_openapi(sw2) == ["/v2/pet"]
+    # anything that is not a spec yields nothing, never an exception
+    assert webmap.routes_from_openapi("<html>not json</html>") == []
+    assert webmap.routes_from_openapi('{"message": "hello"}') == []
+    assert webmap.routes_from_openapi("") == []
+
+
+def test_crawl_maps_a_json_api_from_its_spec():
+    """End-to-end: a bare JSON root (no links, no forms) still gets a full endpoint map
+    because the crawl fetches the well-known spec paths."""
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    sess = AssistSession(TARGET, ex, StrategistAgent(SeqLLM(["x"])))
+
+    spec = json.dumps({"openapi": "3.0.0",
+                       "paths": {"/users/v1/login": {}, "/books/v1": {}}})
+
+    class _ApiCage:
+        def run(self, action):
+            from brukal.web import WebResult
+            if action.url.endswith("/openapi.json"):
+                return WebResult(status=200, url=action.url, body=spec)
+            if "/swagger" in action.url or "api-docs" in action.url:
+                return WebResult(status=404, url=action.url, body="not found")
+            return WebResult(status=200, url=action.url,
+                             body='{"message": "Vulnerable API"}')   # bare JSON root
+
+    from brukal.web import GovernedBrowser
+    sess.browser = GovernedBrowser(scope, _ApiCage(), audit)
+    surface = sess.crawl(seeds=[f"http://{TARGET}:5000/"], max_pages=2)
+    assert "/users/v1/login" in surface.api_routes
+    assert "/books/v1" in surface.api_routes
+    assert "openapi" in surface.techs
