@@ -98,3 +98,40 @@ def test_thin_model_plan_falls_back_to_the_methodology_checklist():
         assert [p.phase for p in plan][0] == "enumeration"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_auto_honours_an_explicit_web_mode(monkeypatch, tmp_path):
+    """Regression: `brukal auto --web` was silently ignored. run_auto built the banner's
+    display string into a variable literally named `mode`, clobbering the caller's
+    web/box selector before set_methodology saw it — so detect_kind fell back to target
+    detection and every IP target ran the BOX methodology, even when --web was passed."""
+    import brukal.assist as A
+    import brukal.loop as L
+    from brukal import AuditLog, Executor, FakeKali, Gate, load_scope
+    from brukal.agents import StrategistAgent
+
+    scope = load_scope(str(SCOPE))
+    (tmp_path / "a.jsonl").touch()          # run_auto verifies the chain on the way out
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    sess = A.AssistSession("10.10.10.5", ex,
+                           StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()))
+    sess.plan = [type("S", (), {"text": "x", "done": True, "phase": ""})()]
+
+    monkeypatch.setattr(A, "_prepare_session",
+                        lambda *a, **k: (sess, audit, "10.10.10.5", "fake"))
+
+    class _StubLoop:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self):
+            return type("R", (), {"stop_reason": "budget", "stop_detail": "",
+                                  "solved": False, "steps": [], "status": "budget",
+                                  "executed": 0, "blocked": 0})()
+
+    monkeypatch.setattr(L, "GroundedLoop", _StubLoop)
+    A.run_auto("10.10.10.5", fake=True, yes_authorised=True, mode="web",
+               handoff_to_menu=False, max_steps=1, resume=False)
+    # a bare IP would detect as 'box'; the explicit flag must win
+    assert sess.methodology.kind == "web"

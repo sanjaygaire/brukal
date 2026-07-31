@@ -3323,13 +3323,17 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # Multi-agent mode (default): strategist plans, specialists (recon/exploit/verify)
     # execute — one door, per-agent trust. Opt out with BRUKAL_SINGLE_AGENT=1.
     multi = not (single_agent or os.environ.get("BRUKAL_SINGLE_AGENT"))
-    mode = "multi-agent (planner+recon/exploit/verify)" if multi else "single-strategist"
-    mode += " · full-send" if full else " · governed"
+    # NOTE: this is the banner's DISPLAY string only. It must not be called `mode` —
+    # that is the caller's web/box methodology selector, and assigning to it here made
+    # --web/--box silently do nothing (set_methodology then saw "multi-agent … ·
+    # full-send", matched neither, and fell back to target detection: an IP is a box).
+    agent_mode = "multi-agent (planner+recon/exploit/verify)" if multi else "single-strategist"
+    agent_mode += " · full-send" if full else " · governed"
 
     _emit(console, f"\n  brukal auto — target {target}   cage={cage}   "
-                   f"budget={max_steps} steps   mode={mode}",
+                   f"budget={max_steps} steps   mode={agent_mode}",
           f"\n  [bold cyan]brukal auto[/] — target [bold]{target}[/]   "
-          f"cage={cage}   budget={max_steps} steps   [magenta]{mode}[/]")
+          f"cage={cage}   budget={max_steps} steps   [magenta]{agent_mode}[/]")
     if session.resumed:
         _emit(console, f"  resumed — loaded {session.resumed} prior finding(s).")
 
