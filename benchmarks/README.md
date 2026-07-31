@@ -36,19 +36,32 @@ differential proof** — the verdict is code, not an LLM's opinion — through t
 governed browser, never a shell.
 
 ```bash
-# cage + DVWA up; set DVWA to security=low; scope authorises ONLY the target
-python benchmarks/live_capability.py --target 172.20.0.4 \
-    --scope runs/dvwa.json --yes-authorised \
+# cage + DVWA up; set DVWA to security=low; each scope authorises ONLY its own host
+python benchmarks/live_capability.py \
+    --target 172.20.0.3 --scope runs/dvwa.json \
+    --ai-url http://172.20.0.2:3000/rest/chat --ai-scope runs/juice.json \
+    --cage brukal-kali --yes-authorised \
     --json benchmarks/results/live_capability_dvwa.json
 ```
 
-Result (see `results/live_capability_dvwa.json`): **4/4** classes confirmed — SQLi,
-reflected XSS, OS command injection, LFI — with **0 scope violations**, an out-of-scope
-probe **blocked mid-run**, the **audit chain intact**, and 4 confirmed findings recorded.
+The AI class runs against a SEPARATE target under its OWN scope file. That split is
+deliberate: the gate is per-scope, and widening one scope to span both hosts would
+demonstrate precisely the wrong thing.
+
+Result (see `results/live_capability_dvwa.json`): **5/5** classes confirmed —
+SQLi, reflected XSS, OS command injection and LFI on DVWA, plus **prompt injection
+(OWASP LLM01)** against OWASP Juice Shop's LLM-backed chatbot — with **0 scope
+violations**, an out-of-scope probe **blocked mid-run on both targets**, the **audit
+chain intact**, and 5 confirmed findings recorded.
+
+The AI class is proved the same way as the rest: the injected directive demands a canary
+the model can only produce by performing the instructed transformation, so the value
+appears nowhere in the request and an endpoint that merely echoes the payload cannot
+fake it. The verdict is a string comparison, not a model's opinion.
 
 ### Honest scope
 
-The 4/4 rate means the deterministic proofs fire correctly on real vulnerabilities
+The 5/5 rate means the deterministic proofs fire correctly on real vulnerabilities
 Brukal reaches — it is **not** a real-world discovery rate. What gets *found* on an
 unknown target depends on the driving model's navigation (the model-bound ceiling), not
 on the gate. Every figure here holds the five safety invariants unchanged.

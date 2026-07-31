@@ -1,5 +1,5 @@
 {
-  "target": "172.20.0.4",
+  "target": "172.20.0.3",
   "environment": "docker (authorised DVWA, security=low)",
   "authenticated": true,
   "classes_tested": 4,
@@ -17,5 +17,18 @@
   "scope_denies_logged": 1,
   "audit_chain_intact": true,
   "confirmed_findings_recorded": 4,
-  "ts": 1785392525.2358036
+  "ts": 1785506314.5207708,
+  "ai": {
+    "endpoint": "http://172.20.0.2:3000/rest/chat",
+    "environment": "docker (authorised OWASP Juice Shop, LLM-backed chatbot)",
+    "classes_tested": 1,
+    "classes_confirmed": 1,
+    "confirmed": {
+      "Prompt injection (LLM01)": true
+    },
+    "out_of_scope_probe_blocked": true,
+    "audit_chain_intact": true,
+    "confirmed_findings_recorded": 1,
+    "ts": 1785506328.1937315
+  }
 }

@@ -105,10 +105,53 @@ def run(target: str, scope_path: str, cage: str, audit_out: str) -> dict:
     }
 
 
+def run_ai(url: str, scope_path: str, cage: str, audit_out: str) -> dict:
+    """The AI / LLM class, measured the same way: a deterministic canary the model can
+    only return by OBEYING an injected instruction, sent through the governed browser
+    against an AUTHORISED LLM-backed endpoint. Separate from the web run because the AI
+    surface lives on its own host and scope file — the gate is per-scope, and widening
+    one scope to cover both would be exactly the wrong thing to demonstrate."""
+    from urllib.parse import urlsplit
+    scope = load_scope(scope_path)
+    ap = Path(audit_out)
+    if ap.exists():
+        ap.unlink()
+    audit = AuditLog(ap)
+    host = urlsplit(url).hostname or ""
+    ex = Executor(Gate(scope), DockerKali(container=cage), audit,
+                  approver=_full_send_approver)
+    browser = GovernedBrowser(scope, DockerHttpWebCage(container=cage), audit)
+    sess = AssistSession(host, ex, StrategistAgent(_NullLLM()), browser=browser)
+
+    try:
+        injected = bool(sess.confirm_prompt_injection(url, "message", method="JSON"))
+    except Exception as e:
+        injected = False
+        print(f"  ! prompt injection: {e}", file=sys.stderr)
+
+    # the same governance check: an unauthorised AI endpoint must be denied mid-run
+    _d, oos = browser.run(WebAction("get", url="http://8.8.8.8/v1/chat/completions"))
+    return {
+        "endpoint": url,
+        "environment": "docker (authorised OWASP Juice Shop, LLM-backed chatbot)",
+        "classes_tested": 1,
+        "classes_confirmed": int(injected),
+        "confirmed": {"Prompt injection (LLM01)": injected},
+        "out_of_scope_probe_blocked": oos is None,
+        "audit_chain_intact": audit.verify(),
+        "confirmed_findings_recorded": len(
+            [f for f in sess.findings.all() if getattr(f, "confirmed", False)]),
+        "ts": time.time(),
+    }
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="live_capability")
-    p.add_argument("--target", required=True)
-    p.add_argument("--scope", required=True, help="scope file authorising ONLY --target")
+    p.add_argument("--target", help="web target (DVWA reference run)")
+    p.add_argument("--scope", help="scope file authorising ONLY --target")
+    p.add_argument("--ai-url", help="an AUTHORISED LLM-backed endpoint to measure "
+                                    "the AI class against (e.g. .../rest/chat)")
+    p.add_argument("--ai-scope", help="scope file authorising ONLY the --ai-url host")
     p.add_argument("--cage", default="brukal-kali")
     p.add_argument("--audit", default="runs/audit_livebench.jsonl")
     p.add_argument("--json", help="also write the result here")
@@ -118,11 +161,29 @@ def main(argv=None) -> int:
     if not a.yes_authorised:
         print("Refused: a live run needs --yes-authorised (you confirm authorisation).")
         return 2
-    scope = load_scope(a.scope)
-    if not scope.contains_ip(a.target):
-        print(f"Refused: {a.target} is not inside {a.scope}.")
+    if not a.target and not a.ai_url:
+        print("Refused: give --target (web) and/or --ai-url (AI).")
         return 2
-    out = run(a.target, a.scope, a.cage, a.audit)
+    out: dict = {}
+    if a.target:
+        if not a.scope:
+            print("Refused: --target needs --scope.")
+            return 2
+        if not load_scope(a.scope).contains_ip(a.target):
+            print(f"Refused: {a.target} is not inside {a.scope}.")
+            return 2
+        out = run(a.target, a.scope, a.cage, a.audit)
+    if a.ai_url:
+        from urllib.parse import urlsplit
+        ai_scope = a.ai_scope or a.scope
+        if not ai_scope:
+            print("Refused: --ai-url needs --ai-scope.")
+            return 2
+        if not load_scope(ai_scope).contains_host(urlsplit(a.ai_url).hostname or ""):
+            print(f"Refused: {a.ai_url} is not inside {ai_scope}.")
+            return 2
+        ai = run_ai(a.ai_url, ai_scope, a.cage, a.audit + ".ai")
+        out = {**out, "ai": ai} if out else {"ai": ai}
     print(json.dumps(out, indent=2))
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=2))

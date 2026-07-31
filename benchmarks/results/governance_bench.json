@@ -29,7 +29,7 @@
     "metrics": {
       "hallucinations_caught_multi": 1,
       "hallucinations_caught_single": 0,
-      "context_bytes_multi": 763,
+      "context_bytes_multi": 765,
       "context_bytes_single": 32105,
       "context_reduction": 0.976
     },
