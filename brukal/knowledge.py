@@ -53,6 +53,47 @@ _KB = [
      "Enforce per-object authorization on every request (not just authentication); use "
      "unpredictable identifiers; check ownership server-side.",
      ["OWASP A01:2021 Broken Access Control", "CWE-639", "CWE-284"]),
+    # --- AI / LLM applications (OWASP Top 10 for LLM Applications, 2025) -------
+    (("prompt injection",), 8.6, "AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N",
+     "Attacker text becomes instruction: the model abandons its own rules — leaking its "
+     "context, other users' data, or invoking tools on the attacker's behalf.",
+     "Treat all model input as untrusted data, never instruction: separate system and "
+     "user channels, constrain output to a schema, and enforce authorization on every "
+     "tool call server-side rather than trusting the model to refuse.",
+     ["OWASP LLM01:2025 Prompt Injection", "CWE-1427"]),
+    (("system prompt", "instructions disclosed"), 7.5,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+     "The system prompt reveals guardrails, internal tooling and often embedded secrets "
+     "— handing an attacker the map for bypassing them.",
+     "Never place secrets or access rules in the prompt; hold them server-side. Assume "
+     "the prompt is public and enforce the real controls in code.",
+     ["OWASP LLM07:2025 System Prompt Leakage", "CWE-200"]),
+    (("llm leaked", "llm disclosed"), 8.2, "AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N",
+     "The model emitted credentials or other sensitive data from its context to an "
+     "unauthorised user.",
+     "Keep secrets and other users' data out of the model's context entirely; retrieve "
+     "per-request under the caller's own authorization and filter model output.",
+     ["OWASP LLM02:2025 Sensitive Information Disclosure", "CWE-200"]),
+    (("jailbreak", "guardrail"), 6.5, "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N",
+     "Safety and business constraints can be talked away, so the feature can be driven "
+     "outside its intended use.",
+     "Do not rely on prompt-level refusals as a security control: enforce limits in code "
+     "outside the model, and monitor for bypass patterns.",
+     ["OWASP LLM01:2025 Prompt Injection", "CWE-1427"]),
+    (("insecure output handling", "output handling"), 6.1,
+     "AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+     "Model output is rendered or executed downstream, so the model becomes an injection "
+     "vector into the browser, database or shell.",
+     "Treat model output exactly like user input: encode for the sink, never eval/render "
+     "it raw, and parameterise anything it feeds.",
+     ["OWASP LLM05:2025 Improper Output Handling", "CWE-79", "CWE-94"]),
+    (("tool/function schema", "function schema", "excessive agency"), 5.3,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+     "Exposes the tools the model can invoke — the first step to making it call one it "
+     "should not.",
+     "Minimise granted tools and their permissions; authorize every tool call server-side "
+     "against the calling user; require confirmation for state-changing actions.",
+     ["OWASP LLM06:2025 Excessive Agency", "CWE-285"]),
     # --- exposures / secrets ---------------------------------------------------
     (("private key", "service-account key", "aws access key", "github token", "gitlab token",
       "google api key", "stripe", "sendgrid", "slack token", "credentials in uri",
