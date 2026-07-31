@@ -170,18 +170,40 @@ _API_ROUTE_RE = re.compile(
     r"(?:/[A-Za-z0-9_.~:{}-]{1,50}){0,5}", re.I)
 
 
+# Static assets that match the route shapes but are never an API endpoint. They cost
+# nothing to match and everything to keep: under a hard cap they push real endpoints out.
+_ASSET_RE = re.compile(
+    r"\.(?:woff2?|ttf|otf|eot|css|js|mjs|map|png|jpe?g|gif|svg|ico|webp|avif|bmp|"
+    r"mp4|webm|mp3|wav|pdf|zip|gz)$", re.I)
+# Route substrings worth keeping FIRST when the cap bites — the security-relevant
+# surface (auth, admin, money, LLM features), so a minified bundle's byte order never
+# decides which endpoints the planner gets to see.
+_HOT_ROUTE_RE = re.compile(
+    r"chat|assistant|copilot|llm|prompt|login|logout|auth|admin|token|session|user|"
+    r"account|password|reset|register|graphql|upload|download|file|search|order|"
+    r"basket|cart|payment|card|wallet|coupon|key|secret|credential|config|debug|"
+    r"internal|actuator|metrics|swagger|api-docs|oauth|profile|export|import|whoami",
+    re.I)
+
+
 def extract_api_routes(text: str, max_routes: int = 40) -> list[str]:
     """Pull distinct API-ish route paths out of a fetched body (JS bundle or HTML).
     Deterministic regex over UNTRUSTED text — the paths become leads in the site map,
-    never instructions, and any request to one still goes through the gate."""
+    never instructions, and any request to one still goes through the gate.
+
+    Static assets are dropped, and the security-relevant routes are kept first. Both
+    matter under the cap: on a real SPA bundle the chat endpoint sat at match 41 of 42
+    with the cap at 40, so scanning in byte order and truncating lost precisely the
+    endpoint worth testing while keeping two image paths.
+    """
     seen: list[str] = []
     for m in _API_ROUTE_RE.finditer(text or ""):
         r = m.group(0).rstrip("/.,;:'\"")
-        if 2 < len(r) <= 80 and r not in seen:
+        if 2 < len(r) <= 80 and r not in seen and not _ASSET_RE.search(r):
             seen.append(r)
-            if len(seen) >= max_routes:
-                break
-    return seen
+    hot = [r for r in seen if _HOT_ROUTE_RE.search(r)]
+    cold = [r for r in seen if not _HOT_ROUTE_RE.search(r)]
+    return (hot + cold)[:max_routes]
 
 
 @dataclass

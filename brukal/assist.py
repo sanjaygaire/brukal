@@ -52,6 +52,18 @@ _HIGHLIGHTS = [
 
 # Open web-service ports in an nmap highlight line ("80/tcp open http ...").
 _WEB_PORT_RE = re.compile(r"(\d{1,5})/tcp\s+open\s+(\S+)", re.I)
+# Ports that carry a web app often enough to be worth ONE fetch even when nmap fails to
+# label them http. Modern app servers routinely defeat service detection: OWASP Juice
+# Shop on 3000 fingerprints as "ppp?", so trusting the label alone silently drops the
+# ENTIRE web surface of any Node/React/Django/Rails app on its dev port.
+_LIKELY_WEB_PORTS = frozenset({
+    "3000", "3001", "4200", "4443", "5000", "5001", "5173", "7001", "8000", "8001",
+    "8008", "8080", "8081", "8088", "8180", "8443", "8800", "8888", "9000", "9090",
+    "9443",
+})
+# Service labels that mean "nmap could not tell" — a guess ("ppp?"), an unknown, or a
+# firewalled banner. Never a reason to conclude the port is NOT web.
+_UNSURE_SVC_RE = re.compile(r"\?$|^unknown$|^tcpwrapped$|^ppp$", re.I)
 # URLs that DESTROY the session: never fetch these during a crawl, or we log
 # ourselves out and the rest of an AUTHENTICATED crawl runs unauthenticated (a
 # classic authenticated-scanning trap — the scanner clicks its own "logout").
@@ -940,10 +952,16 @@ class AssistSession:
         for _tag, line in self.highlights:
             for m in _WEB_PORT_RE.finditer(line):
                 port, svc = m.group(1), m.group(2).lower()
-                if "http" not in svc and svc not in ("https", "ssl/http", "http-alt",
-                                                     "http-proxy", "www"):
+                labelled_web = ("http" in svc or svc in ("https", "ssl/http", "http-alt",
+                                                        "http-proxy", "www"))
+                # An open port on a common web port that nmap could NOT identify is a
+                # web candidate, not a dead end: costs one fetch, and skipping it loses
+                # the whole surface when service detection fails (Juice Shop = "ppp?").
+                maybe_web = (port in _LIKELY_WEB_PORTS
+                             and (bool(_UNSURE_SVC_RE.search(svc)) or not svc))
+                if not labelled_web and not maybe_web:
                     continue
-                https = ("https" in svc or "ssl" in svc or port in ("443", "8443"))
+                https = ("https" in svc or "ssl" in svc or port in ("443", "8443", "9443"))
                 scheme = "https" if https else "http"
                 if (not https and port == "80") or (https and port == "443"):
                     urls.append(f"{scheme}://{self.target}/")

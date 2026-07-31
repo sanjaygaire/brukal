@@ -179,6 +179,30 @@ def test_extract_api_routes_caps_and_tolerates_junk():
     assert webmap.extract_api_routes("no routes here, just prose about apiaries") == []
 
 
+def test_static_assets_are_not_mined_as_api_routes():
+    """Font/image paths match the route shapes but are never endpoints, and under a cap
+    they displace real ones — the live run kept three .woff2 paths and dropped the chat
+    API."""
+    blob = ('"/v18/pxiKyp0ihIEF2isQFJXGdg.woff2" "/products/juicy_chatbot.jpg" '
+            '"/assets/main.css" "/rest/user/login"')
+    routes = webmap.extract_api_routes(blob)
+    assert "/rest/user/login" in routes
+    assert not [r for r in routes if r.endswith((".woff2", ".jpg", ".css"))]
+
+
+def test_security_relevant_routes_survive_the_cap():
+    """Live-run regression: in a real SPA bundle /rest/chat was unique match 41 of 42
+    with the cap at 40, so byte order alone decided the one endpoint worth testing got
+    dropped. The interesting routes must be kept first, not the ones that happen to be
+    minified early."""
+    filler = " ".join(f'"/api/thing{i}"' for i in range(60))   # dull, and first
+    blob = filler + ' "/rest/chat"'                            # interesting, and last
+    routes = webmap.extract_api_routes(blob, max_routes=40)
+    assert len(routes) == 40
+    assert "/rest/chat" in routes
+    assert routes[0] == "/rest/chat"          # ranked ahead of the filler
+
+
 def test_surface_summary_lists_api_endpoints():
     s = webmap.AttackSurface(seed="http://10.10.10.5/")
     s.add_page("http://10.10.10.5/", set(), [], {})
@@ -219,6 +243,36 @@ def test_web_urls_from_executed_commands():
     urls = sess.web_urls_from_findings()
     assert "http://10.10.10.5:3000/" in urls        # crawl can now seed from this
     assert len(urls) == 1                            # base URL deduped across commands
+
+
+def test_unlabelled_app_port_still_seeds_the_crawl():
+    """Live-run regression: nmap fingerprinted OWASP Juice Shop's port 3000 as "ppp?",
+    so the web-surface reflex skipped it and the entire web app was invisible — the run
+    fell back to a guessed port-80 URL and crawled nothing. An open COMMON web port that
+    nmap could not identify is a candidate worth one fetch, not a dead end."""
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    sess = AssistSession(TARGET, ex, StrategistAgent(SeqLLM(["x"])))
+    # the exact shape nmap emitted during the live run
+    sess.highlights.append(("port", "open port: 3000/tcp open  ppp?    syn-ack ttl 64"))
+    assert f"http://{TARGET}:3000/" in sess.web_urls_from_findings()
+
+
+def test_unlabelled_port_heuristic_stays_narrow():
+    """It must not turn every unidentified port into a web fetch — only the ports that
+    actually carry apps, and only when nmap is unsure."""
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    sess = AssistSession(TARGET, ex, StrategistAgent(SeqLLM(["x"])))
+    sess.highlights.append(("port", "22/tcp open ssh"))            # known non-web
+    sess.highlights.append(("port", "12345/tcp open unknown"))     # unusual port
+    sess.highlights.append(("port", "3306/tcp open mysql"))        # identified, not web
+    assert sess.web_urls_from_findings() == []
+    # https inferred for the TLS-ish app ports
+    sess.highlights.append(("port", "8443/tcp open  tcpwrapped"))
+    assert f"https://{TARGET}:8443/" in sess.web_urls_from_findings()
 
 
 # --- soft-404 detection (SPA returns 200 for missing paths) -----------------
