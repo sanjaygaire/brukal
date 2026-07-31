@@ -456,7 +456,12 @@ class GroundedLoop:
             surface = self.session.surface
             probeable = surface is not None and bool(
                 surface.params or getattr(surface, "forms", None)
-                or self.session._ai_endpoints())
+                or self.session._ai_endpoints()
+                # A REST API mined from its own spec has none of the above — its whole
+                # surface is routes with path parameters, which is precisely where its
+                # injection and object-authz bugs live.
+                or any(re.search(r"\{[^{}/]{1,40}\}", r)
+                       for r in (getattr(surface, "api_routes", None) or [])))
             if probeable and not self._confirmed_done:
                 self._confirmed_done = True
                 n = 0

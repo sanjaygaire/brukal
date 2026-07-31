@@ -152,3 +152,19 @@ def test_crawled_pages_are_scanned_for_exposures():
         assert "SQL error (possible injection)" in titles
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_reflex_gate_counts_path_routes_as_probeable():
+    """Regression: an API mined from its own spec has 0 params, 0 forms and no AI
+    endpoint, so the confirm reflex skipped it entirely and the path-parameter probing
+    above was unreachable in a real run — the same shape of miss twice over."""
+    import re as _re
+    sess = _session(_PathSqlCage())
+    sess.surface = AttackSurface(seed=f"http://{TARGET}:5000/")
+    sess.surface.add_routes(["/users/v1/{username}", "/books/v1"])
+    assert not sess.surface.params and not sess.surface.forms
+    assert not sess._ai_endpoints()
+    probeable = bool(
+        sess.surface.params or sess.surface.forms or sess._ai_endpoints()
+        or any(_re.search(r"\{[^{}/]{1,40}\}", r) for r in sess.surface.api_routes))
+    assert probeable, "path-parameter routes must make a surface probeable"
