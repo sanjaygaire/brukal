@@ -1040,6 +1040,7 @@ class AssistSession:
             in_scope_links = {l for l in links
                               if _in_scope(l) and not _LOGOUT_RE.search(l)}
             surface.add_page(url, in_scope_links, forms, params)
+            self.scan_web_body(url, body)      # every crawled page is evidence too
             # Mine API route paths from the body (crucial for SPAs: the endpoints live
             # in the JS bundle, not the near-empty initial HTML). Leads, still gated.
             surface.add_routes(webmap.extract_api_routes(body))
@@ -1224,6 +1225,27 @@ class AssistSession:
         q[param] = value
         return urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(q), sp.fragment))
 
+    def scan_web_body(self, url: str, body: str) -> int:
+        """Run the exposure signatures over a body fetched through the GOVERNED BROWSER
+        and record what they find. Shell tool output has always been scanned; browser
+        output was not — so the crawl could read a stack trace, a leaked key, a .git
+        directory or a SQL error across twenty pages and record none of it. The browser
+        is the main way Brukal sees content on a web target, which made this the widest
+        blind spot on the web path. Returns how many signals were recorded."""
+        from . import webprobe
+        if not body:
+            return 0
+        n = 0
+        for sev, label, line in webprobe.scan_exposures(body):
+            # Same recorder as the shell path, so soft-404 downgrading and the
+            # self-evident-exposure confirmation rules apply identically.
+            self._record_vuln_finding(f"WEB get {url}", sev, label, line)
+            h = (f"exposure/{sev}", f"{label}: {line}")
+            if h not in self.highlights:
+                self.highlights.append(h)
+            n += 1
+        return n
+
     def _record_confirmed(self, target, title, sev, param, evidence, category="web") -> None:
         from .findings import Finding
         self.findings.add(Finding(title=title, severity=sev, target=target,
@@ -1273,6 +1295,39 @@ class AssistSession:
                 return True
         return False
 
+    def confirm_sqli_error(self, url: str, param: str, base: str = "1",
+                           method: str = "GET", extra=None) -> bool:
+        """Error-based SQL injection confirmation by a QUOTE-BALANCE differential: an
+        unbalanced quote must provoke a database error, and the balanced version of the
+        same payload must NOT. That pairing is the proof — a page that errors on
+        everything, or reflects the payload, fails it.
+
+        This covers what the boolean test cannot. Boolean SQLi needs a base value that
+        returns a real record, and on a REST path parameter (/users/v1/{username}) the
+        valid identifiers are exactly what an attacker does not have yet, so TRUE and
+        FALSE both render 'not found' and the differential goes flat while the parameter
+        is plainly injectable."""
+        from . import webprobe
+
+        def sql_error(body: str) -> bool:
+            return any(label == "SQL error (possible injection)"
+                       for _s, label, _l in webprobe.scan_exposures(body or ""))
+
+        baseline, _s, _h = self._probe(url, param, base, method, extra)
+        if baseline is None or sql_error(baseline):
+            return False                      # errors on clean input: no signal to read
+        broken, _s2, _h2 = self._probe(url, param, base + "'", method, extra)
+        if broken is None or not sql_error(broken):
+            return False
+        balanced, _s3, _h3 = self._probe(url, param, base + "''", method, extra)
+        if balanced is None or sql_error(balanced):
+            return False                      # still broken when balanced -> not the quote
+        self._record_confirmed(
+            url, "SQL injection (error-based)", "critical", param,
+            f"{base + chr(39)!r} provokes a database error while {base + chr(39) * 2!r} "
+            f"does not — the input is concatenated into the query")
+        return True
+
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -1304,7 +1359,15 @@ class AssistSession:
             if self._confirm_budget <= 0:
                 return None, None, {}
             self._confirm_budget -= 1
-        if method.upper() == "JSON-CHAT":
+        if method.upper() == "PATH":
+            # A REST path parameter (/users/v1/{username}) is an injection point like any
+            # other, and on modern APIs it is where the object id lives — so IDOR and
+            # injection concentrate there. `param` is the placeholder token to replace in
+            # the URL; the value is percent-encoded so a payload cannot invent new path
+            # segments or a query string.
+            from urllib.parse import quote
+            act = WebAction("get", url=url.replace(param, quote(value, safe="")))
+        elif method.upper() == "JSON-CHAT":
             # The OpenAI-compatible chat contract: the prompt rides a `messages` array,
             # not a flat field. Near-universal now, and a flat body is simply rejected
             # by such an endpoint ("messages must not be empty"), so probing it without
@@ -1620,9 +1683,9 @@ class AssistSession:
         Returns how many were confirmed."""
         if self.browser is None or self.surface is None:
             return 0
-        checks = (self.confirm_sqli, self.confirm_cmdi, self.confirm_lfi,
-                  self.confirm_ssti, self.confirm_xss, self.confirm_ssrf,
-                  self.confirm_open_redirect, self.confirm_idor)
+        checks = (self.confirm_sqli, self.confirm_sqli_error, self.confirm_cmdi,
+                  self.confirm_lfi, self.confirm_ssti, self.confirm_xss,
+                  self.confirm_ssrf, self.confirm_open_redirect, self.confirm_idor)
         self._confirm_budget = 120        # cap total governed requests for the reflex
         confirmed = tried = 0
         probed: set[str] = set()          # endpoints already covered by passes 1 and 2
@@ -1674,7 +1737,26 @@ class AssistSession:
                     tried += 1
                     others = {n: "1" for n, t in fields if n != field and t.lower() != "file"}
                     probe(action, field, method=method, extra=others)
-            # 3) AI / LLM endpoints — a chat API on a SPA has neither a form nor a query
+            # 3) REST PATH parameters — /users/v1/{username}. On an API this is where the
+            #    object identifier lives, so injection and broken object-level authz
+            #    concentrate here, and nothing above reaches it: there is no query string
+            #    and no form to find. Every existing proof applies unchanged; only the
+            #    injection point moves from the query to a path segment.
+            from urllib.parse import urljoin as _urljoin
+            base_origin = getattr(self.surface, "seed", "") or f"http://{self.target}/"
+            for route in list(getattr(self.surface, "api_routes", []) or []):
+                if self._confirm_budget <= 0:
+                    return confirmed
+                m = re.search(r"\{[^{}/]{1,40}\}", route)
+                if not m:
+                    continue                    # no path parameter to vary
+                url = route if route.startswith("http") else _urljoin(base_origin, route)
+                if url in probed:
+                    continue
+                probed.add(url)
+                probe(url, m.group(0), method="PATH")
+
+            # 4) AI / LLM endpoints — a chat API on a SPA has neither a form nor a query
             #    parameter, so it is reachable only as a mined route. Its body field name
             #    isn't discoverable either: try the handful the ecosystem actually uses.
             for url in self._ai_endpoints():
@@ -3021,6 +3103,11 @@ def _is_raw_fetch(command: str) -> bool:
     """True if `command`'s tool emits a raw response/file body (so exposure signatures
     are meaningful), False for scanners/attack tools whose verbose output would
     false-positive the content signatures."""
+    # A governed-browser fetch IS a raw response body — the same thing curl returns,
+    # just through the web door instead of the shell one. Without this the crawl could
+    # read a stack trace or a leaked key on 20 pages and record nothing.
+    if (command or "").startswith("WEB "):
+        return True
     return _tool_of(command) in _RAW_FETCH_TOOLS
 
 

@@ -182,10 +182,26 @@ _EXPOSURES = (
                 r"AWS_SECRET_ACCESS_KEY|JWT_SECRET|PRIVATE_KEY|MYSQL_ROOT_PASSWORD|"
                 r"REDIS_PASSWORD|PASSWORD)\s*=\s*\S+"),
      "high", "Secret in exposed env/config"),
+    # Database errors, per stack. The original set covered PHP/MySQL, Oracle, PDO,
+    # Postgres, .NET's SQLiteException and Sequelize — but not the Python data stack
+    # (SQLAlchemy/sqlite3/psycopg2/Django) or Java/.NET's SQL exceptions, so a live
+    # Flask+SQLAlchemy API leaked `sqlite3.OperationalError: unrecognized token` from an
+    # injectable path parameter and nothing fired.
     (re.compile(r"(?:SQL syntax.*?(?:MySQL|MariaDB)|valid MySQL result|ORA-\d{5}|"
                 r"SQLSTATE\[|PostgreSQL.*?ERROR|Unclosed quotation mark after|"
                 r"SQLiteException|SQLITE_ERROR|Sequelize\w*Error|"
-                r"near \".*?\": syntax error)", re.I),
+                r"near \".*?\": syntax error|"
+                # Python: SQLAlchemy / DB-API drivers / Django
+                r"sqlalchemy\.exc\.\w+|"
+                r"sqlite3\.(?:Operational|Programming|Integrity|Database|Interface)Error|"
+                r"unrecognized token:|"
+                r"psycopg2\.(?:errors\.\w+|\w*Error)|pymysql\.err\.\w+|"
+                r"mysql\.connector\.errors\.\w+|asyncpg\.exceptions\.\w+|"
+                r"django\.db\.utils\.\w+Error|"
+                # Java / .NET
+                r"java\.sql\.SQLException|org\.hibernate\.exception\.\w+|"
+                r"System\.Data\.SqlClient\.SqlException|"
+                r"Microsoft\.Data\.SqlClient\.SqlException)", re.I),
      "high", "SQL error (possible injection)"),
     (re.compile(r"(?i)<title>\s*Index of /"), "medium", "Directory listing enabled"),
     (re.compile(r"(?i)<title>\s*phpinfo\(\)"), "medium", "phpinfo() exposed"),
