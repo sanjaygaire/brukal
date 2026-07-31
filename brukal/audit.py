@@ -50,6 +50,12 @@ def _hash(prev_hash: str, payload: str) -> str:
     return _chain(prev_hash, payload, None)
 
 
+# Ledgers this PROCESS has claimed: path -> held lock file object. Keeps the
+# guard aimed at cross-process interleaving without blocking a later session
+# in the same process from appending to the ledger it already owns.
+_PROCESS_LEDGER_LOCKS: dict = {}
+
+
 class AuditLog:
     """Append-only, hash-chained log backed by a JSONL file."""
 
@@ -66,6 +72,51 @@ class AuditLog:
         # same prev_hash and corrupt the chain. This lock is what makes the audit
         # log safe under the parallel orchestrator (invariant 5 holds concurrently).
         self._lock = threading.Lock()
+        # The in-process lock cannot see ANOTHER PROCESS writing the same ledger. Two
+        # runs sharing one --audit path interleave their prev_hash and the chain verifies
+        # FALSE — indistinguishable from tampering, which destroys the log's evidential
+        # value. A real run hit exactly this: a stopped run finished its in-flight action
+        # while a relaunched run appended. Taken lazily on the first write, so a
+        # verify-only open (cli `audit`, session close) never contends with a live run.
+        self._wlock_fd = None
+        self._wlock_taken = False
+
+    def _acquire_writer_lock(self) -> None:
+        """Claim exclusive write ownership of this ledger across processes. Fail-closed:
+        if another process holds it, refuse to write rather than corrupt the chain."""
+        if self._wlock_taken:
+            return
+        try:
+            import fcntl
+        except ImportError:                    # non-POSIX: no advisory locks available
+            self._wlock_taken = True
+            return
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        key = str(self.path.resolve())
+        if key in _PROCESS_LEDGER_LOCKS:
+            # THIS process already owns the ledger (a later session reusing the same
+            # path). That is safe and ordinary; the tail is re-read below either way.
+            # Only another process interleaving is the hazard worth refusing.
+            self._wlock_taken = True
+            self._last_hash = self._recover_last_hash()
+            return
+        fd = open(lock_path, "w")
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fd.close()
+            raise RuntimeError(
+                f"audit ledger {self.path} is already being written by another run. "
+                f"Appending would interleave the hash chain and make it verify FALSE. "
+                f"Use a separate --audit path for this run.") from None
+        fd.write(f"{os.getpid()}\n")
+        fd.flush()
+        _PROCESS_LEDGER_LOCKS[key] = fd     # held for the process lifetime
+        self._wlock_fd = fd
+        self._wlock_taken = True
+        # Another process may have appended between construction and now, so re-read the
+        # tail under the lock — chaining onto a stale hash is what breaks the chain.
+        self._last_hash = self._recover_last_hash()
 
     def _recover_last_hash(self) -> str:
         """On startup, read the last line so new records chain onto it."""
@@ -87,6 +138,9 @@ class AuditLog:
         if is_dataclass(data):
             data = asdict(data)
         with self._lock:
+            # Inside the thread lock: concurrent workers in ONE process share this
+            # AuditLog and must not race to claim the cross-process lock.
+            self._acquire_writer_lock()
             record = {
                 "ts": time.time(),
                 "kind": kind,          # "decision" | "execution" | "note"

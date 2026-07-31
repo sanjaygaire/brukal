@@ -8,6 +8,7 @@ mode (BRUKAL_AUDIT_KEY) closes that: an edit can't be re-chained without the key
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -72,3 +73,38 @@ def test_default_behaviour_unchanged_without_key():
     log = _seed(tmp)
     assert log.verify() is True
     assert log._key is None
+
+
+def test_second_process_cannot_interleave_the_ledger():
+    """A live run reported `chain intact: False` that was NOT tampering: a stopped run
+    finished its in-flight action while a relaunched run appended to the same --audit
+    path, interleaving prev_hash. Detecting that after the fact is too late — the log is
+    evidence, so a second WRITER is refused outright (fail-closed)."""
+    import subprocess
+    import sys as _sys
+    tmp = tempfile.mkdtemp()
+    try:
+        path = Path(tmp) / "a.jsonl"
+        holder = AuditLog(path)
+        holder.append("decision", {"first": True})      # this process owns it now
+
+        # a separate PROCESS must refuse to append rather than corrupt the chain
+        code = (
+            "import sys;sys.path.insert(0, %r)\n"
+            "from brukal.audit import AuditLog\n"
+            "try:\n"
+            "    AuditLog(%r).append('decision', {'intruder': True})\n"
+            "    print('WROTE')\n"
+            "except RuntimeError as e:\n"
+            "    print('REFUSED' if 'another run' in str(e) else 'OTHER')\n"
+        ) % (str(Path(__file__).resolve().parents[1]), str(path))
+        out = subprocess.run([_sys.executable, "-c", code], capture_output=True,
+                             text=True, timeout=60).stdout.strip()
+        assert out == "REFUSED", out
+        assert holder.verify()                          # chain still clean
+
+        # and the owning process may keep appending, including via a new instance
+        AuditLog(path).append("decision", {"same_process_later_session": True})
+        assert AuditLog(path).verify()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
