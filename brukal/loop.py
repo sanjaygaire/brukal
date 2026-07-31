@@ -42,6 +42,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+# The ports worth one proactive sweep: the standard pair plus the app-server ports a
+# modern stack actually listens on. Deliberately a short list — this is a targeted
+# "where is the web app" question, never a full port scan.
+_WEB_PORT_SWEEP = ("80,443,3000,3001,4200,5000,5001,5173,8000,8001,8008,8080,8081,"
+                   "8088,8443,8888,9000,9090")
+
+
+def _bare_host(target: str) -> str:
+    """The scannable host for a port sweep. nmap takes a host or CIDR — hand it a URL
+    and it fails to resolve and finds nothing, so strip any scheme/path/port."""
+    t = (target or "").strip()
+    had_scheme = False
+    for pre in ("http://", "https://"):
+        if t.lower().startswith(pre):
+            t = t[len(pre):]
+            had_scheme = True
+            break
+    if had_scheme:
+        t = t.split("/")[0]        # a URL path is not part of the host
+    if t.count(":") == 1:          # drop a :port, but leave IPv6 alone
+        t = t.split(":")[0]
+    return t                       # a bare CIDR (10.0.0.0/24) is a valid nmap target
+
+
 def _norm_cmd(command: str | None) -> str:
     """Whitespace-normalised form of a command, for repeat detection."""
     return " ".join((command or "").split())
@@ -177,6 +201,8 @@ class GroundedLoop:
         self._observer = observer
         self.steps: list[LoopStep] = []
         self._ran: set[str] = set()           # commands that have really executed
+        self._crawled_bases: set[str] = set()  # web bases already mapped (re-crawl guard)
+        self._port_scanned = False            # the proactive web-port sweep runs once
         self._sig_counts: dict = {}           # near-duplicate signature -> count
         self._stalls = 0                      # consecutive blocked proposals
         self._coach_streak = 0                # consecutive coached repeats without a new move
@@ -349,17 +375,58 @@ class GroundedLoop:
                     return self._finish("budget", why)
             self._checkpoint()
 
+            # REFLEX 0a: FIND the web surface ourselves before anything else. Everything
+            # downstream (crawl → params → confirmations) hangs off knowing which port
+            # serves the app, and leaving that to the model is the single most fragile
+            # link in a real run: one live engagement burned its whole budget after the
+            # model sent nmap a URL ("nmap -sV http://host"), which nmap cannot scan, so
+            # no port was ever found and the app on :3000 stayed invisible. One bounded,
+            # deterministic sweep of the common app ports removes that dependency. Gated
+            # like everything else (and it escalates unless full-send).
+            if (not self._port_scanned
+                    and getattr(self.session, "browser", None) is not None
+                    and not self.session.web_urls_from_findings()):
+                self._port_scanned = True
+                cmd = (f"nmap -Pn -sV --open -p {_WEB_PORT_SWEEP} "
+                       f"{_bare_host(self.session.target)}")
+                self._emit("running", action=cmd, web=False, agent="recon",
+                           phase="reconnaissance", goal="find the web surface")
+                decision, result, highlights = self.session.run(cmd, agent="recon")
+                step = LoopStep(
+                    index=len(self.steps) + 1, phase="reconnaissance",
+                    goal="find the web surface (proactive port sweep)",
+                    rationale="nothing web-facing is known yet — sweeping the common "
+                              "app ports so the crawl has a real seed",
+                    command=cmd, verdict=(decision.verdict if decision else "NOOP"),
+                    executed=(result is not None),
+                    summary=self._summarise(decision, result, highlights) if decision
+                    else "port sweep could not run",
+                    highlights=list(highlights))
+                self.steps.append(step)
+                self._emit("step", step=step)
+                if result is not None:
+                    self._ran.add(_norm_cmd(cmd))
+                    continue                    # re-plan with the real ports in hand
+
             # REFLEX 0: the FIRST time a web service is known, CRAWL it (bounded,
             # governed) to build the attack-surface map — forms, params, endpoints —
             # so every later decision reasons over the real site instead of guessing.
             # Runs once (surface stays set afterwards); each fetch still goes through
             # the gate, and it never leaves scope.
-            if (self.session.surface is None
-                    and getattr(self.session, "browser", None) is not None
-                    and self.session.web_urls_from_findings()):
+            # A web surface discovered LATER (nmap finds the app on :3000 after the crawl
+            # already ran against a guessed :80) must still be mapped: the first URL seen
+            # is often the wrong one, and crawling only once left the real app invisible.
+            # Bounded to a few distinct bases so this can never become a port sweep.
+            uncrawled = [u for u in self.session.web_urls_from_findings()
+                         if u not in self._crawled_bases]
+            if (getattr(self.session, "browser", None) is not None
+                    and uncrawled and len(self._crawled_bases) < 3):
+                seed = uncrawled[0]
+                self._crawled_bases.add(seed)
                 self._emit("crawling", note="mapping the web attack surface")
                 try:
                     surface = self.session.crawl(
+                        seeds=[seed], merge=self.session.surface is not None,
                         observer=lambda kind, **p: self._emit("crawl", **p))
                 except Exception:
                     surface = None
@@ -377,12 +444,20 @@ class GroundedLoop:
                     self._emit("step", step=step)
                     continue                     # re-plan with the full site map in hand
 
-            # REFLEX 0b: once the surface has PARAMETERS, actively CONFIRM boolean SQLi
-            # and reflected XSS on them — deterministic differential proofs that promote
+            # REFLEX 0b: once the surface has anything PROBEABLE, actively CONFIRM the
+            # vuln classes on it — deterministic differential proofs that promote
             # candidates to CONFIRMED findings without waiting for the model. Runs once,
             # bounded, governed (WEB GETs; scope+scheme).
+            #
+            # Gating this on query parameters alone made it unreachable on exactly the
+            # apps that need it most: a SPA ships 0 params and 0 forms, and its whole
+            # surface is the API routes mined from the JS bundle — including any LLM
+            # endpoint. Forms and AI endpoints are probeable too.
             surface = self.session.surface
-            if surface is not None and surface.params and not self._confirmed_done:
+            probeable = surface is not None and bool(
+                surface.params or getattr(surface, "forms", None)
+                or self.session._ai_endpoints())
+            if probeable and not self._confirmed_done:
                 self._confirmed_done = True
                 n = 0
                 try:

@@ -308,3 +308,21 @@ def test_knowledge_enriches_the_ai_classes():
     assert "LLM05:2025" in " ".join(out["refs"])
     # not swallowed by the generic severity fallback
     assert out["impact"] != "Weakens the security posture of the target."
+
+
+def test_confirm_reflex_reachable_on_a_params_free_spa():
+    """Live-run regression: REFLEX 0b was gated on surface.params, but a SPA has 0
+    params and 0 forms — its whole surface is the API routes mined from the bundle. The
+    AI endpoint was therefore never probed on exactly the app shape it exists for."""
+    from brukal.loop import GroundedLoop
+    sess = _session(_ChatCompletionsCage())
+    sess.surface = AttackSurface(seed="http://10.10.10.5:3000/")
+    sess.surface.add_page("http://10.10.10.5:3000/", set(), [], {})
+    sess.surface.add_routes(["/rest/chat"])          # SPA: no params, no forms
+    assert not sess.surface.params and not sess.surface.forms
+    loop = GroundedLoop(sess, max_steps=1)
+    probeable = bool(sess.surface.params or sess.surface.forms or sess._ai_endpoints())
+    assert probeable, "an AI endpoint alone must make the surface probeable"
+    assert sess.confirm_surface() == 1                # and the reflex confirms it
+    assert any(f.title.startswith("Prompt injection") and f.category == "ai"
+               for f in sess.findings.all())

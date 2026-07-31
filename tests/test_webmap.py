@@ -285,3 +285,65 @@ def test_soft_404_warning_in_summary():
     out = s.summary()
     assert "SOFT-404" in out
     assert "do not trust path-discovery" in out.lower() or "does not" in out.lower()
+
+
+def test_crawl_merges_a_second_web_surface():
+    """A second surface (the app on another port, found after the first crawl) must ADD
+    to the map, not replace it — otherwise whichever crawl ran last wins and the earlier
+    one's endpoints vanish."""
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    ex = Executor(Gate(scope), FakeKali(), audit)
+    sess = AssistSession(TARGET, ex, StrategistAgent(SeqLLM(["x"])))
+
+    first = webmap.AttackSurface(seed=f"http://{TARGET}/")
+    first.add_page(f"http://{TARGET}/", {f"http://{TARGET}/a"}, [], {})
+    first.add_routes(["/rest/user/login"])
+    sess.surface = first
+
+    class _Cage:
+        def run(self, action):
+            from brukal.web import WebResult
+            return WebResult(status=200, url=action.url,
+                             body='<a href="/shop">s</a> "/rest/chat"')
+
+    from brukal.web import GovernedBrowser
+    sess.browser = GovernedBrowser(scope, _Cage(), audit)
+    sess.crawl(seeds=[f"http://{TARGET}:3000/"], max_pages=2, merge=True)
+
+    routes = sess.surface.api_routes
+    assert "/rest/user/login" in routes            # the first surface survived
+    assert "/rest/chat" in routes                  # and the second was folded in
+    assert f"http://{TARGET}/" in sess.surface.pages
+
+
+def test_bare_host_strips_url_forms():
+    """nmap takes a host, not a URL: a live run lost its whole budget because the model
+    sent `nmap -sV http://172.20.0.2`, which resolves nothing and finds no ports."""
+    from brukal.loop import _bare_host
+    assert _bare_host("http://172.20.0.2") == "172.20.0.2"
+    assert _bare_host("https://shop.example.com:3000/path?q=1") == "shop.example.com"
+    assert _bare_host("10.10.10.5") == "10.10.10.5"
+    assert _bare_host("10.10.10.0/24") == "10.10.10.0/24"      # CIDR kept intact
+
+
+def test_loop_sweeps_for_the_web_surface_when_nothing_is_known():
+    """The app port must be discovered by Brukal, not left to the model's nmap syntax.
+    With no web finding yet, the loop sweeps the common app ports once, itself."""
+    from brukal.loop import GroundedLoop
+
+    sess, tmp = _session_with_site()
+    try:
+        assert sess.web_urls_from_findings() == []      # nothing web-facing known
+        sess.strategist = StrategistAgent(SeqLLM([
+            "PHASE: recon\nGOAL: hand off\nREASONING: over to you.\nMANUAL: your move",
+        ]))
+        loop = GroundedLoop(sess, max_steps=4)
+        result = loop.run()
+        sweeps = [s for s in result.steps if (s.command or "").startswith("nmap -Pn")]
+        assert len(sweeps) == 1                         # exactly once, not every turn
+        cmd = sweeps[0].command
+        assert cmd.endswith(TARGET)                     # a bare host, never a URL
+        assert ",3000," in cmd and ",8080," in cmd      # the common app ports
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

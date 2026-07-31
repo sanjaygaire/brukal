@@ -985,7 +985,8 @@ class AssistSession:
                 out.append(u)
         return out
 
-    def crawl(self, seeds=None, max_pages: int = 20, max_depth: int = 2, observer=None):
+    def crawl(self, seeds=None, max_pages: int = 20, max_depth: int = 2, observer=None,
+              merge: bool = False):
         """Governed breadth-first crawl of the in-scope web surface. Every fetch goes
         through run_web -> the gate -> the cage (scope-locked egress); the HTML that
         comes back is parsed IN-PROCESS (no egress) into an AttackSurface — forms,
@@ -1063,6 +1064,22 @@ class AssistSession:
         except Exception:
             pass
 
+        # A second web surface (another port/vhost found later) ADDS to the map rather
+        # than replacing it — otherwise crawling the app on :3000 would erase whatever
+        # was learned from :80, and whichever ran last would win.
+        if merge and self.surface is not None:
+            prev = self.surface
+            prev.pages |= surface.pages
+            prev.links |= surface.links
+            for f in surface.forms:
+                if f not in prev.forms:
+                    prev.forms.append(f)
+            for b, names in surface.params.items():
+                prev.params.setdefault(b, set()).update(names)
+            prev.techs |= surface.techs
+            prev.add_routes(surface.api_routes)
+            prev.soft_404 = prev.soft_404 or surface.soft_404
+            surface = prev
         self.surface = surface
         summ = surface.summary()
         head = summ.splitlines()[0]
