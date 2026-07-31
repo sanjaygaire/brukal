@@ -67,6 +67,11 @@ _PRESETS = {
                     "llama-3.1-8b-instant"),
     "zhipu":       ("https://api.z.ai/api/paas/v4", "ZHIPU_API_KEY", "glm-4.6"),
     "glm":         ("https://api.z.ai/api/paas/v4", "ZHIPU_API_KEY", "glm-4.6"),
+    # NVIDIA NIM hosts third-party open weights behind an OpenAI-compatible API, so a
+    # GLM/Llama/Nemotron id is reached with an `nvapi-...` key rather than the vendor's
+    # own. Note the id is namespaced ("z-ai/glm-5.2"), not the bare vendor name.
+    "nvidia":      ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY",
+                    "z-ai/glm-5.2"),
     "deepseek":    ("https://api.deepseek.com", "DEEPSEEK_API_KEY", "deepseek-chat"),
     "openai-compatible": (None, "OPENAI_API_KEY", None),
 }

@@ -21,6 +21,7 @@ hit becomes a governed FINDING (evidence for the operator), never an action. No 
 """
 from __future__ import annotations
 
+import json
 import re
 
 _AI_SIGNALS = (
@@ -56,6 +57,53 @@ _AI_SIGNALS = (
     (re.compile(r"(?i)<script\b[^>]*>[\s\S]{0,120}?</script>|onerror\s*=\s*[\"']?\w"),
      "high", "Improper output handling (active markup in LLM output)"),
 )
+
+
+def assemble_stream(text: str) -> str:
+    """Reassemble a STREAMED chat response into the text the user would actually see.
+
+    Chat APIs stream Server-Sent Events, one token-ish delta per line:
+
+        data: {"choices":[{"delta":{"content":"219"}}]}
+        data: {"choices":[{"delta":{"content":"663"}}]}
+
+    so any interesting string — a canary, a leaked key, a system prompt — is SPLIT
+    across chunks and a substring search over the raw body silently misses it. This
+    concatenates the deltas back into one string. Returns "" when the body is not a
+    streamed response, so the caller can fall back to the raw text. Pure parsing, no
+    network, no model.
+    """
+    if not text or "data:" not in text:
+        return ""
+    out: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            obj = json.loads(payload)
+        except Exception:
+            continue
+        for choice in obj.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            for holder in ("delta", "message"):
+                part = choice.get(holder)
+                if isinstance(part, dict) and isinstance(part.get("content"), str):
+                    out.append(part["content"])
+        for key in ("content", "body", "response", "answer", "text"):
+            if isinstance(obj.get(key), str):
+                out.append(obj[key])
+    return "".join(out)
+
+
+def visible_text(text: str) -> str:
+    """The model's visible answer: the reassembled stream when the body is streamed,
+    otherwise the body unchanged."""
+    return assemble_stream(text) or (text or "")
 
 
 def scan_ai_output(text: str) -> list[tuple[str, str, str]]:
