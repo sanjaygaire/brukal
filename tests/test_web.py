@@ -251,3 +251,16 @@ def test_map_cage_host_rejects_injection_and_bad_input():
     assert map_cage_host("*.nexus.htb", "10.0.0.1", "x") is False   # wildcard
     assert map_cage_host("nexus.htb", "not-an-ip", "x") is False    # bad IP
     assert map_cage_host("a;rm -rf b", "10.0.0.1", "x") is False    # shell metachars in host
+
+
+def test_cage_does_not_truncate_a_spa_bundle():
+    """A SPA's JS bundle IS its attack surface — the endpoints exist nowhere else. The
+    cage read only 20 KB, so on a live 783 KB Juice Shop bundle route mining saw the
+    first 2.5% and the app's real endpoints (including its LLM chat API) were invisible.
+    """
+    from brukal.web import DockerHttpWebCage
+    assert DockerHttpWebCage._MAX_BODY >= 1_000_000
+    # the limit must actually reach both read sites in the in-cage script
+    assert "read(20000)" not in DockerHttpWebCage._SCRIPT
+    assert DockerHttpWebCage._SCRIPT.count("read(MAXB)") == 2
+    assert f"MAXB={DockerHttpWebCage._MAX_BODY}" in DockerHttpWebCage._SCRIPT

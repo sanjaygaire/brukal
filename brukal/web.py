@@ -231,8 +231,16 @@ class DockerHttpWebCage:
 
     # NB: a no-follow redirect handler (class NR) is installed so a 3xx to an
     # out-of-scope host is surfaced, never chased — same guarantee as HttpWebCage.
+    # How much of a response body to bring back. 20 KB silently truncated every modern
+    # web app: a live Juice Shop bundle is 783 KB, so route mining saw the first 2.5% of
+    # main.js and the app's real endpoints (including its LLM chat API) simply did not
+    # exist as far as Brukal was concerned. The bundle IS the attack surface of a SPA,
+    # so it has to be read whole; the ceiling only guards against pulling a huge binary
+    # into memory.
+    _MAX_BODY = 4_000_000
     _SCRIPT = (
         "import sys,json,urllib.request,urllib.error\n"
+        f"MAXB={_MAX_BODY}\n"
         "class NR(urllib.request.HTTPRedirectHandler):\n"
         " def redirect_request(self,*a):return None\n"
         "op=urllib.request.build_opener(NR)\n"
@@ -241,13 +249,13 @@ class DockerHttpWebCage:
         "rq=urllib.request.Request(u,data=b.encode() if b else None,method=m,headers=h)\n"
         "try:\n"
         " r=op.open(rq,timeout=20)\n"
-        " print(json.dumps({'status':r.status,'url':r.geturl(),'headers':dict(r.headers),'body':r.read(20000).decode('utf-8','replace')}))\n"
+        " print(json.dumps({'status':r.status,'url':r.geturl(),'headers':dict(r.headers),'body':r.read(MAXB).decode('utf-8','replace')}))\n"
         "except urllib.error.HTTPError as e:\n"
         " if e.code in (301,302,303,307,308):\n"
         "  loc=(e.headers.get('Location') if e.headers else '') or ''\n"
         "  print(json.dumps({'status':e.code,'url':u,'headers':dict(e.headers or {}),'note':'redirect NOT followed -> '+loc+' (resubmit as a new gated action to re-check scope)'}))\n"
         " else:\n"
-        "  print(json.dumps({'status':e.code,'url':u,'headers':dict(e.headers or {}),'body':e.read(20000).decode('utf-8','replace'),'note':'http error'}))\n"
+        "  print(json.dumps({'status':e.code,'url':u,'headers':dict(e.headers or {}),'body':e.read(MAXB).decode('utf-8','replace'),'note':'http error'}))\n"
         "except Exception as e:\n"
         " print(json.dumps({'status':None,'url':u,'note':str(e)}))\n"
     )
