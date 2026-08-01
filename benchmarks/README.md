@@ -51,26 +51,36 @@ deliberate: the gate is per-scope, and widening one scope to span three hosts wo
 demonstrate precisely the wrong thing. Every section independently re-checks that an
 out-of-scope probe is refused mid-run and that its ledger still verifies.
 
-Result (see `results/live_capability_dvwa.json`): **8/8** classes confirmed across
+Result (see `results/live_capability_dvwa.json`): **11/11** classes confirmed across
 **three** authorised targets, each under its OWN scope file:
 
 | Target | Classes confirmed |
 |---|---|
 | DVWA (PHP, behind a login) | 4/4 — boolean SQLi, reflected XSS, OS command injection, LFI |
 | OWASP Juice Shop (SPA + LLM chatbot) | 1/1 — prompt injection (OWASP LLM01) |
-| VAmPI (JSON REST API) | 3/3 — SQLi on a REST **path parameter**, JWT signing key recovered **offline**, authentication bypass via a **forged token** |
+| VAmPI (JSON REST API) | 6/6 — unauthenticated exposure of credentials and (separately) of bulk personal data, SQLi on a REST **path parameter**, a JWT signing key recovered **offline**, authentication bypass via a **forged token**, and **BOLA** across an account boundary |
 
 with **0 scope violations**, an out-of-scope probe **blocked mid-run on every target**,
-the **audit chain intact on all three ledgers**, and 8 confirmed findings recorded.
+the **audit chain intact on all three ledgers**, and 11 confirmed findings recorded.
 
 The AI class is proved the same way as the rest: the injected directive demands a canary
 the model can only produce by performing the instructed transformation, so the value
 appears nowhere in the request and an endpoint that merely echoes the payload cannot
 fake it. The verdict is a string comparison, not a model's opinion.
 
+Two notes on how the API figure is counted. The credential and personal-data lines are
+one check graded by what leaked, counted separately because they are separate findings
+against separate endpoints with different severities. **Mass assignment is deliberately
+absent**: it is the only proof that must WRITE to the target, and a benchmark should not
+create accounts on a host to score a point — it is exercised by the test suite instead.
+
+The API section also reports `token_acquired`. Three of its six classes are unreachable
+without a credential, so a `false` with no token is a missing precondition, not a clean
+bill of health — an early run scored 3/6 for exactly that reason.
+
 ### Honest scope
 
-The 8/8 rate means the deterministic proofs fire correctly on real vulnerabilities
+The 11/11 rate means the deterministic proofs fire correctly on real vulnerabilities
 Brukal reaches — it is **not** a real-world discovery rate. What gets *found* on an
 unknown target depends on the driving model's navigation (the model-bound ceiling), not
 on the gate. Every figure here holds the five safety invariants unchanged.

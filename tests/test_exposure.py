@@ -102,3 +102,24 @@ def test_out_of_scope_exposure_probe_is_denied():
     sess, cage = _session(USERS)
     assert sess.confirm_data_exposure("http://8.8.8.8/users") is False
     assert cage.auth_seen == []
+
+
+def test_state_changing_paths_are_never_fetched():
+    """Brukal wiped its own test target once: /createdb was mined as an ordinary route,
+    the exposure pass fetched it like any other listing, and the database was
+    reinitialised mid-run. 'Read-only' is a property of the METHOD, not the endpoint."""
+    from brukal.assist import AssistSession as A
+
+    for path in ("/createdb", "/api/reset", "/admin/delete-all", "/v1/purge",
+                 "/setup", "/users/logout", "/db/migrate"):
+        assert A._is_destructive_path(path), path
+    # ...and ordinary data endpoints must still be probed
+    for path in ("/users/v1", "/books/v1", "/v1/created_at", "/api/address",
+                 "/newsletter", "/users/v1/_debug", "/users/v1/{username}"):
+        assert not A._is_destructive_path(path), path
+
+
+def test_the_exposure_probe_refuses_a_destructive_endpoint():
+    sess, cage = _session(USERS)
+    assert sess.confirm_data_exposure(f"http://{TARGET}:5000/createdb") is False
+    assert cage.auth_seen == [], "it fetched a state-changing endpoint"

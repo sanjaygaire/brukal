@@ -1275,6 +1275,39 @@ class AssistSession:
         return urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(q), sp.fragment))
 
     _PATH_PARAM_RE = re.compile(r"\{[^{}/]{1,40}\}")
+    # Endpoints that CHANGE STATE despite answering a GET. "Read-only" is a property of
+    # the method, not of the endpoint: plenty of applications expose an administrative
+    # action behind a plain GET. Brukal learned this by wiping its own test target —
+    # /createdb was mined as an ordinary route, the exposure pass fetched it like any
+    # other listing, and the database was reinitialised out from under the run.
+    # Words that name a state-changing operation. Matched as whole tokens within a path
+    # segment, so "created_at" is a field name and "create" is an action.
+    _DESTRUCTIVE_WORDS = frozenset({
+        "createdb", "create", "new", "add", "delete", "destroy", "remove", "drop",
+        "reset", "purge", "truncate", "wipe", "flush", "clear", "init", "initialize",
+        "seed", "migrate", "install", "setup", "restore", "rollback", "shutdown",
+        "restart", "reboot", "revoke", "deactivate", "disable", "logout", "signout",
+        "unsubscribe", "cancel",
+    })
+
+    @classmethod
+    def _is_destructive_path(cls, url: str) -> bool:
+        """True if a path names an operation that CHANGES STATE, whatever method reaches
+        it. "Read-only" is a property of the method, not the endpoint: applications
+        routinely expose administrative actions behind a plain GET. Brukal learned this
+        by wiping its own test target — /createdb was mined as an ordinary route, the
+        exposure pass fetched it like any other listing, and the database was
+        reinitialised out from under the run."""
+        from urllib.parse import urlsplit
+        path = urlsplit(url or "").path if "//" in (url or "") else (url or "")
+        for segment in path.split("/"):
+            if not segment:
+                continue
+            for token in re.split(r"[-_.]", segment.lower()):
+                if token in cls._DESTRUCTIVE_WORDS:
+                    return True
+        return False
+
     # Endpoints whose JOB is to hand the caller a token.
     _ISSUES_TOKENS_RE = re.compile(
         r"(?i)/(?:login|signin|sign-in|authenticate|auth|token|oauth|session|"
@@ -1731,6 +1764,8 @@ class AssistSession:
             return False
         if self._ISSUES_TOKENS_RE.search(url or ""):
             return False
+        if self._is_destructive_path(url):
+            return False        # a GET here may reinitialise or delete; never worth it
         saved_header = getattr(self.browser, "auth_header", "")
         saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
         try:
@@ -2232,6 +2267,8 @@ class AssistSession:
                 m = re.search(r"\{[^{}/]{1,40}\}", route)
                 if not m:
                     continue                    # no path parameter to vary
+                if self._is_destructive_path(route):
+                    continue                    # state-changing despite the method
                 url = route if route.startswith("http") else _urljoin(base_origin, route)
                 if url in probed:
                     continue

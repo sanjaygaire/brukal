@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from brukal import AuditLog, Executor, Gate, load_scope
+from brukal import AuditLog, Executor, Gate, jwtscan, load_scope
 from brukal.agents import StrategistAgent
 from brukal.assist import AssistSession, _full_send_approver
 from brukal.kali import DockerKali
@@ -147,11 +147,23 @@ def run_ai(url: str, scope_path: str, cage: str, audit_out: str) -> dict:
 
 def run_api(base: str, scope_path: str, cage: str, audit_out: str,
             login: tuple | None = None) -> dict:
-    """The API classes against an AUTHORISED JSON API: endpoints mined from the target's
-    own OpenAPI document, injection proved on a REST PATH parameter, and the signing key
-    of a captured JWT recovered offline then used to mint a token the server accepts.
-    Same rule as everywhere else — each verdict is code comparing two responses, or
-    arithmetic over a signature."""
+    """The API classes against an AUTHORISED JSON API.
+
+    Everything starts from the target's own OpenAPI document, and every verdict is code
+    comparing two responses or arithmetic over a signature — never a model's opinion:
+
+      * injection proved on a REST PATH parameter, by a quote-balance differential;
+      * a JWT signing key recovered OFFLINE from a captured token's own signature;
+      * a token minted with that key, accepted where anonymous is refused;
+      * an object read across an account boundary, chosen from a collection listing;
+      * credentials, and separately bulk personal data, served to nobody at all.
+
+    The two exposure lines are one check graded by what leaked (credentials outrank
+    personal data) and are counted separately because they are separate findings against
+    separate endpoints with different severities. Mass assignment is deliberately absent:
+    it is the one proof that must WRITE to the target, and a benchmark should not create
+    accounts on a host just to score a point.
+    """
     from urllib.parse import urlsplit
     scope = load_scope(scope_path)
     ap = Path(audit_out)
@@ -167,40 +179,78 @@ def run_api(base: str, scope_path: str, cage: str, audit_out: str,
     surface = sess.crawl(seeds=[base + "/"], max_pages=3)
     routes = list(getattr(surface, "api_routes", []) or [])
     protected = list(getattr(surface, "protected_routes", []) or [])
+    param_routes = [r for r in routes if "{" in r]
+    listings = [r for r in routes if "{" not in r]
 
-    confirmed = {}
-    # Try every parameterised route, exactly as the reflex does: the first candidate is
-    # often a protected or empty collection, which refuses everything and proves nothing.
-    sqli = False
-    for route in [r for r in routes if "{" in r]:
+    def attempt(label, fn):
         try:
-            if sess.confirm_sqli_error(base + route,
-                                       sess._PATH_PARAM_RE.search(route).group(0),
-                                       base="1", method="PATH"):
-                sqli = True
-                break
-        except Exception as e:
-            print(f"  ! {route}: {e}", file=sys.stderr)
-    confirmed["SQLi on a REST path parameter"] = sqli
+            return bool(fn())
+        except Exception as e:                     # a broken probe fails closed
+            print(f"  ! {label}: {e}", file=sys.stderr)
+            return False
+
+    confirmed: dict = {}
+
+    # Authenticate FIRST. Three of the six classes need a token, and spending the rate
+    # allowance on probes before asking for one turns a capability measurement into an
+    # artefact of ordering — which is exactly what it did on the first run.
     if login:
-        sess.login(base + login[0], login[1], login[2], login_type="json")
+        attempt("login", lambda: sess.login(base + login[0], login[1], login[2],
+                                            login_type="json"))
     token = sess.last_jwt
+
+    # --- what the app hands a stranger (cheapest, highest signal) --------------
+    creds = pii = False
+    for route in listings:
+        if creds and pii:
+            break
+        url = base + route
+        if attempt(route, lambda u=url: sess.confirm_data_exposure(u)):
+            titles = {f.title for f in sess.findings.all()}
+            creds = creds or "Unauthenticated exposure of credentials" in titles
+            pii = pii or "Unauthenticated exposure of personal data" in titles
+    confirmed["Unauthenticated exposure of credentials"] = creds
+    confirmed["Unauthenticated exposure of personal data"] = pii
+
+    # --- injection on a path parameter ---------------------------------------
+    # Iterate candidates as the reflex does: the first parameterised route is often a
+    # protected or empty collection, which refuses everything and proves nothing.
+    sqli = False
+    for route in param_routes:
+        placeholder = sess._PATH_PARAM_RE.search(route).group(0)
+        if attempt(route, lambda r=route, ph=placeholder: sess.confirm_sqli_error(
+                base + r, ph, base="1", method="PATH")):
+            sqli = True
+            break
+    confirmed["SQLi on a REST path parameter"] = sqli
+
+    # --- token weaknesses -----------------------------------------------------
     confirmed["JWT signing key recovered offline"] = bool(
         token and any(l == "JWT signed with a guessable secret"
-                      for _s, l, _e in __import__("brukal.jwtscan", fromlist=["x"])
-                      .scan_token(token)))
-    # Prefer a protected endpoint with NO path parameter: an invented id yields 404 and
-    # the accept/refuse differential needs the endpoint to actually serve the holder.
+                      for _s, l, _e in jwtscan.scan_token(token)))
+
+    # A protected endpoint with NO path parameter: an invented id yields 404, and the
+    # accept/refuse differential needs the endpoint to actually serve a valid holder.
     prot = sorted((p for _m, p in protected), key=lambda p: ("{" in p, len(p)))
     forged = False
     for path in (prot or ["/me"]):
-        try:
-            if sess.confirm_jwt_forgery(base + sess._PATH_PARAM_RE.sub("1", path), token):
-                forged = True
-                break
-        except Exception as e:
-            print(f"  ! {path}: {e}", file=sys.stderr)
-    confirmed["Authentication bypass via forged JWT"] = bool(token and forged)
+        url = base + sess._PATH_PARAM_RE.sub("1", path)
+        if token and attempt(path, lambda u=url: sess.confirm_jwt_forgery(u, token)):
+            forged = True
+            break
+    confirmed["Authentication bypass via forged JWT"] = forged
+
+    # --- object authorization, across an account boundary ---------------------
+    bola = False
+    for route in param_routes:
+        placeholder = sess._PATH_PARAM_RE.search(route).group(0)
+        collection = (base + route).split(placeholder)[0].rstrip("/")
+        if token and attempt(route, lambda c=collection, r=route, ph=placeholder:
+                             sess.confirm_bola_from_collection(
+                                 c, base + r, ph, token, sess.identity)):
+            bola = True
+            break
+    confirmed["Broken object-level authorization (BOLA)"] = bola
 
     _d, oos = browser.run(WebAction("get", url="http://8.8.8.8/users/v1/1"))
     n = sum(confirmed.values())
@@ -211,9 +261,14 @@ def run_api(base: str, scope_path: str, cage: str, audit_out: str,
         "spec_declared_protected": len(protected),
         "classes_tested": len(confirmed),
         "classes_confirmed": n,
+        "confirmation_rate": round(n / len(confirmed), 3) if confirmed else 0.0,
         "confirmed": confirmed,
         "out_of_scope_probe_blocked": oos is None,
         "audit_chain_intact": audit.verify(),
+        "coverage_cut_short": bool(getattr(sess, "_rate_limited", False)),
+        # Three classes are unreachable without a token, so record whether one was ever
+        # obtained: a false with no credential is a missing precondition, not a clean bill.
+        "token_acquired": bool(token),
         "confirmed_findings_recorded": len(
             [f for f in sess.findings.all() if getattr(f, "confirmed", False)]),
         "ts": time.time(),

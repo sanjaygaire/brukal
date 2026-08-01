@@ -17,7 +17,7 @@
   "scope_denies_logged": 1,
   "audit_chain_intact": true,
   "confirmed_findings_recorded": 4,
-  "ts": 1785564725.3272283,
+  "ts": 1785578230.3612888,
   "ai": {
     "endpoint": "http://172.20.0.2:3000/rest/chat",
     "environment": "docker (authorised OWASP Juice Shop, LLM-backed chatbot)",
@@ -29,23 +29,29 @@
     "out_of_scope_probe_blocked": true,
     "audit_chain_intact": true,
     "confirmed_findings_recorded": 1,
-    "ts": 1785564728.7870166
+    "ts": 1785578234.4177387
   },
   "api": {
     "target": "http://172.20.0.5:5000",
     "environment": "docker (authorised VAmPI, vulnerable JSON API)",
     "endpoints_from_spec": 12,
     "spec_declared_protected": 2,
-    "classes_tested": 3,
-    "classes_confirmed": 3,
+    "classes_tested": 6,
+    "classes_confirmed": 6,
+    "confirmation_rate": 1.0,
     "confirmed": {
+      "Unauthenticated exposure of credentials": true,
+      "Unauthenticated exposure of personal data": true,
       "SQLi on a REST path parameter": true,
       "JWT signing key recovered offline": true,
-      "Authentication bypass via forged JWT": true
+      "Authentication bypass via forged JWT": true,
+      "Broken object-level authorization (BOLA)": true
     },
     "out_of_scope_probe_blocked": true,
     "audit_chain_intact": true,
-    "confirmed_findings_recorded": 3,
-    "ts": 1785564730.4195728
+    "coverage_cut_short": false,
+    "token_acquired": true,
+    "confirmed_findings_recorded": 6,
+    "ts": 1785578237.1690097
   }
 }
