@@ -1482,11 +1482,26 @@ class AssistSession:
                                                headers=headers))
             return (r.status if r else None), ((r.body if r else "") or "")
 
-        anon_status, _anon_body = fetch(None)
-        if anon_status == 200:
-            return False          # open to everyone: acceptance proves nothing
-        minted = jwtscan.sign(header, {**payload, "exp": int(time.time()) + 3600}, secret)
-        status, body = fetch(f"Bearer {minted}")
+        # The browser attaches our live session to any request that does not already
+        # carry one, so an "anonymous" baseline taken while logged in is not anonymous
+        # at all — it comes back 200 and the differential silently proves nothing.
+        # Suppress the session for the length of the check, then restore it.
+        saved_header = getattr(self.browser, "auth_header", "")
+        saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
+        try:
+            self.browser.auth_header = ""
+            if hasattr(self.browser, "_cookies"):
+                self.browser._cookies = {}
+            anon_status, _anon_body = fetch(None)
+            if anon_status == 200:
+                return False      # open to everyone: acceptance proves nothing
+            minted = jwtscan.sign(header,
+                                  {**payload, "exp": int(time.time()) + 3600}, secret)
+            status, body = fetch(f"Bearer {minted}")
+        finally:
+            self.browser.auth_header = saved_header
+            if hasattr(self.browser, "_cookies"):
+                self.browser._cookies = saved_cookies
         if status != 200 or self._AUTH_ERROR_RE.search(body[:2000]):
             return False
         self._record_confirmed(

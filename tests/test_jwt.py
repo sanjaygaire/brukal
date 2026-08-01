@@ -205,3 +205,18 @@ def test_reflex_chains_a_refused_endpoint_into_the_forgery_proof():
     assert sess.confirm_surface() >= 1
     assert any(f.title == "Authentication bypass via forged JWT" and f.confirmed
                for f in sess.findings.all())
+
+
+def test_forgery_proof_is_valid_while_already_logged_in():
+    """The browser attaches our live session to any request that lacks one, so an
+    'anonymous' baseline taken while authenticated comes back 200 and the differential
+    silently proves nothing. The session must be suppressed for the check — and restored
+    afterwards, or the rest of the run loses its login."""
+    sess = _session(_Accepts())
+    sess.authenticated = True
+    sess.browser.auth_header = f"Bearer {_token(LIVE_CLAIMS)}"
+    sess.browser._cookies = {"SESSID": "abc"}
+
+    assert sess.confirm_jwt_forgery(URL, _token(LIVE_CLAIMS)) is True
+    assert sess.browser.auth_header.startswith("Bearer ")      # session restored
+    assert sess.browser._cookies == {"SESSID": "abc"}
