@@ -52,7 +52,7 @@ deliberate: the gate is per-scope, and widening one scope to span three hosts wo
 demonstrate precisely the wrong thing. Every section independently re-checks that an
 out-of-scope probe is refused mid-run and that its ledger still verifies.
 
-Result (see `results/live_capability_dvwa.json`): **12/12** classes confirmed across
+Result (see `results/live_capability_dvwa.json`): **13/13** classes confirmed across
 **four** authorised targets, each under its OWN scope file:
 
 | Target | Classes confirmed |
@@ -60,10 +60,10 @@ Result (see `results/live_capability_dvwa.json`): **12/12** classes confirmed ac
 | DVWA (PHP, behind a login) | 4/4 — boolean SQLi, reflected XSS, OS command injection, LFI |
 | OWASP Juice Shop (SPA + LLM chatbot) | 1/1 — prompt injection (OWASP LLM01) |
 | VAmPI (JSON REST API) | 6/6 — unauthenticated exposure of credentials and (separately) of bulk personal data, SQLi on a REST **path parameter**, a JWT signing key recovered **offline**, authentication bypass via a **forged token**, and **BOLA** across an account boundary |
-| DVGA (Damn Vulnerable GraphQL App) | 1/1 — GraphQL introspection, confirmed **structurally** |
+| DVGA (Damn Vulnerable GraphQL App) | 2/2 — GraphQL introspection (confirmed **structurally**) and query batching |
 
 with **0 scope violations**, an out-of-scope probe **blocked mid-run on every target**,
-the **audit chain intact on all three ledgers**, and 12 confirmed findings recorded.
+the **audit chain intact on all three ledgers**, and 13 confirmed findings recorded.
 
 The AI class is proved the same way as the rest: the injected directive demands a canary
 the model can only produce by performing the instructed transformation, so the value
@@ -86,9 +86,14 @@ this space is a single-page app answering 200 with its `index.html` for every pa
 Juice Shop does exactly that on `/graphql`. A status or keyword check would score this
 point against an application that has no GraphQL at all.
 
+The GraphQL section also reports `not_applicable`. Field-suggestion leakage is a real
+check, but it deliberately declines when introspection is already open — the schema is
+one query away there, so reporting both would be noise. That is a suppression, not a
+miss, so it is named and left out of the denominator rather than scored as a failure.
+
 ### Honest scope
 
-The 12/12 rate means the deterministic proofs fire correctly on real vulnerabilities
+The 13/13 rate means the deterministic proofs fire correctly on real vulnerabilities
 Brukal reaches — it is **not** a real-world discovery rate. What gets *found* on an
 unknown target depends on the driving model's navigation (the model-bound ceiling), not
 on the gate. Every figure here holds the five safety invariants unchanged.

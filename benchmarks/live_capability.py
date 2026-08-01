@@ -291,18 +291,38 @@ def run_graphql(url: str, scope_path: str, cage: str, audit_out: str) -> dict:
                   approver=_full_send_approver)
     browser = GovernedBrowser(scope, DockerHttpWebCage(container=cage), audit)
     sess = AssistSession(host, ex, StrategistAgent(_NullLLM()), browser=browser)
-    try:
-        found = bool(sess.confirm_graphql_introspection(url))
-    except Exception as e:
-        found = False
-        print(f"  ! graphql: {e}", file=sys.stderr)
+    def attempt(label, fn):
+        try:
+            return bool(fn())
+        except Exception as e:
+            print(f"  ! {label}: {e}", file=sys.stderr)
+            return False
+
+    found = attempt("introspection", lambda: sess.confirm_graphql_introspection(url))
+    batching = attempt("batching", lambda: sess.confirm_graphql_batching(url))
+    # Suggestions are only reported when introspection is shut — with it open the schema
+    # is one query away and the finding would be noise. Measured the same way.
+    suggestions = attempt("suggestions", lambda: sess.confirm_graphql_suggestions(
+        url, introspection_open=found))
+    classes = {"GraphQL introspection enabled": found,
+               "GraphQL query batching enabled": batching}
+    # When introspection is open the suggestions check deliberately declines: the schema
+    # is one query away, so reporting it too would be noise. That is a suppression, not a
+    # miss, and counting it as a tested-but-failed class would misreport the harness.
+    na = []
+    if found:
+        na.append("GraphQL field suggestions leak the schema "
+                  "(not applicable: introspection is open, so the check suppresses it)")
+    else:
+        classes["GraphQL field suggestions leak the schema"] = suggestions
     _d, oos = browser.run(WebAction("get", url="http://8.8.8.8/graphql"))
     return {
         "endpoint": url,
         "environment": "docker (authorised Damn Vulnerable GraphQL Application)",
-        "classes_tested": 1,
-        "classes_confirmed": int(found),
-        "confirmed": {"GraphQL introspection enabled": found},
+        "classes_tested": len(classes),
+        "classes_confirmed": sum(classes.values()),
+        "confirmed": classes,
+        "not_applicable": na,
         "out_of_scope_probe_blocked": oos is None,
         "audit_chain_intact": audit.verify(),
         "confirmed_findings_recorded": len(

@@ -111,6 +111,20 @@ _KB = [
      "against the calling user; require confirmation for state-changing actions.",
      ["OWASP LLM06:2025 Excessive Agency", "CWE-285"]),
     # --- API / token authentication -------------------------------------------
+    (("field suggestions",), 5.3, "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+     "The schema can be rebuilt one error at a time, so switching introspection off — the "
+     "usual fix — does not actually conceal the API.",
+     "Disable field suggestions in production (in graphql-js, a custom validation rule or "
+     "an error formatter that strips them), and treat the schema as public: authorize "
+     "every resolver rather than relying on obscurity.",
+     ["OWASP API9:2023 Improper Inventory Management", "CWE-200"]),
+    (("query batching",), 5.3, "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L",
+     "One HTTP request can carry thousands of operations, so every control counted per "
+     "request — rate limits, lockout thresholds, WAF rules — measures the wrong unit and "
+     "brute-force protection quietly stops working.",
+     "Disable batching, or enforce limits per OPERATION rather than per request and cap "
+     "batch size, query depth and query cost.",
+     ["OWASP API4:2023 Unrestricted Resource Consumption", "CWE-770"]),
     (("graphql introspection",), 5.3, "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
      "The API publishes its complete schema to anyone — every type, field and mutation, "
      "including operations no client is meant to call — which is the starting map for "

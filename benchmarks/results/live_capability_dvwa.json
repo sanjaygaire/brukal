@@ -17,7 +17,7 @@
   "scope_denies_logged": 1,
   "audit_chain_intact": true,
   "confirmed_findings_recorded": 4,
-  "ts": 1785628056.399128,
+  "ts": 1785628340.8336456,
   "ai": {
     "endpoint": "http://172.20.0.2:3000/rest/chat",
     "environment": "docker (authorised OWASP Juice Shop, LLM-backed chatbot)",
@@ -29,7 +29,7 @@
     "out_of_scope_probe_blocked": true,
     "audit_chain_intact": true,
     "confirmed_findings_recorded": 1,
-    "ts": 1785628061.3712046
+    "ts": 1785628350.7635412
   },
   "api": {
     "target": "http://172.20.0.5:5000",
@@ -52,19 +52,23 @@
     "coverage_cut_short": false,
     "token_acquired": true,
     "confirmed_findings_recorded": 6,
-    "ts": 1785628064.734256
+    "ts": 1785628353.93765
   },
   "graphql": {
     "endpoint": "http://172.20.0.6:5013/graphql",
     "environment": "docker (authorised Damn Vulnerable GraphQL Application)",
-    "classes_tested": 1,
-    "classes_confirmed": 1,
+    "classes_tested": 2,
+    "classes_confirmed": 2,
     "confirmed": {
-      "GraphQL introspection enabled": true
+      "GraphQL introspection enabled": true,
+      "GraphQL query batching enabled": true
     },
+    "not_applicable": [
+      "GraphQL field suggestions leak the schema (not applicable: introspection is open, so the check suppresses it)"
+    ],
     "out_of_scope_probe_blocked": true,
     "audit_chain_intact": true,
-    "confirmed_findings_recorded": 1,
-    "ts": 1785628065.0077627
+    "confirmed_findings_recorded": 2,
+    "ts": 1785628354.2932196
   }
 }

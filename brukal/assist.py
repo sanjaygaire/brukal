@@ -1879,6 +1879,86 @@ class AssistSession:
             category="api")
         return True
 
+    # The body is JSON, so the quotes around a suggested name arrive escaped
+    # (Did you mean \"paste\"). Skip any run of quote-ish characters before the name.
+    _SUGGESTION_RE = re.compile(r"(?i)did you mean\s+[\\\"'“‘`]*([A-Za-z_]\w*)")
+
+    def confirm_graphql_suggestions(self, url: str,
+                                    introspection_open: bool = False) -> bool:
+        """Field suggestions rebuild the schema even when introspection is disabled.
+
+        A misspelt field returns "Did you mean ...", and each guess is answered with real
+        field names, so the schema can be walked out one error at a time. That makes
+        turning introspection off — the usual remediation — insufficient on its own,
+        which is the point worth reporting.
+
+        Skipped when introspection is already open: the schema is a single query away
+        there, so this adds nothing but noise to the report."""
+        from .web import WebAction
+        if self.browser is None or introspection_open:
+            return False
+        # A suggestion is only offered for a name CLOSE to a real one, so an arbitrary
+        # nonsense field ("brukalNoSuchField") provokes nothing and the check quietly
+        # never fires. These are one edit away from the root fields APIs actually ship,
+        # and every unknown field in a query produces its own error — so a single request
+        # buys a dozen chances.
+        probes = ("usr", "userr", "acount", "pastse", "prodcut", "ordr", "serch",
+                  "nodee", "mee", "logn", "acccount", "custmer")
+        query = "{ " + " ".join("%s { id }" % t for t in probes) + " }"
+        _d, r = self.browser.run(WebAction(
+            "request", url=url, method="POST",
+            body=json.dumps({"query": query}),
+            headers={"Content-Type": "application/json"}))
+        if r is None:
+            self._note_rate_limit(_d)
+            return False
+        body = r.body or ""
+        m = self._SUGGESTION_RE.search(body)
+        if not m or (m.group(1) or "") in probes:
+            return False        # it only echoed our own guess back
+        self._record_confirmed(
+            url, "GraphQL field suggestions leak the schema", "medium", "",
+            f"an unknown field produced a suggestion naming a real one ({m.group(1)!r}) — "
+            f"the schema can be reconstructed one error at a time, so disabling "
+            f"introspection alone does not conceal it",
+            category="api")
+        return True
+
+    def confirm_graphql_batching(self, url: str) -> bool:
+        """Query batching: many operations carried by ONE HTTP request.
+
+        Anything counted per request — rate limits, lockout thresholds, WAF rules — is
+        measured on the wrong unit, so a single request can carry thousands of login
+        attempts. Confirmed structurally: the response must be an ARRAY answering every
+        query sent, not merely a 200."""
+        from .web import WebAction
+        if self.browser is None:
+            return False
+        batch = [{"query": "{__typename}"}, {"query": "{__typename}"},
+                 {"query": "{__typename}"}]
+        _d, r = self.browser.run(WebAction(
+            "request", url=url, method="POST", body=json.dumps(batch),
+            headers={"Content-Type": "application/json"}))
+        if r is None:
+            self._note_rate_limit(_d)
+            return False
+        try:
+            doc = json.loads(r.body or "")
+        except Exception:
+            return False
+        if not isinstance(doc, list) or len(doc) != len(batch):
+            return False
+        if not all(isinstance(item, dict) and ("data" in item or "errors" in item)
+                   for item in doc):
+            return False
+        self._record_confirmed(
+            url, "GraphQL query batching enabled", "medium", "",
+            f"one HTTP request carrying {len(batch)} operations was answered with "
+            f"{len(doc)} results — any control counted per request (rate limit, lockout, "
+            f"WAF rule) is measuring the wrong unit",
+            category="api")
+        return True
+
     def graphql_endpoints(self) -> list[str]:
         """Candidate GraphQL URLs: anything the crawl mined that looks like one, plus the
         conventional paths on the seed host."""
@@ -2336,11 +2416,27 @@ class AssistSession:
                     if self._confirm_budget <= 0 or self._rate_limited:
                         break
                     try:
-                        if self.confirm_graphql_introspection(gurl):
-                            confirmed += 1
-                            break
+                        introspects = self.confirm_graphql_introspection(gurl)
+                    except Exception:
+                        continue
+                    # Only a REAL endpoint answers introspection or batching; the
+                    # candidate list contains conventional paths that may not exist, so
+                    # probe further only where something responded like GraphQL.
+                    batched = suggestions = False
+                    try:
+                        batched = self.confirm_graphql_batching(gurl)
                     except Exception:
                         pass
+                    if introspects or batched:
+                        try:
+                            suggestions = self.confirm_graphql_suggestions(
+                                gurl, introspection_open=introspects)
+                        except Exception:
+                            pass
+                    hits = sum((introspects, batched, suggestions))
+                    if hits:
+                        confirmed += hits
+                        break
 
             # 4) COLLECTION endpoints — ask what the app hands to a stranger. Routes
             #     WITHOUT a path parameter are the listings, and a listing is where bulk

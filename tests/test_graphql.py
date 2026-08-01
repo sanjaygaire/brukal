@@ -101,3 +101,50 @@ def test_out_of_scope_graphql_probe_is_denied():
     sess = _session(cage)
     assert sess.confirm_graphql_introspection("http://8.8.8.8/graphql") is False
     assert cage.posted == []
+
+
+# --- schema recovery without introspection, and batching -------------------------
+
+SUGGESTION = json.dumps({"errors": [{"message":
+    'Cannot query field "pastse" on type "Query". Did you mean "paste" or "pastes"?'}]})
+BATCH_OK = json.dumps([{"data": {"__typename": "Query"}}] * 3)
+
+
+def test_field_suggestions_are_confirmed_when_introspection_is_shut():
+    sess = _session(_Cage(SUGGESTION))
+    assert sess.confirm_graphql_suggestions(URL) is True
+    f = next(f for f in sess.findings.all() if "suggestions" in f.title)
+    assert f.confirmed and f.severity == "medium"
+    assert "'paste'" in f.evidence
+
+
+def test_suggestions_are_not_reported_when_introspection_is_already_open():
+    """The schema is one query away there, so this would be noise in the report."""
+    sess = _session(_Cage(SUGGESTION))
+    assert sess.confirm_graphql_suggestions(URL, introspection_open=True) is False
+    assert not sess.findings.all()
+
+
+def test_an_error_without_a_suggestion_confirms_nothing():
+    sess = _session(_Cage(json.dumps({"errors": [{"message":
+        'Cannot query field "brukalNoSuchField" on type "Query".'}]})))
+    assert sess.confirm_graphql_suggestions(URL) is False
+
+
+def test_batching_is_confirmed_structurally():
+    sess = _session(_Cage(BATCH_OK))
+    assert sess.confirm_graphql_batching(URL) is True
+    f = next(f for f in sess.findings.all() if "batching" in f.title)
+    assert f.confirmed and "3 operations" in f.evidence
+
+
+def test_a_server_that_refuses_batches_confirms_nothing():
+    """A single object, an error, or a mismatched count all mean batching is off — only
+    an array answering every operation sent proves it."""
+    for body in (json.dumps({"data": {"__typename": "Query"}}),
+                 json.dumps({"errors": [{"message": "Batching is not supported"}]}),
+                 json.dumps([{"data": {"__typename": "Query"}}]),      # wrong count
+                 "<html>not json</html>"):
+        sess = _session(_Cage(body))
+        assert sess.confirm_graphql_batching(URL) is False, body[:40]
+        assert not sess.findings.all()
