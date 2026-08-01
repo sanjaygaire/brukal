@@ -41,6 +41,9 @@ dev = [
     "anthropic>=0.40",
     "pydantic>=2.0",
     "rich>=13",
+    # Name resolution over every branch, including the ones only a live engagement
+    # runs. Four NameErrors reached real targets before this was enforced.
+    "pyflakes>=3.0",
 ]
 
 [project.scripts]

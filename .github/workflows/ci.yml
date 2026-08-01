@@ -12,5 +12,7 @@ jobs:
           python-version: "3.12"
       - name: Install (safety core needs no deps; add dev extras for pytest)
         run: pip install -e ".[dev]"
+      - name: Undefined-name check (catches bugs unit tests cannot reach)
+        run: python -m pyflakes $(git ls-files 'brukal/*.py' 'benchmarks/*.py' 'tests/*.py' 'run_*.py' brukal_cli.py) | (! grep 'undefined name')
       - name: Run the scope-interception suite
         run: python -m pytest tests/ -v

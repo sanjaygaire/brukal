@@ -16,6 +16,7 @@ rich menu UI (falling back to a plain prompt if `rich` is unavailable).
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import random
 import re
@@ -168,6 +169,7 @@ class AssistSession:
         self.last_jwt: str = ""        # most recent JWT seen — the forgery proof needs one
         self.identity: str = ""        # the principal we authenticated as (authz tests)
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
+        self.allow_intrusive = False   # may a proof CREATE state on the target?
         self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
         self._learned: set = set()     # research queries already looked up (de-dup)
         from .findings import FindingStore
@@ -1632,6 +1634,83 @@ class AssistSession:
         if not theirs or theirs == mine:
             return False
         return self.confirm_bola(item_template, param, mine, theirs, token)
+
+    # Fields an API must never accept from the client on a self-service create.
+    _PRIVILEGE_FIELDS = (("admin", True), ("is_admin", True), ("isAdmin", True),
+                         ("role", "admin"), ("is_staff", True), ("superuser", True),
+                         ("verified", True), ("email_verified", True))
+
+    def confirm_mass_assignment(self, register_url: str, login_url: str,
+                                verify_url: str, user_field: str = "username",
+                                pass_field: str = "password",
+                                extra_fields: dict | None = None) -> bool:
+        """Mass assignment / broken object property level authorization (OWASP API3):
+        a self-service create accepts a field the client should never control.
+
+        Proved against a CONTROL account. Two accounts are made through the same
+        endpoint — one with the privileged field injected, one without — and both are
+        then asked what the server thinks they are. Only a difference between them
+        confirms: it rules out the field being the default for everyone, which a single
+        account cannot distinguish.
+
+        This is the one proof that must WRITE to the target, so it runs only when the
+        operator has authorised intrusive actions. It creates two ordinary user accounts
+        and nothing else."""
+        if self.browser is None or not self.allow_intrusive:
+            return False
+        from .web import WebAction
+
+        def post_json(url: str, payload: dict):
+            _d, r = self.browser.run(WebAction(
+                "request", url=url, method="POST", body=json.dumps(payload),
+                headers={"Content-Type": "application/json"}))
+            return (r.status if r else None), ((r.body if r else "") or "")
+
+        def whoami(username: str, password: str) -> str:
+            status, body = post_json(login_url, {user_field: username,
+                                                 pass_field: password})
+            token = self._extract_token(body) if status else ""
+            if not token:
+                return ""
+            _d, r = self.browser.run(WebAction(
+                "request", url=verify_url, method="GET",
+                headers={"Authorization": f"Bearer {token}"}))
+            return ((r.body if r else "") or "") if r and r.status == 200 else ""
+
+        stamp = random.randint(10 ** 6, 10 ** 7)
+        for field, value in self._PRIVILEGE_FIELDS:
+            probe_user, control_user = f"brk{stamp}p", f"brk{stamp}c"
+            base = {**(extra_fields or {})}
+            ok_p, _b = post_json(register_url, {**base, user_field: probe_user,
+                                                pass_field: f"Pw1{probe_user}",
+                                                "email": f"{probe_user}@example.invalid",
+                                                field: value})
+            ok_c, _b2 = post_json(register_url, {**base, user_field: control_user,
+                                                 pass_field: f"Pw1{control_user}",
+                                                 "email": f"{control_user}@example.invalid"})
+            if not ok_p or not ok_c:
+                stamp += 1
+                continue
+            probe_view, control_view = whoami(probe_user, f"Pw1{probe_user}"), \
+                whoami(control_user, f"Pw1{control_user}")
+            if not probe_view or not control_view:
+                stamp += 1
+                continue
+            marker = f'"{field}": {json.dumps(value)}'
+            marker_alt = f'"{field}":{json.dumps(value)}'
+            got = marker in probe_view or marker_alt in probe_view
+            control_has = marker in control_view or marker_alt in control_view
+            if got and not control_has:
+                self._record_confirmed(
+                    verify_url, "Mass assignment of a privileged field", "critical", field,
+                    f"registering with {field}={value!r} produced an account the server "
+                    f"reports as {field}={value!r}, while a control account created the "
+                    f"same way WITHOUT that field does not — the client controls a "
+                    f"property it must not",
+                    category="api")
+                return True
+            stamp += 1
+        return False
 
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
@@ -3806,6 +3885,11 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     #                authorised scope; it cannot widen scope.
     full = bool(full_send or os.environ.get("BRUKAL_FULL_SEND"))
     session.executor._approver = _full_send_approver if full else _auto_approver
+    # Some proofs can only be made by CREATING state on the target (a mass-assignment
+    # test needs an account carrying the injected field, plus a control account without
+    # it). The web door has no risk layer to escalate through, so that stays behind the
+    # operator's explicit "unleash" rather than running by default.
+    session.allow_intrusive = full
     if full:
         _emit(console,
               "  ⚠ FULL-SEND — auto-approving ALL in-scope actions (incl. irreversible "
