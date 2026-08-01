@@ -163,3 +163,45 @@ def test_out_of_scope_forgery_probe_is_denied():
     sess = _session(cage)
     assert sess.confirm_jwt_forgery("http://8.8.8.8/me", _token(LIVE_CLAIMS)) is False
     assert cage.seen == []
+
+
+def test_tokens_found_in_a_page_are_analysed_once():
+    """A JWT in a page, bundle or API response is both a credential and a statement of
+    how the app authenticates — so browser-fetched bodies are mined for them."""
+    sess = _session(_Accepts())
+    body = f'{{"auth_token": "{_token(LIVE_CLAIMS)}", "status": "success"}}'
+    sess.scan_web_body(f"http://{TARGET}:5000/users/v1/login", body)
+    titles = [f.title for f in sess.findings.all()]
+    assert "JWT signed with a guessable secret" in titles
+    assert sess.last_jwt                              # kept for the forgery proof
+    analyses = lambda: [f for f in sess.findings.all() if f.category == "api"]
+    before = len(analyses())
+    sess.scan_web_body(f"http://{TARGET}:5000/again", body)
+    assert len(analyses()) == before                  # analysed once, not per page
+
+
+def test_a_login_response_returning_a_token_is_not_called_a_leak():
+    """An auth endpoint handing the caller its own token is the design. Reporting that
+    as 'JWT exposed' is a false positive, and those are what a report dies of."""
+    sess = _session(_Accepts())
+    body = f'{{"auth_token": "{_token(LIVE_CLAIMS)}", "status": "success"}}'
+    sess.scan_web_body(f"http://{TARGET}:5000/users/v1/login", body)
+    assert not [f for f in sess.findings.all() if "exposed" in f.title.lower()]
+    # ...but the same token sitting in an ordinary page IS worth reporting
+    sess2 = _session(_Accepts())
+    sess2.scan_web_body(f"http://{TARGET}:5000/profile", body)
+    assert [f for f in sess2.findings.all() if "exposed" in f.title.lower()]
+
+
+def test_reflex_chains_a_refused_endpoint_into_the_forgery_proof():
+    """The autonomous chain: the spec names a protected endpoint, the endpoint refuses
+    us, and a token we can mint is then offered to it."""
+    from brukal.webmap import AttackSurface
+
+    sess = _session(_Accepts())
+    sess.surface = AttackSurface(seed=f"http://{TARGET}:5000/")
+    sess.surface.protected_routes.append(("GET", "/me"))
+    sess.last_jwt = _token(LIVE_CLAIMS)
+    assert sess.confirm_surface() >= 1
+    assert any(f.title == "Authentication bypass via forged JWT" and f.confirmed
+               for f in sess.findings.all())

@@ -163,6 +163,8 @@ class AssistSession:
         self.option_list: list = []    # last ranked list of next-move options
         self._rendered: set = set()    # web URLs already auto-rendered (reflex de-dup)
         self.surface = None            # webmap.AttackSurface once the site is crawled
+        self._seen_jwts: set = set()   # tokens already analysed (once each, offline)
+        self.last_jwt: str = ""        # most recent JWT seen — the forgery proof needs one
         self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
         self._learned: set = set()     # research queries already looked up (de-dup)
         from .findings import FindingStore
@@ -1234,6 +1236,8 @@ class AssistSession:
             # algorithm and its signature exposes a weak key. Reading it costs nothing
             # and needs no further request.
             try:
+                self._seen_jwts.add(token)
+                self.last_jwt = token
                 self.scan_jwt(token, source=login_url)
             except Exception:
                 pass                          # analysis must never break authentication
@@ -1265,6 +1269,10 @@ class AssistSession:
         return urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(q), sp.fragment))
 
     _PATH_PARAM_RE = re.compile(r"\{[^{}/]{1,40}\}")
+    # Endpoints whose JOB is to hand the caller a token.
+    _ISSUES_TOKENS_RE = re.compile(
+        r"(?i)/(?:login|signin|sign-in|authenticate|auth|token|oauth|session|"
+        r"refresh|register|signup|sign-up)(?:[/?]|\b)")
 
     def probeable_surface(self) -> bool:
         """True when the mapped surface has ANY injection point worth actively probing:
@@ -1288,11 +1296,24 @@ class AssistSession:
         directory or a SQL error across twenty pages and record none of it. The browser
         is the main way Brukal sees content on a web target, which made this the widest
         blind spot on the web path. Returns how many signals were recorded."""
-        from . import webprobe
+        from . import jwtscan, webprobe
         if not body:
             return 0
         n = 0
+        # A JWT in a page, a bundle or an API response is a credential AND a disclosure
+        # of how the app authenticates — analysed once each, offline.
+        for tok in jwtscan.find_tokens(body):
+            if tok in self._seen_jwts:
+                continue
+            self._seen_jwts.add(tok)
+            self.last_jwt = tok
+            n += self.scan_jwt(tok, source=url)
         for sev, label, line in webprobe.scan_exposures(body):
+            # An auth endpoint returning a token to its own client is the design, not a
+            # leak. Reporting "JWT exposed" for a login response is a false positive, and
+            # it is the kind that costs a report its credibility.
+            if "jwt" in label.lower() and self._ISSUES_TOKENS_RE.search(url or ""):
+                continue
             # Same recorder as the shell path, so soft-404 downgrading and the
             # self-evident-exposure confirmation rules apply identically.
             self._record_vuln_finding(f"WEB get {url}", sev, label, line)
@@ -1902,8 +1923,17 @@ class AssistSession:
                 try:
                     if self.confirm_unauth_access(url, spec_path=spath):
                         confirmed += 1
+                        continue
                 except Exception:
                     pass
+                # It refused us — so it is the right place to ask whether a token we
+                # could MINT would be accepted instead.
+                if self.last_jwt:
+                    try:
+                        if self.confirm_jwt_forgery(url, self.last_jwt):
+                            confirmed += 1
+                    except Exception:
+                        pass
 
             # 4) REST PATH parameters — /users/v1/{username}. On an API this is where the
             #    object identifier lives, so injection and broken object-level authz
