@@ -48,6 +48,14 @@ _KB = [
      "Allowlist outbound hosts/schemes; block link-local (169.254.169.254) and internal "
      "ranges; enforce IMDSv2; isolate egress.",
      ["OWASP A10:2021 SSRF", "CWE-918"]),
+    (("object-level authorization", "bola"), 8.1,
+     "AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",
+     "Any authenticated user can read or change any other user's objects by naming their "
+     "identifier — the account boundary does not exist.",
+     "Authorize every object access against the caller, not just the presence of a valid "
+     "token: scope the query to the owner server-side rather than filtering afterwards, "
+     "and cover it with a test that uses a second identity.",
+     ["OWASP API1:2023 Broken Object Level Authorization", "CWE-639", "CWE-285"]),
     (("idor", "object access"), 6.5, "AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:L/A:N",
      "Access or modify other users' objects by changing an identifier.",
      "Enforce per-object authorization on every request (not just authentication); use "

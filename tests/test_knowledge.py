@@ -60,3 +60,17 @@ def test_each_finding_class_enriches_to_its_own_entry():
     assert enrich("SQL injection (error-based)", "critical")["cvss"] == 9.8
     assert enrich("Prompt injection (model obeyed an injected instruction)",
                   "high")["cvss"] == 8.6
+
+
+def test_specific_entries_precede_general_ones():
+    """The table is first-match-wins, so a specific finding placed AFTER a general one
+    can never be reached. The two-identity BOLA proof (OWASP API1) initially sat below
+    the generic single-identity IDOR lead and silently inherited its lower score."""
+    from brukal.knowledge import enrich
+
+    bola = enrich("Broken object-level authorization (BOLA/IDOR)", "critical")
+    idor = enrich("Potential IDOR (unauthorised object access)", "medium")
+    assert "API1:2023" in " ".join(bola["refs"])
+    assert bola["cvss"] == 8.1
+    assert idor["cvss"] == 6.5 and "A01:2021" in " ".join(idor["refs"])
+    assert bola["refs"] != idor["refs"]        # genuinely different entries

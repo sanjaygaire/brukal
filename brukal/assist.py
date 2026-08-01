@@ -22,6 +22,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from .audit import AuditLog
 from .executor import Executor
@@ -1509,6 +1510,74 @@ class AssistSession:
             f"the signing key {secret!r} was recovered offline from a captured token; a "
             f"token minted with it is ACCEPTED (200) where an unauthenticated request is "
             f"refused ({anon_status}) — any user or role can be impersonated",
+            category="api")
+        return True
+
+    def confirm_bola(self, url_template: str, param: str, id_a: str, id_b: str,
+                     token_a: str, token_b: str = "") -> bool:
+        """Broken object-level authorization (OWASP API1) — proved with TWO identities.
+
+        This is the one API flaw a single-identity scanner cannot honestly claim: a 200
+        on someone else's identifier means nothing unless you know the object was not
+        yours and not public. So every leg is required:
+
+          1. ANONYMOUS is refused B's object — the endpoint really is access-controlled,
+             so a hit is authorization failure rather than public data;
+          2. A's own object succeeds — A's credential works, so a later 200 is not luck;
+          3. A gets 200 on B's object, and the response differs from A's own — A reached
+             something that is not A's;
+          4. when B's credential is supplied too, A's view of B's object must EQUAL B's
+             own view of it — A received exactly B's data, which removes the last doubt.
+
+        Nothing here writes or deletes; every request is a governed GET."""
+        from .web import WebAction
+        if self.browser is None or not token_a:
+            return False
+
+        def get(url: str, token: str | None):
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            _d, r = self.browser.run(WebAction("request", url=url, method="GET",
+                                               headers=headers))
+            return (r.status if r else None), ((r.body if r else "") or "")
+
+        url_a = url_template.replace(param, quote(str(id_a), safe=""))
+        url_b = url_template.replace(param, quote(str(id_b), safe=""))
+
+        saved_header = getattr(self.browser, "auth_header", "")
+        saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
+        try:
+            self.browser.auth_header = ""          # our own session must not leak in
+            if hasattr(self.browser, "_cookies"):
+                self.browser._cookies = {}
+            anon_status, _anon = get(url_b, None)
+            if anon_status == 200:
+                return False                       # public data: proves no authz failure
+            own_status, own_body = get(url_a, token_a)
+            if own_status != 200:
+                return False                       # A's credential does not even work
+            cross_status, cross_body = get(url_b, token_a)
+            if cross_status != 200 or self._AUTH_ERROR_RE.search(cross_body[:2000]):
+                return False                       # correctly refused
+            if not cross_body.strip() or cross_body == own_body:
+                return False                       # same object back: not another's
+            victim_match = ""
+            if token_b:
+                b_status, b_body = get(url_b, token_b)
+                if b_status != 200 or b_body != cross_body:
+                    return False                   # not demonstrably B's own view
+                victim_match = ("; byte-for-byte identical to the owner's own view of "
+                                "the object")
+        finally:
+            self.browser.auth_header = saved_header
+            if hasattr(self.browser, "_cookies"):
+                self.browser._cookies = saved_cookies
+
+        self._record_confirmed(
+            url_b, "Broken object-level authorization (BOLA/IDOR)", "critical", param,
+            f"identity A ({id_a}) read object {id_b}, which belongs to another user: "
+            f"anonymous is refused ({anon_status}) so the endpoint is access-controlled, "
+            f"yet A's token returns 200 with content that differs from A's own object"
+            f"{victim_match}",
             category="api")
         return True
 
