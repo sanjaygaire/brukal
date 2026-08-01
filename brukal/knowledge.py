@@ -61,6 +61,14 @@ _KB = [
      "Enforce per-object authorization on every request (not just authentication); use "
      "unpredictable identifiers; check ownership server-side.",
      ["OWASP A01:2021 Broken Access Control", "CWE-639", "CWE-284"]),
+    (("cors allows credentialed", "cors"), 7.5,
+     "AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N",
+     "Any page a logged-in user visits can read this endpoint's response with their "
+     "session — the same-origin policy, which the rest of the app relies on, is off.",
+     "Never reflect the request Origin. Match it against a server-side allowlist and echo "
+     "only a value from that list; never combine a wildcard or a reflected origin with "
+     "Access-Control-Allow-Credentials, and never trust the null origin.",
+     ["OWASP A05:2021 Security Misconfiguration", "CWE-942", "CWE-346"]),
     # --- AI / LLM applications (OWASP Top 10 for LLM Applications, 2025) -------
     (("prompt injection",), 8.6, "AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N",
      "Attacker text becomes instruction: the model abandons its own rules — leaking its "

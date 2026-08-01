@@ -170,6 +170,7 @@ class AssistSession:
         self.identity: str = ""        # the principal we authenticated as (authz tests)
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.allow_intrusive = False   # may a proof CREATE state on the target?
+        self._cors_checked = False     # the CORS question is per-host, asked once
         self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
         self._learned: set = set()     # research queries already looked up (de-dup)
         from .findings import FindingStore
@@ -1793,6 +1794,53 @@ class AssistSession:
             category="api")
         return True
 
+    # An origin no target should ever trust, used as the probe.
+    _CORS_PROBE_ORIGIN = "https://brukal-probe.example"
+
+    def confirm_cors(self, url: str) -> bool:
+        """Cross-origin resource sharing that lets any site read authenticated responses.
+
+        The finding is the PAIR, never one header alone. A server may echo an arbitrary
+        Origin and it means little; it may answer `*` and that means less, because a
+        browser refuses to send credentials to a wildcard. What allows a third-party page
+        to read a victim's authenticated data is reflecting an attacker-chosen origin
+        AND allowing credentials — so only that combination is claimed, plus the `null`
+        variant, which a sandboxed iframe can produce at will.
+
+        Header-only: nothing is written and no credential of ours is spent."""
+        from .web import WebAction
+        if self.browser is None:
+            return False
+
+        def headers_for(origin: str):
+            """Response headers, or None when the request never happened. An EMPTY dict
+            is a real answer — the host simply sends no CORS headers — and confusing the
+            two made the first probe abandon the run before the null variant was tried."""
+            _d, r = self.browser.run(WebAction("request", url=url, method="GET",
+                                               headers={"Origin": origin}))
+            if r is None:
+                self._note_rate_limit(_d)
+                return None
+            return {str(k).lower(): str(v) for k, v in (r.headers or {}).items()}
+
+        for origin, label in ((self._CORS_PROBE_ORIGIN, "an arbitrary origin"),
+                              ("null", "the null origin")):
+            h = headers_for(origin)
+            if h is None:
+                return False
+            allow = (h.get("access-control-allow-origin") or "").strip()
+            creds = (h.get("access-control-allow-credentials") or "").strip().lower()
+            if allow != origin or creds != "true":
+                continue
+            self._record_confirmed(
+                url, "CORS allows credentialed reads from any origin", "high", "",
+                f"the server echoed {label} ({origin!r}) in Access-Control-Allow-Origin "
+                f"AND set Access-Control-Allow-Credentials: true — any site a victim "
+                f"visits can read this endpoint's response using the victim's session",
+                category="web")
+            return True
+        return False
+
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -2217,7 +2265,17 @@ class AssistSession:
                     except Exception:
                         pass
 
-            # 2) COLLECTION endpoints — ask what the app hands to a stranger. Routes
+            # 2) CORS — one header-only question per host, asked of the seed. Cheap, and
+            #    the answer governs whether any other site can read what this one serves.
+            if not self._cors_checked:
+                self._cors_checked = True
+                try:
+                    if self.confirm_cors(base_origin):
+                        confirmed += 1
+                except Exception:
+                    pass
+
+            # 3) COLLECTION endpoints — ask what the app hands to a stranger. Routes
             #     WITHOUT a path parameter are the listings, and a listing is where bulk
             #     data leaks. One credential-free GET each.
             for route in list(getattr(self.surface, "api_routes", []) or []):
