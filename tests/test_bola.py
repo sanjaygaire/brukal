@@ -51,8 +51,11 @@ class _Books:
             {"book_title": book, "owner": OWNER[book], "secret": SECRET[book]}))
 
 
-def _session(cage):
-    scope = load_scope(SCOPE)
+SCOPE_FAST = Path(__file__).resolve().parent / "fixtures" / "scope_fast.json"
+
+
+def _session(cage, fast: bool = False):
+    scope = load_scope(SCOPE_FAST if fast else SCOPE)
     audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
     ex = Executor(Gate(scope), FakeKali(), audit)
     return AssistSession(TARGET, ex, StrategistAgent(
@@ -147,3 +150,91 @@ def test_out_of_scope_bola_probe_is_denied():
     assert sess.confirm_bola("http://8.8.8.8/books/{id}", "{id}", "1", "2",
                              "tokA", "tokB") is False
     assert cage.seen == []
+
+
+# --- autonomous selection: the collection discloses who owns what -------------------
+
+COLLECTION = json.dumps({"Books": [{"book_title": "bookA", "user": "alice"},
+                                   {"book_title": "bookB", "user": "bob"}]})
+
+
+def test_objects_with_owners_reads_a_collection_listing():
+    from brukal import webmap
+    pairs = webmap.objects_with_owners(COLLECTION)
+    assert ("bookA", "alice") in pairs and ("bookB", "bob") in pairs
+    # nested shapes and junk are tolerated, never raise
+    assert webmap.objects_with_owners('{"d":{"items":[{"id":7,"owner":"x"}]}}') == [("7", "x")]
+    assert webmap.objects_with_owners("<html>not json</html>") == []
+    assert webmap.objects_with_owners('{"users":[{"username":"u"}]}') == []   # no owner
+
+
+class _BooksWithCollection(_Books):
+    def run(self, action):
+        if action.url.rstrip("/").endswith("/books/v1"):
+            return WebResult(status=200, url=action.url, body=COLLECTION)
+        return super().run(action)
+
+
+def test_autonomous_bola_picks_someone_elses_object():
+    """No second account needed: the API lists objects next to their owners, so Brukal
+    can choose one that is not ours and ask for it."""
+    sess = _session(_BooksWithCollection(enforce=False))
+    assert sess.confirm_bola_from_collection(
+        f"http://{TARGET}:5000/books/v1", TPL, PARAM, "tokA", identity="alice") is True
+    assert any(f.title.startswith("Broken object-level authorization")
+               for f in sess.findings.all())
+
+
+def test_autonomous_bola_stays_silent_when_enforcement_is_correct():
+    sess = _session(_BooksWithCollection(enforce=True))
+    assert sess.confirm_bola_from_collection(
+        f"http://{TARGET}:5000/books/v1", TPL, PARAM, "tokA", identity="alice") is False
+    assert not sess.findings.all()
+
+
+def test_autonomous_bola_needs_two_distinct_owners():
+    """A collection where everything belongs to one principal cannot demonstrate a
+    cross-account read."""
+    single = json.dumps({"Books": [{"book_title": "bookA", "user": "alice"},
+                                   {"book_title": "bookB", "user": "alice"}]})
+
+    class _OneOwner(_Books):
+        def run(self, action):
+            if action.url.rstrip("/").endswith("/books/v1"):
+                return WebResult(status=200, url=action.url, body=single)
+            return super().run(action)
+
+    sess = _session(_OneOwner(enforce=False))
+    assert sess.confirm_bola_from_collection(
+        f"http://{TARGET}:5000/books/v1", TPL, PARAM, "tokA", identity="alice") is False
+
+
+def test_reflex_runs_object_authz_on_a_mined_route():
+    """End to end through the real reflex: a parameterised route is probed, and its
+    parent collection is used to find someone else's object."""
+    from brukal.webmap import AttackSurface
+
+    sess = _session(_BooksWithCollection(enforce=False), fast=True)
+    sess.surface = AttackSurface(seed=f"http://{TARGET}:5000/")
+    sess.surface.add_routes(["/books/v1/{book_title}"])
+    sess.browser.auth_header = "Bearer tokA"
+    sess.identity = "alice"
+    sess.confirm_surface()
+    assert any(f.title.startswith("Broken object-level authorization") and f.confirmed
+               for f in sess.findings.all())
+
+
+def test_rate_limit_is_reported_not_silently_swallowed():
+    from brukal.webmap import AttackSurface
+    """Past the gate's rate wall every probe returns nothing, which reads exactly like
+    'not vulnerable'. That turned a real BOLA into a silent false negative during
+    development, so the wall is now recorded and later passes stop rather than pretend."""
+    sess = _session(_BooksWithCollection(enforce=False))   # the 30/min fixture
+    sess.surface = AttackSurface(seed=f"http://{TARGET}:5000/")
+    sess.surface.add_routes(["/books/v1/{book_title}"])
+    sess.browser.auth_header = "Bearer tokA"
+    sess.identity = "alice"
+    sess.confirm_surface()
+    assert sess._rate_limited, "the wall was hit but not noticed"
+    assert any("rate limit" in n for n in sess.notes)
+    assert any(tag == "coverage" for tag, _ in sess.highlights)

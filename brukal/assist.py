@@ -166,6 +166,8 @@ class AssistSession:
         self.surface = None            # webmap.AttackSurface once the site is crawled
         self._seen_jwts: set = set()   # tokens already analysed (once each, offline)
         self.last_jwt: str = ""        # most recent JWT seen — the forgery proof needs one
+        self.identity: str = ""        # the principal we authenticated as (authz tests)
+        self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
         self._learned: set = set()     # research queries already looked up (de-dup)
         from .findings import FindingStore
@@ -1233,6 +1235,7 @@ class AssistSession:
         token = self._extract_token(res2.body if res2 is not None else "")
         if token:
             self.browser.auth_header = f"Bearer {token}"
+            self.identity = username          # whose objects are "ours" for authz tests
             # The token the app just handed us is itself evidence: its header names the
             # algorithm and its signature exposes a weak key. Reading it costs nothing
             # and needs no further request.
@@ -1323,6 +1326,20 @@ class AssistSession:
                 self.highlights.append(h)
             n += 1
         return n
+
+    def _note_rate_limit(self, decision) -> None:
+        """Record that the gate's rate limit refused a probe. Past that wall every later
+        check reads as 'not vulnerable', which is indistinguishable from a clean result —
+        so it is tracked and reported rather than silently shrinking coverage."""
+        if decision is not None and str(getattr(decision, "layer", "")).endswith("web-rate"):
+            if not self._rate_limited:
+                self.notes.append(
+                    "[coverage] the scope rate limit stopped active confirmation — "
+                    "later checks did NOT run, so their silence is not a clean result. "
+                    "Raise rate_limit_per_min in the scope file to finish the sweep.")
+                self.highlights.append(
+                    ("coverage", "active confirmation cut short by the scope rate limit"))
+            self._rate_limited = True
 
     def _record_confirmed(self, target, title, sev, param, evidence, category="web") -> None:
         from .findings import Finding
@@ -1581,6 +1598,41 @@ class AssistSession:
             category="api")
         return True
 
+    def confirm_bola_from_collection(self, collection_url: str, item_template: str,
+                                     param: str, token: str, identity: str = "") -> bool:
+        """Autonomous BOLA: read the collection, find an object the API itself says
+        belongs to somebody else, and try to fetch it with our own credential.
+
+        This removes the usual blocker — a second account — because an API that lists
+        objects next to their owners has already disclosed the map. The ownership label
+        is the app's own claim, so it only selects WHICH object to ask for; the finding
+        still rests on the same evidence as before (anonymous refused, our object fine,
+        their object returned with different content)."""
+        from . import webmap
+        from .web import WebAction
+        if self.browser is None or not token:
+            return False
+        _d, r = self.browser.run(WebAction("request", url=collection_url, method="GET",
+                                           headers={"Authorization": f"Bearer {token}"}))
+        pairs = webmap.objects_with_owners((r.body if r else "") or "")
+        if len(pairs) < 2:
+            return False
+        me = identity or ""
+        mine = next((i for i, o in pairs if me and o == me), "")
+        theirs = next((i for i, o in pairs if o != (me or o) or (me and o != me)), "")
+        if not mine:
+            # No object of ours listed: fall back to two objects with DIFFERENT owners,
+            # which still tests whether one holder can reach another's.
+            owners = {o for _i, o in pairs}
+            if len(owners) < 2:
+                return False
+            first_owner = pairs[0][1]
+            mine = pairs[0][0]
+            theirs = next((i for i, o in pairs if o != first_owner), "")
+        if not theirs or theirs == mine:
+            return False
+        return self.confirm_bola(item_template, param, mine, theirs, token)
+
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -1649,6 +1701,7 @@ class AssistSession:
                             headers={"Content-Type": "application/x-www-form-urlencoded"})
         _d, r = self.browser.run(act)
         if r is None:
+            self._note_rate_limit(_d)
             return None, None, {}
         return (r.body or ""), r.status, (r.headers or {})
 
@@ -1945,6 +1998,7 @@ class AssistSession:
         self._confirm_budget = 120        # cap total governed requests for the reflex
         confirmed = tried = 0
         probed: set[str] = set()          # endpoints already covered by passes 1 and 2
+        confirmed_bola = [False]          # one object-authz proof per run is enough
 
         from . import aiscan
 
@@ -2026,7 +2080,7 @@ class AssistSession:
             #    injection point moves from the query to a path segment.
             base_origin = getattr(self.surface, "seed", "") or f"http://{self.target}/"
             for route in list(getattr(self.surface, "api_routes", []) or []):
-                if self._confirm_budget <= 0:
+                if self._confirm_budget <= 0 or self._rate_limited:
                     return confirmed
                 m = re.search(r"\{[^{}/]{1,40}\}", route)
                 if not m:
@@ -2036,6 +2090,19 @@ class AssistSession:
                     continue
                 probed.add(url)
                 probe(url, m.group(0), method="PATH")
+                # Object authorization: the parent collection often lists objects next to
+                # their owners, which is everything a cross-account read needs.
+                token = (getattr(self.browser, "auth_header", "") or "").replace(
+                    "Bearer ", "") or self.last_jwt
+                if token and confirmed_bola[0] is False:
+                    collection = url.split(m.group(0))[0].rstrip("/")
+                    try:
+                        if self.confirm_bola_from_collection(
+                                collection, url, m.group(0), token, self.identity):
+                            confirmed += 1
+                            confirmed_bola[0] = True
+                    except Exception:
+                        pass
 
             # 4) AI / LLM endpoints — a chat API on a SPA has neither a form nor a query
             #    parameter, so it is reachable only as a mined route. Its body field name

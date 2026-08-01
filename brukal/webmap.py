@@ -230,6 +230,56 @@ def routes_from_openapi(text: str) -> list[str]:
 _SAFE_METHODS = frozenset({"get", "head"})
 
 
+# Fields that name an object, and fields that name who owns it. A collection endpoint
+# that lists both is handing over exactly what a two-identity authorization test needs.
+_ID_FIELDS = ("id", "uuid", "slug", "name", "title", "book_title", "username", "email",
+              "key", "ref", "number", "code")
+_OWNER_FIELDS = ("user", "owner", "username", "user_id", "owner_id", "author",
+                 "created_by", "account", "customer")
+
+
+def objects_with_owners(text: str) -> list[tuple[str, str]]:
+    """(identifier, owner) pairs from a JSON collection listing.
+
+    An API that lists objects alongside whose they are has disclosed the map for an
+    object-authorization test: pick one that is not yours and see whether the server
+    hands it over. Pure parsing of an UNTRUSTED body — the ownership claim is the app's
+    own, which is why a finding built on it also has to prove the endpoint is protected
+    and that the content really differs."""
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return []
+    rows: list[dict] = []
+
+    def walk(node, depth=0):
+        if depth > 4 or len(rows) > 200:
+            return
+        if isinstance(node, list):
+            for item in node:
+                if isinstance(item, dict):
+                    rows.append(item)
+                else:
+                    walk(item, depth + 1)
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value, depth + 1)
+
+    walk(doc)
+    out: list[tuple[str, str]] = []
+    for row in rows:
+        lower = {str(k).lower(): v for k, v in row.items()}
+        ident = next((str(lower[f]) for f in _ID_FIELDS
+                      if isinstance(lower.get(f), (str, int)) and str(lower[f]).strip()),
+                     "")
+        owner = next((str(lower[f]) for f in _OWNER_FIELDS
+                      if isinstance(lower.get(f), (str, int)) and str(lower[f]).strip()
+                      and str(lower[f]) != ident), "")
+        if ident and owner and (ident, owner) not in out:
+            out.append((ident, owner))
+    return out
+
+
 def protected_operations(text: str) -> list[tuple[str, str]]:
     """(METHOD, path) for the operations an OpenAPI document declares as REQUIRING
     authentication — per-operation `security`, or the document-level default that an

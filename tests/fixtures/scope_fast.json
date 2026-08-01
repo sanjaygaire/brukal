@@ -1,0 +1,11 @@
+{
+  "engagement": "brukal-lab-fast",
+  "authorized_cidrs": [
+    "10.129.0.0/16",
+    "10.10.10.0/24",
+    "127.0.0.1/32"
+  ],
+  "allowlisted_tools": "all",
+  "rate_limit_per_min": 6000,
+  "_note": "same scope as scope.json but without a rate wall, for tests that make many governed probes"
+}
