@@ -1109,6 +1109,11 @@ class AssistSession:
                     if spec_routes:
                         surface.add_routes(spec_routes)
                         surface.techs.add("openapi")
+                        # The spec also states which operations must be authenticated —
+                        # the app's own contract, and free to check against reality.
+                        for entry in webmap.protected_operations(sr.body or ""):
+                            if entry not in surface.protected_routes:
+                                surface.protected_routes.append(entry)
                         self.notes.append(
                             f"[api-spec] {spec} declared {len(spec_routes)} endpoint(s)")
                         break
@@ -1372,6 +1377,43 @@ class AssistSession:
             f"does not — the input is concatenated into the query")
         return True
 
+    # An authentication failure the app itself describes — used to tell "the endpoint
+    # refused me" apart from "the endpoint served me data".
+    _AUTH_ERROR_RE = re.compile(
+        r"(?i)\b(?:unauthori[sz]ed|forbidden|access denied|not authenticated|"
+        r"authentication (?:required|failed)|no authorization token|missing token|"
+        r"invalid token|token (?:is )?(?:expired|missing)|login required|"
+        r"permission denied)\b")
+
+    def confirm_unauth_access(self, url: str, spec_path: str = "") -> bool:
+        """Broken authentication: an endpoint the API's OWN SPEC declares as requiring
+        credentials answers a request that carries none (OWASP API2/API5).
+
+        The spec is the app's statement of intent, which makes this deterministic — no
+        guessing which endpoints ought to be protected. Only SAFE methods are ever sent;
+        an unprotected DELETE is worth reporting, never worth performing. A 401/403, or
+        a 200 whose body is itself an auth error, is correct behaviour and confirms
+        nothing."""
+        if self.browser is None:
+            return False
+        if self.authenticated or getattr(self.browser, "auth_header", None):
+            return False        # meaningless while we are holding credentials
+        body, status, _h = self._probe(url, "", "", "GET")
+        if body is None or status != 200:
+            return False                       # refused (401/403) or unreachable: correct
+        if self._AUTH_ERROR_RE.search(body[:2000]):
+            return False                       # 200 wrapping an auth error: still correct
+        if self.surface is not None and getattr(self.surface, "soft_404", False):
+            return False                       # host 200s everything; the status proves nothing
+        if len(body.strip()) < 2:
+            return False                       # empty 200 is not evidence of data
+        self._record_confirmed(
+            url, "Unauthenticated access to a protected endpoint", "high", "",
+            f"the API's own specification declares {spec_path or url} as requiring "
+            f"authentication, yet an unauthenticated GET returned 200 with "
+            f"{len(body)} bytes of content")
+        return True
+
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -1430,7 +1472,10 @@ class AssistSession:
                             body=_json.dumps({param: value, **(extra or {})}),
                             headers={"Content-Type": "application/json"})
         elif method.upper() == "GET":
-            act = WebAction("get", url=self._set_param(url, param, value))
+            # No parameter name means "fetch this URL as-is" (an endpoint-level check
+            # such as the unauthenticated-access probe), not "append an empty param".
+            act = WebAction("get",
+                            url=self._set_param(url, param, value) if param else url)
         else:
             body = urlencode({param: value, **(extra or {})})
             act = WebAction("request", url=url, method="POST", body=body,
@@ -1781,12 +1826,28 @@ class AssistSession:
                     tried += 1
                     others = {n: "1" for n, t in fields if n != field and t.lower() != "file"}
                     probe(action, field, method=method, extra=others)
-            # 3) REST PATH parameters — /users/v1/{username}. On an API this is where the
+            from urllib.parse import urljoin as _urljoin
+
+            # 3) ENDPOINTS THE SPEC SAYS ARE PROTECTED — ask whether the app enforces its
+            #    own contract. Read-only, credential-free, and deterministic: the spec
+            #    names the endpoint, so there is no guessing about what ought to be shut.
+            for _m, spath in list(getattr(self.surface, "protected_routes", []) or []):
+                if self._confirm_budget <= 0:
+                    return confirmed
+                probe_path = self._PATH_PARAM_RE.sub("1", spath)   # fill {id}/{name}
+                url = _urljoin(getattr(self.surface, "seed", "")
+                               or f"http://{self.target}/", probe_path)
+                try:
+                    if self.confirm_unauth_access(url, spec_path=spath):
+                        confirmed += 1
+                except Exception:
+                    pass
+
+            # 4) REST PATH parameters — /users/v1/{username}. On an API this is where the
             #    object identifier lives, so injection and broken object-level authz
             #    concentrate here, and nothing above reaches it: there is no query string
             #    and no form to find. Every existing proof applies unchanged; only the
             #    injection point moves from the query to a path segment.
-            from urllib.parse import urljoin as _urljoin
             base_origin = getattr(self.surface, "seed", "") or f"http://{self.target}/"
             for route in list(getattr(self.surface, "api_routes", []) or []):
                 if self._confirm_budget <= 0:

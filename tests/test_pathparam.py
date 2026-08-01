@@ -199,3 +199,84 @@ def test_internal_bugs_are_not_reported_as_model_or_cage_errors():
     head2, advice2 = _explain_run_error(ConnectionError("connection refused"))
     assert head2.startswith("model/cage error")      # a real environment problem still is
     assert "Check the model is reachable" in advice2
+
+
+# --- broken authentication: the app vs its own specification ----------------------
+
+SPEC_WITH_AUTH = """{"openapi":"3.0.0","paths":{
+  "/me":{"get":{"security":[{"bearerAuth":[]}]}},
+  "/books/v1/{book_title}":{"get":{"security":[{"bearerAuth":[]}]}},
+  "/users/v1":{"get":{}},
+  "/users/v1/{username}":{"delete":{"security":[{"bearerAuth":[]}]}}
+}}"""
+
+
+def test_protected_operations_reads_the_contract_and_only_safe_methods():
+    from brukal import webmap
+    ops = webmap.protected_operations(SPEC_WITH_AUTH)
+    assert ("GET", "/me") in ops
+    assert ("GET", "/books/v1/{book_title}") in ops
+    assert ("GET", "/users/v1") not in ops             # declares no security
+    # An unprotected DELETE is worth REPORTING, never worth performing.
+    assert not [m for m, _p in ops if m not in ("GET", "HEAD")]
+    # a document-level default applies unless the operation opts out with []
+    glob = '{"openapi":"3.0.0","security":[{"k":[]}],"paths":{"/a":{"get":{}},' \
+           '"/b":{"get":{"security":[]}}}}'
+    ops2 = webmap.protected_operations(glob)
+    assert ("GET", "/a") in ops2 and ("GET", "/b") not in ops2
+
+
+def test_unauthenticated_access_confirms_only_when_data_comes_back():
+    class _Serves:                                     # broken: hands over the data
+        def run(self, action):
+            return WebResult(status=200, url=action.url,
+                             body='{"username":"admin","email":"a@b.c"}')
+
+    class _Enforces:                                   # correct: refuses
+        def run(self, action):
+            return WebResult(status=401, url=action.url,
+                             body='{"detail":"No authorization token provided"}')
+
+    class _EnforcesWith200:                            # correct, but sloppy status
+        def run(self, action):
+            return WebResult(status=200, url=action.url,
+                             body='{"detail":"Unauthorized","status":401}')
+
+    url = f"http://{TARGET}:5000/me"
+    assert _session(_Serves()).confirm_unauth_access(url, "/me") is True
+    assert _session(_Enforces()).confirm_unauth_access(url, "/me") is False
+    assert _session(_EnforcesWith200()).confirm_unauth_access(url, "/me") is False
+
+
+def test_confirm_surface_checks_spec_protected_endpoints():
+    """Exercises the real reflex path — an earlier version referenced urljoin before its
+    import, a NameError that no test touching only the helpers would have caught."""
+    class _Serves:
+        def __init__(self):
+            self.seen = []
+
+        def run(self, action):
+            self.seen.append(action.url)
+            return WebResult(status=200, url=action.url, body='{"secret":"data"}')
+
+    cage = _Serves()
+    sess = _session(cage)
+    sess.surface = AttackSurface(seed=f"http://{TARGET}:5000/")
+    sess.surface.protected_routes.extend([("GET", "/me"),
+                                          ("GET", "/books/v1/{book_title}")])
+    assert sess.confirm_surface() >= 1
+    titles = [f.title for f in sess.findings.all()]
+    assert "Unauthenticated access to a protected endpoint" in titles
+    # the path placeholder was filled in, so a real URL was requested
+    assert any(u.endswith("/books/v1/1") for u in cage.seen), cage.seen
+
+
+def test_no_unauth_finding_while_holding_credentials():
+    """Holding a session makes the question meaningless — it must not self-report."""
+    class _Serves:
+        def run(self, action):
+            return WebResult(status=200, url=action.url, body='{"secret":"data"}')
+
+    sess = _session(_Serves())
+    sess.authenticated = True
+    assert sess.confirm_unauth_access(f"http://{TARGET}:5000/me", "/me") is False

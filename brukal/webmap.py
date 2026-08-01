@@ -224,6 +224,53 @@ def routes_from_openapi(text: str) -> list[str]:
     return out
 
 
+# Only ever probed with SAFE methods. An API's spec also declares DELETE and PUT
+# operations; discovering that a destructive one is unprotected is not worth performing
+# it, so the check reads the contract and exercises reads alone.
+_SAFE_METHODS = frozenset({"get", "head"})
+
+
+def protected_operations(text: str) -> list[tuple[str, str]]:
+    """(METHOD, path) for the operations an OpenAPI document declares as REQUIRING
+    authentication — per-operation `security`, or the document-level default that an
+    operation has not opted out of with `security: []`.
+
+    The spec is the app's own statement of which endpoints must be protected, which
+    makes 'declared protected, answers anyway' a deterministic, high-value check
+    (OWASP API2/API5) that needs no credentials to run."""
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return []
+    if not isinstance(doc, dict) or not isinstance(doc.get("paths"), dict):
+        return []
+    prefix = ""
+    base = doc.get("basePath")
+    if isinstance(base, str) and base.startswith("/"):
+        prefix = base.rstrip("/")
+    else:
+        servers = doc.get("servers")
+        if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+            url = servers[0].get("url")
+            if isinstance(url, str) and url.startswith("/"):
+                prefix = url.rstrip("/")
+    default_sec = doc.get("security")
+    out: list[tuple[str, str]] = []
+    for path, ops in doc["paths"].items():
+        if not isinstance(path, str) or not isinstance(ops, dict):
+            continue
+        for method, op in ops.items():
+            if not isinstance(op, dict) or method.lower() not in _SAFE_METHODS:
+                continue
+            sec = op.get("security", default_sec)
+            if not sec:                       # absent, or explicitly opted out with []
+                continue
+            entry = (method.upper(), f"{prefix}{path}" if prefix else path)
+            if entry not in out:
+                out.append(entry)
+    return out
+
+
 def extract_api_routes(text: str, max_routes: int = 40) -> list[str]:
     """Pull distinct API-ish route paths out of a fetched body (JS bundle or HTML).
     Deterministic regex over UNTRUSTED text — the paths become leads in the site map,
@@ -256,6 +303,7 @@ class AttackSurface:
     params: dict = field(default_factory=dict)       # base-URL -> set(param names)
     techs: set = field(default_factory=set)          # tech fingerprints noticed
     api_routes: list = field(default_factory=list)   # API route paths mined from JS/HTML
+    protected_routes: list = field(default_factory=list)  # (METHOD, path) the spec says need auth
     soft_404: bool = False                           # host answers 200 for missing paths
 
     def add_page(self, url: str, links, forms, params) -> None:
