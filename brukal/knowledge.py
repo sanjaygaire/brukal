@@ -103,6 +103,15 @@ _KB = [
      "against the calling user; require confirmation for state-changing actions.",
      ["OWASP LLM06:2025 Excessive Agency", "CWE-285"]),
     # --- API / token authentication -------------------------------------------
+    (("mass assignment", "privileged field"), 8.8,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+     "A user can grant themselves properties the application never meant them to set — "
+     "typically administrator, verified or role — at self-service signup.",
+     "Bind request bodies to an explicit allowlist of writable fields per endpoint "
+     "(a DTO or serialiser), never the persistence model directly; set privilege and "
+     "verification state server-side only.",
+     ["OWASP API3:2023 Broken Object Property Level Authorization", "CWE-915", "CWE-269"]),
+
     (("forged jwt", "guessable secret", "authentication bypass"), 9.8,
      "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
      "Anyone can mint a token for any user or role, so every authorisation decision the "
