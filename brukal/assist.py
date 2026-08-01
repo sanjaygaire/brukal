@@ -2152,30 +2152,13 @@ class AssistSession:
                     pass
 
         try:
-            # 1) GET query parameters
-            for base, names in list(self.surface.params.items()):
-                for p in list(names):
-                    if tried >= max_params or self._confirm_budget <= 0:
-                        return confirmed
-                    tried += 1
-                    probe(base, p)
-            # 2) FORM fields — test each user-controllable input with the form's method,
-            #    filling the other fields so the request is well-formed (POST-based SQLi/
-            #    cmdi/XSS the query-only pass misses).
-            for form in list(getattr(self.surface, "forms", [])):
-                action = getattr(form, "action", "") or self.target
-                method = (getattr(form, "method", "GET") or "GET").upper()
-                fields = [(n, t) for n, t in getattr(form, "inputs", ())]
-                testable = [n for n, t in fields if t.lower() not in ("submit", "hidden", "file")]
-                for field in testable:
-                    if tried >= max_params or self._confirm_budget <= 0:
-                        return confirmed
-                    tried += 1
-                    others = {n: "1" for n, t in fields if n != field and t.lower() != "file"}
-                    probe(action, field, method=method, extra=others)
             from urllib.parse import urljoin as _urljoin
-
-            # 3) ENDPOINTS THE SPEC SAYS ARE PROTECTED — ask whether the app enforces its
+            base_origin = getattr(self.surface, "seed", "") or f"http://{self.target}/"
+            # Cheapest first. A budget or rate wall must cost the expensive
+            # sweeps, not the one-request checks that carry the most signal —
+            # a live run spent its whole budget on injection probes and never
+            # asked the debug endpoint what it hands to a stranger.
+            # 1) ENDPOINTS THE SPEC SAYS ARE PROTECTED — ask whether the app enforces its
             #    own contract. Read-only, credential-free, and deterministic: the spec
             #    names the endpoint, so there is no guessing about what ought to be shut.
             for _m, spath in list(getattr(self.surface, "protected_routes", []) or []):
@@ -2199,12 +2182,50 @@ class AssistSession:
                     except Exception:
                         pass
 
-            # 4) REST PATH parameters — /users/v1/{username}. On an API this is where the
+            # 2) COLLECTION endpoints — ask what the app hands to a stranger. Routes
+            #     WITHOUT a path parameter are the listings, and a listing is where bulk
+            #     data leaks. One credential-free GET each.
+            for route in list(getattr(self.surface, "api_routes", []) or []):
+                if self._confirm_budget <= 0 or self._rate_limited:
+                    break
+                if self._PATH_PARAM_RE.search(route):
+                    continue                    # an item, not a listing
+                url = route if route.startswith("http") else _urljoin(base_origin, route)
+                if url in exposure_checked:
+                    continue
+                exposure_checked.add(url)
+                try:
+                    if self.confirm_data_exposure(url):
+                        confirmed += 1
+                except Exception:
+                    pass
+
+            # 3) GET query parameters
+            for base, names in list(self.surface.params.items()):
+                for p in list(names):
+                    if tried >= max_params or self._confirm_budget <= 0:
+                        return confirmed
+                    tried += 1
+                    probe(base, p)
+            # 4) FORM fields — test each user-controllable input with the form's method,
+            #    filling the other fields so the request is well-formed (POST-based SQLi/
+            #    cmdi/XSS the query-only pass misses).
+            for form in list(getattr(self.surface, "forms", [])):
+                action = getattr(form, "action", "") or self.target
+                method = (getattr(form, "method", "GET") or "GET").upper()
+                fields = [(n, t) for n, t in getattr(form, "inputs", ())]
+                testable = [n for n, t in fields if t.lower() not in ("submit", "hidden", "file")]
+                for field in testable:
+                    if tried >= max_params or self._confirm_budget <= 0:
+                        return confirmed
+                    tried += 1
+                    others = {n: "1" for n, t in fields if n != field and t.lower() != "file"}
+                    probe(action, field, method=method, extra=others)
+            # 5) REST PATH parameters — /users/v1/{username}. On an API this is where the
             #    object identifier lives, so injection and broken object-level authz
             #    concentrate here, and nothing above reaches it: there is no query string
             #    and no form to find. Every existing proof applies unchanged; only the
             #    injection point moves from the query to a path segment.
-            base_origin = getattr(self.surface, "seed", "") or f"http://{self.target}/"
             for route in list(getattr(self.surface, "api_routes", []) or []):
                 if self._confirm_budget <= 0 or self._rate_limited:
                     return confirmed
@@ -2230,24 +2251,6 @@ class AssistSession:
                     except Exception:
                         pass
 
-            # 5) COLLECTION endpoints — ask what the app hands to a stranger. Routes
-            #     WITHOUT a path parameter are the listings, and a listing is where bulk
-            #     data leaks. One credential-free GET each.
-            for route in list(getattr(self.surface, "api_routes", []) or []):
-                if self._confirm_budget <= 0 or self._rate_limited:
-                    break
-                if self._PATH_PARAM_RE.search(route):
-                    continue                    # an item, not a listing
-                url = route if route.startswith("http") else _urljoin(base_origin, route)
-                if url in exposure_checked:
-                    continue
-                exposure_checked.add(url)
-                try:
-                    if self.confirm_data_exposure(url):
-                        confirmed += 1
-                except Exception:
-                    pass
-
             # 6) AI / LLM endpoints — a chat API on a SPA has neither a form nor a query
             #    parameter, so it is reachable only as a mined route. Its body field name
             #    isn't discoverable either: try the handful the ecosystem actually uses.
@@ -2266,7 +2269,16 @@ class AssistSession:
                         pass
             return confirmed
         finally:
+            spent_out = (self._confirm_budget is not None and self._confirm_budget <= 0)
             self._confirm_budget = None       # standalone confirm_* calls stay unbounded
+            if spent_out:
+                # Same hazard as the rate wall: past the budget every remaining check
+                # returns nothing, which reads exactly like "not vulnerable".
+                self.notes.append(
+                    "[coverage] the active-confirmation request budget ran out — later "
+                    "checks did NOT run, so their silence is not a clean result.")
+                self.highlights.append(
+                    ("coverage", "active confirmation hit its request budget"))
 
     def learn(self, query: str) -> str:
         """First-class internet learning. Look `query` up from the allowlisted
