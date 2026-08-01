@@ -275,6 +275,42 @@ def run_api(base: str, scope_path: str, cage: str, audit_out: str,
     }
 
 
+def run_graphql(url: str, scope_path: str, cage: str, audit_out: str) -> dict:
+    """The GraphQL class against an AUTHORISED endpoint. Structural by design: the
+    response must genuinely carry a __schema, because the commonest shape in this space
+    is a single-page app answering 200 with index.html for every path — a status-code
+    check would score a point on any SPA."""
+    from urllib.parse import urlsplit
+    scope = load_scope(scope_path)
+    ap = Path(audit_out)
+    if ap.exists():
+        ap.unlink()
+    audit = AuditLog(ap)
+    host = urlsplit(url).hostname or ""
+    ex = Executor(Gate(scope), DockerKali(container=cage), audit,
+                  approver=_full_send_approver)
+    browser = GovernedBrowser(scope, DockerHttpWebCage(container=cage), audit)
+    sess = AssistSession(host, ex, StrategistAgent(_NullLLM()), browser=browser)
+    try:
+        found = bool(sess.confirm_graphql_introspection(url))
+    except Exception as e:
+        found = False
+        print(f"  ! graphql: {e}", file=sys.stderr)
+    _d, oos = browser.run(WebAction("get", url="http://8.8.8.8/graphql"))
+    return {
+        "endpoint": url,
+        "environment": "docker (authorised Damn Vulnerable GraphQL Application)",
+        "classes_tested": 1,
+        "classes_confirmed": int(found),
+        "confirmed": {"GraphQL introspection enabled": found},
+        "out_of_scope_probe_blocked": oos is None,
+        "audit_chain_intact": audit.verify(),
+        "confirmed_findings_recorded": len(
+            [f for f in sess.findings.all() if getattr(f, "confirmed", False)]),
+        "ts": time.time(),
+    }
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="live_capability")
     p.add_argument("--target", help="web target (DVWA reference run)")
@@ -286,6 +322,8 @@ def main(argv=None) -> int:
     p.add_argument("--api-scope", help="scope file authorising ONLY the --api-url host")
     p.add_argument("--api-login", nargs=3, metavar=("PATH", "USER", "PASS"),
                    help="login path + credentials so a JWT can be captured")
+    p.add_argument("--graphql-url", help="an AUTHORISED GraphQL endpoint")
+    p.add_argument("--graphql-scope", help="scope file authorising ONLY that host")
     p.add_argument("--cage", default="brukal-kali")
     p.add_argument("--audit", default="runs/audit_livebench.jsonl")
     p.add_argument("--json", help="also write the result here")
@@ -295,8 +333,8 @@ def main(argv=None) -> int:
     if not a.yes_authorised:
         print("Refused: a live run needs --yes-authorised (you confirm authorisation).")
         return 2
-    if not a.target and not a.ai_url and not a.api_url:
-        print("Refused: give --target (web), --ai-url (AI) and/or --api-url (API).")
+    if not a.target and not a.ai_url and not a.api_url and not a.graphql_url:
+        print("Refused: give --target, --ai-url, --api-url and/or --graphql-url.")
         return 2
     out: dict = {}
     if a.target:
@@ -330,6 +368,17 @@ def main(argv=None) -> int:
         api = run_api(a.api_url.rstrip("/"), api_scope, a.cage, a.audit + ".api",
                       login=tuple(a.api_login) if a.api_login else None)
         out = {**out, "api": api} if out else {"api": api}
+    if a.graphql_url:
+        from urllib.parse import urlsplit
+        gq_scope = a.graphql_scope or a.scope
+        if not gq_scope:
+            print("Refused: --graphql-url needs --graphql-scope.")
+            return 2
+        if not load_scope(gq_scope).contains_host(urlsplit(a.graphql_url).hostname or ""):
+            print(f"Refused: {a.graphql_url} is not inside {gq_scope}.")
+            return 2
+        gq = run_graphql(a.graphql_url, gq_scope, a.cage, a.audit + ".gql")
+        out = {**out, "graphql": gq} if out else {"graphql": gq}
     print(json.dumps(out, indent=2))
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=2))

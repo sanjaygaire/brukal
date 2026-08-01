@@ -17,7 +17,7 @@
   "scope_denies_logged": 1,
   "audit_chain_intact": true,
   "confirmed_findings_recorded": 4,
-  "ts": 1785578230.3612888,
+  "ts": 1785628056.399128,
   "ai": {
     "endpoint": "http://172.20.0.2:3000/rest/chat",
     "environment": "docker (authorised OWASP Juice Shop, LLM-backed chatbot)",
@@ -29,7 +29,7 @@
     "out_of_scope_probe_blocked": true,
     "audit_chain_intact": true,
     "confirmed_findings_recorded": 1,
-    "ts": 1785578234.4177387
+    "ts": 1785628061.3712046
   },
   "api": {
     "target": "http://172.20.0.5:5000",
@@ -52,6 +52,19 @@
     "coverage_cut_short": false,
     "token_acquired": true,
     "confirmed_findings_recorded": 6,
-    "ts": 1785578237.1690097
+    "ts": 1785628064.734256
+  },
+  "graphql": {
+    "endpoint": "http://172.20.0.6:5013/graphql",
+    "environment": "docker (authorised Damn Vulnerable GraphQL Application)",
+    "classes_tested": 1,
+    "classes_confirmed": 1,
+    "confirmed": {
+      "GraphQL introspection enabled": true
+    },
+    "out_of_scope_probe_blocked": true,
+    "audit_chain_intact": true,
+    "confirmed_findings_recorded": 1,
+    "ts": 1785628065.0077627
   }
 }
