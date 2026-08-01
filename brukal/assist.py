@@ -1230,6 +1230,13 @@ class AssistSession:
         token = self._extract_token(res2.body if res2 is not None else "")
         if token:
             self.browser.auth_header = f"Bearer {token}"
+            # The token the app just handed us is itself evidence: its header names the
+            # algorithm and its signature exposes a weak key. Reading it costs nothing
+            # and needs no further request.
+            try:
+                self.scan_jwt(token, source=login_url)
+            except Exception:
+                pass                          # analysis must never break authentication
 
         # 4) Confirm: a token, OR a redirect away from the login page, OR the response no
         #    longer shows the password field (cookie session established).
@@ -1412,6 +1419,61 @@ class AssistSession:
             f"the API's own specification declares {spec_path or url} as requiring "
             f"authentication, yet an unauthenticated GET returned 200 with "
             f"{len(body)} bytes of content")
+        return True
+
+    def scan_jwt(self, token: str, source: str = "") -> int:
+        """Record what a captured JWT reveals about itself. Offline and deterministic —
+        no request is sent, so a recovered signing key is proved before the target is
+        touched. Returns how many weaknesses were recorded."""
+        from . import jwtscan
+        from .findings import Finding
+        n = 0
+        for sev, label, line in jwtscan.scan_token(token):
+            self.findings.add(Finding(
+                title=label, severity=sev, target=source or self.target, evidence=line,
+                source=f"JWT analysis · {source or 'captured token'}", category="api",
+                confirmed=label in jwtscan.CONFIRMED_JWT_LABELS))
+            self.highlights.append((f"jwt/{sev}", f"{label}: {line}"))
+            n += 1
+        return n
+
+    def confirm_jwt_forgery(self, url: str, token: str) -> bool:
+        """Prove a recovered JWT key is usable: mint a token from the captured claims and
+        see whether the server accepts it where an unauthenticated request is refused.
+
+        The differential is the proof. Unauthenticated must be REFUSED and the minted
+        token must be ACCEPTED — an endpoint that serves everyone, or refuses everyone,
+        demonstrates nothing about the signature."""
+        from . import jwtscan
+
+        from .web import WebAction
+        if self.browser is None:
+            return False
+        secret = jwtscan.crack_hmac_secret(token)
+        parsed = jwtscan.decode(token)
+        if not secret or parsed is None:
+            return False
+        header, payload, _si, _sig = parsed
+
+        def fetch(auth: str | None):
+            headers = {"Authorization": auth} if auth else {}
+            _d, r = self.browser.run(WebAction("request", url=url, method="GET",
+                                               headers=headers))
+            return (r.status if r else None), ((r.body if r else "") or "")
+
+        anon_status, _anon_body = fetch(None)
+        if anon_status == 200:
+            return False          # open to everyone: acceptance proves nothing
+        minted = jwtscan.sign(header, {**payload, "exp": int(time.time()) + 3600}, secret)
+        status, body = fetch(f"Bearer {minted}")
+        if status != 200 or self._AUTH_ERROR_RE.search(body[:2000]):
+            return False
+        self._record_confirmed(
+            url, "Authentication bypass via forged JWT", "critical", "",
+            f"the signing key {secret!r} was recovered offline from a captured token; a "
+            f"token minted with it is ACCEPTED (200) where an unauthenticated request is "
+            f"refused ({anon_status}) — any user or role can be impersonated",
+            category="api")
         return True
 
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:

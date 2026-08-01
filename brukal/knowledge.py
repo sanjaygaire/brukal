@@ -94,6 +94,42 @@ _KB = [
      "Minimise granted tools and their permissions; authorize every tool call server-side "
      "against the calling user; require confirmation for state-changing actions.",
      ["OWASP LLM06:2025 Excessive Agency", "CWE-285"]),
+    # --- API / token authentication -------------------------------------------
+    (("forged jwt", "guessable secret", "authentication bypass"), 9.8,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+     "Anyone can mint a token for any user or role, so every authorisation decision the "
+     "API makes is attacker-controlled.",
+     "Rotate the signing key immediately and treat all existing tokens as compromised. "
+     "Use a long random key from a secrets manager, never a literal in source or config; "
+     "pin the accepted algorithm server-side and reject any token that does not match.",
+     ["OWASP API2:2023 Broken Authentication", "CWE-798", "CWE-347"]),
+    (("'none' algorithm", "carries no signature"), 9.1,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+     "The server lets the token choose whether it is verified, so an unsigned token is "
+     "accepted as authentic.",
+     "Pin the expected algorithm in the verification call and reject 'none' outright; "
+     "never derive the algorithm from the token header.",
+     ["OWASP API2:2023 Broken Authentication", "CWE-347"]),
+    (("unauthenticated access to a protected",), 8.6,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
+     "An endpoint the API's own specification marks as protected serves data to anyone.",
+     "Enforce authentication in middleware that is applied by default, so an endpoint is "
+     "protected unless it opts out; test the contract in CI against the spec.",
+     ["OWASP API5:2023 Broken Function Level Authorization", "CWE-306"]),
+    (("no expiry", "lifetime is excessive"), 5.3,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+     "A stolen token stays usable indefinitely, so there is no window in which theft "
+     "stops mattering.",
+     "Issue short-lived access tokens with refresh, and keep a server-side revocation "
+     "list so logout and compromise can actually end a session.",
+     ["OWASP API2:2023 Broken Authentication", "CWE-613"]),
+    (("jwt payload contains sensitive",), 6.5,
+     "AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+     "A JWT payload is base64, not encryption — anything in it is readable by the holder "
+     "and by anyone who captures it.",
+     "Keep secrets and personal data out of the token; carry an opaque identifier and "
+     "look the rest up server-side.",
+     ["CWE-312", "CWE-200"]),
     # --- exposures / secrets ---------------------------------------------------
     (("private key", "service-account key", "aws access key", "github token", "gitlab token",
       "google api key", "stripe", "sendgrid", "slack token", "credentials in uri",

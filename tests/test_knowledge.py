@@ -31,3 +31,32 @@ def test_report_finding_includes_impact_remediation_cvss():
     md = _finding_md(f)
     assert "CVSS 9.8" in md and "Impact:" in md and "Remediation:" in md
     assert "CWE-89" in md and "parameterised" in md.lower()
+
+
+def test_kb_entries_are_structurally_sound():
+    """A keyword group written as ("text") is a STRING, not a tuple, so the matcher
+    iterates its characters and the entry then matches almost every title. That shipped
+    once and silently mis-scored unrelated findings, so the shape is checked here rather
+    than trusted."""
+    from brukal.knowledge import _KB
+
+    for keys, score, vector, impact, remediation, refs in _KB:
+        assert isinstance(keys, (tuple, list)), f"{keys!r} must be a tuple of keywords"
+        assert keys and all(isinstance(k, str) and len(k) > 2 for k in keys), keys
+        assert 0.0 <= score <= 10.0
+        assert vector.startswith("AV:")
+        assert impact and remediation and refs
+
+
+def test_each_finding_class_enriches_to_its_own_entry():
+    """Spot-check that titles land on the RIGHT entry — the symptom of the bug above was
+    a low-severity token finding inheriting an unrelated high CVSS."""
+    from brukal.knowledge import enrich
+
+    assert enrich("JWT has no expiry", "medium")["cvss"] == 5.3
+    assert "CWE-613" in enrich("JWT has no expiry", "medium")["refs"]
+    assert enrich("Authentication bypass via forged JWT", "critical")["cvss"] == 9.8
+    assert enrich("Unauthenticated access to a protected endpoint", "high")["cvss"] == 8.6
+    assert enrich("SQL injection (error-based)", "critical")["cvss"] == 9.8
+    assert enrich("Prompt injection (model obeyed an injected instruction)",
+                  "high")["cvss"] == 8.6
