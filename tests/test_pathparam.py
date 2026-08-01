@@ -158,13 +158,44 @@ def test_reflex_gate_counts_path_routes_as_probeable():
     """Regression: an API mined from its own spec has 0 params, 0 forms and no AI
     endpoint, so the confirm reflex skipped it entirely and the path-parameter probing
     above was unreachable in a real run — the same shape of miss twice over."""
-    import re as _re
     sess = _session(_PathSqlCage())
+    assert sess.probeable_surface() is False          # nothing crawled yet
     sess.surface = AttackSurface(seed=f"http://{TARGET}:5000/")
-    sess.surface.add_routes(["/users/v1/{username}", "/books/v1"])
+    sess.surface.add_routes(["/books/v1"])            # a route with no path parameter
     assert not sess.surface.params and not sess.surface.forms
     assert not sess._ai_endpoints()
-    probeable = bool(
-        sess.surface.params or sess.surface.forms or sess._ai_endpoints()
-        or any(_re.search(r"\{[^{}/]{1,40}\}", r) for r in sess.surface.api_routes))
-    assert probeable, "path-parameter routes must make a surface probeable"
+    assert sess.probeable_surface() is False
+    sess.surface.add_routes(["/users/v1/{username}"])
+    # Call the REAL predicate the loop uses. An earlier version of this test rebuilt the
+    # expression inline, so it passed while the loop crashed on a missing import.
+    assert sess.probeable_surface() is True
+
+
+def test_loop_reflex_gate_uses_the_session_predicate():
+    """The loop must call probeable_surface() itself — a copy of the rule in the loop is
+    how the two drifted apart and shipped a NameError into a live run."""
+    import inspect
+
+    from brukal.loop import GroundedLoop
+    src = inspect.getsource(GroundedLoop.run)
+    assert "probeable_surface()" in src
+
+
+def test_internal_bugs_are_not_reported_as_model_or_cage_errors():
+    """A NameError in the loop's hot path was shown to the operator as 'model/cage
+    error: check the model is reachable and the cage is up' — sending a real debugging
+    session after infrastructure while the bug was a missing import. Our bugs must say
+    so, and print the trace."""
+    from brukal.assist import _explain_run_error
+
+    try:
+        undefined_name_used_here  # noqa: F821
+    except NameError as e:
+        head, advice = _explain_run_error(e)
+    assert head.startswith("internal error in Brukal: NameError")
+    assert "NOT your model or cage" in advice
+    assert "Traceback" in advice                     # the trace is included, not hidden
+
+    head2, advice2 = _explain_run_error(ConnectionError("connection refused"))
+    assert head2.startswith("model/cage error")      # a real environment problem still is
+    assert "Check the model is reachable" in advice2

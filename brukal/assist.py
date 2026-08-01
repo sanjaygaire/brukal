@@ -80,6 +80,33 @@ _TECH_HINTS = re.compile(
     r"api|graphql|jwt|oauth|saml|upload|login|admin|cms|webdav|cgi)\b", re.I)
 
 
+# Exceptions that mean BRUKAL is broken, not the model or the cage. Reporting a
+# NameError as "check the model is reachable and the cage is up" sent a real debugging
+# session chasing infrastructure while the bug was a missing import in the loop's hot
+# path — so these are named as internal errors and always print their traceback.
+_INTERNAL_ERRORS = (NameError, AttributeError, TypeError, ImportError, IndexError,
+                    KeyError, UnboundLocalError, AssertionError)
+
+
+def _explain_run_error(e: BaseException) -> tuple[str, str]:
+    """(headline, advice) for an exception that ended a run. Distinguishes OUR bug from
+    an environment problem, because the two need opposite responses from the operator."""
+    if isinstance(e, _INTERNAL_ERRORS):
+        import traceback
+        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        where = ""
+        for line in reversed(tb.splitlines()):
+            if line.strip().startswith("File ") and "/brukal/" in line:
+                where = line.strip()
+                break
+        return (f"internal error in Brukal: {type(e).__name__}: {e}",
+                f"This is a bug in Brukal, NOT your model or cage. {where}\n"
+                f"  Please report it with the trace below.\n{tb}")
+    return (f"model/cage error: {e}",
+            "Check the model is reachable (key set, or Ollama running) and the "
+            "cage is up. Set BRUKAL_DEBUG=1 for the trace.")
+
+
 def _outcome_feedback(decision, result, raw: str) -> str:
     """Digest an executed command's outcome into a note the strategist can learn
     from — a timeout or empty result becomes an explicit 'do it differently' cue."""
@@ -1224,6 +1251,23 @@ class AssistSession:
         q = dict(parse_qsl(sp.query, keep_blank_values=True))
         q[param] = value
         return urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(q), sp.fragment))
+
+    _PATH_PARAM_RE = re.compile(r"\{[^{}/]{1,40}\}")
+
+    def probeable_surface(self) -> bool:
+        """True when the mapped surface has ANY injection point worth actively probing:
+        query parameters, form fields, an LLM endpoint, or a REST route with a path
+        parameter. Lives here, next to the surface it reasons about, so the loop's reflex
+        gate and its tests exercise the same code rather than two copies of the rule."""
+        s = self.surface
+        if s is None:
+            return False
+        return bool(
+            s.params or getattr(s, "forms", None) or self._ai_endpoints()
+            # An API mined from its own spec has no params and no forms — its entire
+            # surface is routes whose identifier sits in the path.
+            or any(self._PATH_PARAM_RE.search(r)
+                   for r in (getattr(s, "api_routes", None) or [])))
 
     def scan_web_body(self, url: str, body: str) -> int:
         """Run the exposure signatures over a body fetched through the GOVERNED BROWSER
@@ -3318,9 +3362,9 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
     except Exception as e:
         if os.environ.get("BRUKAL_DEBUG"):
             raise
-        print(f"\n  ⚠ model/cage error: {e}")
-        print("  Check the model is reachable (key set, or Ollama running with "
-              "`ollama serve`) and the cage is up. Set BRUKAL_DEBUG=1 for the trace.")
+        _head, _advice = _explain_run_error(e)
+        print(f"\n  ⚠ {_head}")
+        print(f"  {_advice}")
         return 1
 
     print(f"\n  session recorded to {audit_path}  ·  notes in {_session_vault(session)}"
@@ -3543,9 +3587,9 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         session.close_sessions()
         if os.environ.get("BRUKAL_DEBUG"):
             raise
-        print(f"\n  ⚠ model/cage error: {e}")
-        print("  Check the model is reachable (key set, or Ollama running) and the "
-              "cage is up. Set BRUKAL_DEBUG=1 for the trace.")
+        _head, _advice = _explain_run_error(e)
+        print(f"\n  ⚠ {_head}")
+        print(f"  {_advice}")
         return 1
     _restore_signals()                       # autonomous phase done — Ctrl-C back to normal
 
@@ -3603,7 +3647,9 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         except Exception as e:
             if os.environ.get("BRUKAL_DEBUG"):
                 raise
-            print(f"\n  ⚠ model/cage error: {e}")
+            _head, _advice = _explain_run_error(e)
+            print(f"\n  ⚠ {_head}")
+            print(f"  {_advice}")
             return 1
         session.close_sessions()             # operator done — tear the live shells down
         print(f"\n  session recorded to {audit_path} · chain intact: {audit.verify()}\n")
