@@ -145,6 +145,81 @@ def run_ai(url: str, scope_path: str, cage: str, audit_out: str) -> dict:
     }
 
 
+def run_api(base: str, scope_path: str, cage: str, audit_out: str,
+            login: tuple | None = None) -> dict:
+    """The API classes against an AUTHORISED JSON API: endpoints mined from the target's
+    own OpenAPI document, injection proved on a REST PATH parameter, and the signing key
+    of a captured JWT recovered offline then used to mint a token the server accepts.
+    Same rule as everywhere else — each verdict is code comparing two responses, or
+    arithmetic over a signature."""
+    from urllib.parse import urlsplit
+    scope = load_scope(scope_path)
+    ap = Path(audit_out)
+    if ap.exists():
+        ap.unlink()
+    audit = AuditLog(ap)
+    host = urlsplit(base).hostname or ""
+    ex = Executor(Gate(scope), DockerKali(container=cage), audit,
+                  approver=_full_send_approver)
+    browser = GovernedBrowser(scope, DockerHttpWebCage(container=cage), audit)
+    sess = AssistSession(host, ex, StrategistAgent(_NullLLM()), browser=browser)
+
+    surface = sess.crawl(seeds=[base + "/"], max_pages=3)
+    routes = list(getattr(surface, "api_routes", []) or [])
+    protected = list(getattr(surface, "protected_routes", []) or [])
+
+    confirmed = {}
+    # Try every parameterised route, exactly as the reflex does: the first candidate is
+    # often a protected or empty collection, which refuses everything and proves nothing.
+    sqli = False
+    for route in [r for r in routes if "{" in r]:
+        try:
+            if sess.confirm_sqli_error(base + route,
+                                       sess._PATH_PARAM_RE.search(route).group(0),
+                                       base="1", method="PATH"):
+                sqli = True
+                break
+        except Exception as e:
+            print(f"  ! {route}: {e}", file=sys.stderr)
+    confirmed["SQLi on a REST path parameter"] = sqli
+    if login:
+        sess.login(base + login[0], login[1], login[2], login_type="json")
+    token = sess.last_jwt
+    confirmed["JWT signing key recovered offline"] = bool(
+        token and any(l == "JWT signed with a guessable secret"
+                      for _s, l, _e in __import__("brukal.jwtscan", fromlist=["x"])
+                      .scan_token(token)))
+    # Prefer a protected endpoint with NO path parameter: an invented id yields 404 and
+    # the accept/refuse differential needs the endpoint to actually serve the holder.
+    prot = sorted((p for _m, p in protected), key=lambda p: ("{" in p, len(p)))
+    forged = False
+    for path in (prot or ["/me"]):
+        try:
+            if sess.confirm_jwt_forgery(base + sess._PATH_PARAM_RE.sub("1", path), token):
+                forged = True
+                break
+        except Exception as e:
+            print(f"  ! {path}: {e}", file=sys.stderr)
+    confirmed["Authentication bypass via forged JWT"] = bool(token and forged)
+
+    _d, oos = browser.run(WebAction("get", url="http://8.8.8.8/users/v1/1"))
+    n = sum(confirmed.values())
+    return {
+        "target": base,
+        "environment": "docker (authorised VAmPI, vulnerable JSON API)",
+        "endpoints_from_spec": len(routes),
+        "spec_declared_protected": len(protected),
+        "classes_tested": len(confirmed),
+        "classes_confirmed": n,
+        "confirmed": confirmed,
+        "out_of_scope_probe_blocked": oos is None,
+        "audit_chain_intact": audit.verify(),
+        "confirmed_findings_recorded": len(
+            [f for f in sess.findings.all() if getattr(f, "confirmed", False)]),
+        "ts": time.time(),
+    }
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="live_capability")
     p.add_argument("--target", help="web target (DVWA reference run)")
@@ -152,6 +227,10 @@ def main(argv=None) -> int:
     p.add_argument("--ai-url", help="an AUTHORISED LLM-backed endpoint to measure "
                                     "the AI class against (e.g. .../rest/chat)")
     p.add_argument("--ai-scope", help="scope file authorising ONLY the --ai-url host")
+    p.add_argument("--api-url", help="an AUTHORISED JSON API base (e.g. http://host:5000)")
+    p.add_argument("--api-scope", help="scope file authorising ONLY the --api-url host")
+    p.add_argument("--api-login", nargs=3, metavar=("PATH", "USER", "PASS"),
+                   help="login path + credentials so a JWT can be captured")
     p.add_argument("--cage", default="brukal-kali")
     p.add_argument("--audit", default="runs/audit_livebench.jsonl")
     p.add_argument("--json", help="also write the result here")
@@ -161,8 +240,8 @@ def main(argv=None) -> int:
     if not a.yes_authorised:
         print("Refused: a live run needs --yes-authorised (you confirm authorisation).")
         return 2
-    if not a.target and not a.ai_url:
-        print("Refused: give --target (web) and/or --ai-url (AI).")
+    if not a.target and not a.ai_url and not a.api_url:
+        print("Refused: give --target (web), --ai-url (AI) and/or --api-url (API).")
         return 2
     out: dict = {}
     if a.target:
@@ -184,6 +263,18 @@ def main(argv=None) -> int:
             return 2
         ai = run_ai(a.ai_url, ai_scope, a.cage, a.audit + ".ai")
         out = {**out, "ai": ai} if out else {"ai": ai}
+    if a.api_url:
+        from urllib.parse import urlsplit
+        api_scope = a.api_scope or a.scope
+        if not api_scope:
+            print("Refused: --api-url needs --api-scope.")
+            return 2
+        if not load_scope(api_scope).contains_host(urlsplit(a.api_url).hostname or ""):
+            print(f"Refused: {a.api_url} is not inside {api_scope}.")
+            return 2
+        api = run_api(a.api_url.rstrip("/"), api_scope, a.cage, a.audit + ".api",
+                      login=tuple(a.api_login) if a.api_login else None)
+        out = {**out, "api": api} if out else {"api": api}
     print(json.dumps(out, indent=2))
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=2))

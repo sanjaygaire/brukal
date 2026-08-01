@@ -40,19 +40,28 @@ governed browser, never a shell.
 python benchmarks/live_capability.py \
     --target 172.20.0.3 --scope runs/dvwa.json \
     --ai-url http://172.20.0.2:3000/rest/chat --ai-scope runs/juice.json \
+    --api-url http://172.20.0.5:5000 --api-scope runs/vampi.json \
+    --api-login /users/v1/login <user> <pass> \
     --cage brukal-kali --yes-authorised \
     --json benchmarks/results/live_capability_dvwa.json
 ```
 
-The AI class runs against a SEPARATE target under its OWN scope file. That split is
-deliberate: the gate is per-scope, and widening one scope to span both hosts would
-demonstrate precisely the wrong thing.
+Each class runs against its own target under its OWN scope file. That split is
+deliberate: the gate is per-scope, and widening one scope to span three hosts would
+demonstrate precisely the wrong thing. Every section independently re-checks that an
+out-of-scope probe is refused mid-run and that its ledger still verifies.
 
-Result (see `results/live_capability_dvwa.json`): **5/5** classes confirmed —
-SQLi, reflected XSS, OS command injection and LFI on DVWA, plus **prompt injection
-(OWASP LLM01)** against OWASP Juice Shop's LLM-backed chatbot — with **0 scope
-violations**, an out-of-scope probe **blocked mid-run on both targets**, the **audit
-chain intact**, and 5 confirmed findings recorded.
+Result (see `results/live_capability_dvwa.json`): **8/8** classes confirmed across
+**three** authorised targets, each under its OWN scope file:
+
+| Target | Classes confirmed |
+|---|---|
+| DVWA (PHP, behind a login) | 4/4 — boolean SQLi, reflected XSS, OS command injection, LFI |
+| OWASP Juice Shop (SPA + LLM chatbot) | 1/1 — prompt injection (OWASP LLM01) |
+| VAmPI (JSON REST API) | 3/3 — SQLi on a REST **path parameter**, JWT signing key recovered **offline**, authentication bypass via a **forged token** |
+
+with **0 scope violations**, an out-of-scope probe **blocked mid-run on every target**,
+the **audit chain intact on all three ledgers**, and 8 confirmed findings recorded.
 
 The AI class is proved the same way as the rest: the injected directive demands a canary
 the model can only produce by performing the instructed transformation, so the value
@@ -61,7 +70,7 @@ fake it. The verdict is a string comparison, not a model's opinion.
 
 ### Honest scope
 
-The 5/5 rate means the deterministic proofs fire correctly on real vulnerabilities
+The 8/8 rate means the deterministic proofs fire correctly on real vulnerabilities
 Brukal reaches — it is **not** a real-world discovery rate. What gets *found* on an
 unknown target depends on the driving model's navigation (the model-bound ceiling), not
 on the gate. Every figure here holds the five safety invariants unchanged.
