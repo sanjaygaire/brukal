@@ -280,6 +280,61 @@ def objects_with_owners(text: str) -> list[tuple[str, str]]:
     return out
 
 
+# Fields whose presence in a response is the finding. Credentials are decisive on their
+# own; personal data matters when it is served in BULK about people who are not you.
+_CREDENTIAL_FIELDS = ("password", "passwd", "pwd", "pass", "secret", "api_key", "apikey",
+                      "private_key", "token", "auth_token", "session", "hash",
+                      "password_hash", "salt", "credit_card", "card_number", "cvv")
+_PII_FIELDS = ("email", "e_mail", "mail", "phone", "mobile", "telephone", "ssn",
+               "national_id", "dob", "date_of_birth", "address", "postcode", "zip",
+               "first_name", "last_name", "full_name")
+
+
+def sensitive_records(text: str) -> tuple[int, list[str], str]:
+    """(record count, which sensitive fields, severity) for a JSON collection response.
+
+    Bulk is the point. One record about the caller is the caller's own profile; the same
+    fields repeated across many principals is a data exposure. Credentials outrank
+    personal data — a password or hash in a response is decisive regardless of volume.
+    Returns (0, [], "") when there is nothing to say."""
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return 0, [], ""
+    rows: list[dict] = []
+
+    def walk(node, depth=0):
+        if depth > 4 or len(rows) > 500:
+            return
+        if isinstance(node, list):
+            for item in node:
+                if isinstance(item, dict):
+                    rows.append(item)
+                else:
+                    walk(item, depth + 1)
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value, depth + 1)
+
+    walk(doc)
+    if not rows:
+        return 0, [], ""
+    creds: set = set()
+    pii: set = set()
+    for row in rows:
+        for key in row:
+            k = str(key).lower()
+            if k in _CREDENTIAL_FIELDS:
+                creds.add(k)
+            elif k in _PII_FIELDS:
+                pii.add(k)
+    if creds:
+        return len(rows), sorted(creds | pii), "critical"
+    if pii and len(rows) >= 2:          # bulk personal data about several principals
+        return len(rows), sorted(pii), "high"
+    return 0, [], ""
+
+
 def protected_operations(text: str) -> list[tuple[str, str]]:
     """(METHOD, path) for the operations an OpenAPI document declares as REQUIRING
     authentication — per-operation `security`, or the document-level default that an

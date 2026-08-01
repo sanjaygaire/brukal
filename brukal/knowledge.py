@@ -103,6 +103,22 @@ _KB = [
      "against the calling user; require confirmation for state-changing actions.",
      ["OWASP LLM06:2025 Excessive Agency", "CWE-285"]),
     # --- API / token authentication -------------------------------------------
+    (("unauthenticated exposure of credentials",), 9.8,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+     "Credentials for every account are readable by anyone who can reach the endpoint — "
+     "the accounts are compromised wherever those passwords are reused.",
+     "Remove the endpoint or put it behind authentication AND authorization; never return "
+     "credential material in a response. Store passwords only as a slow salted hash, and "
+     "treat every exposed account as compromised: force a reset.",
+     ["OWASP API3:2023 Broken Object Property Level Authorization", "CWE-200", "CWE-522"]),
+    (("unauthenticated exposure of personal data",), 7.5,
+     "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+     "Personal data about every user is retrievable by anyone, in bulk — a reportable "
+     "breach in most jurisdictions and a ready-made list for targeted phishing.",
+     "Require authentication and per-record authorization on collection endpoints; return "
+     "only the fields the caller needs, and paginate rather than dumping the table.",
+     ["OWASP API3:2023 Broken Object Property Level Authorization", "CWE-200", "CWE-359"]),
+
     (("mass assignment", "privileged field"), 8.8,
      "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
      "A user can grant themselves properties the application never meant them to set — "

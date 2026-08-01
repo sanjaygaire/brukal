@@ -62,6 +62,10 @@ SQL_ERROR = ("sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) "
 LEAKED_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZSIsImlhdCI6MTc4NTU2NTk0NywiZXhwIjoxNzg1NTY5NTQ3fQ._QhbIPc6rektm1Ktesi48t9eElwrWhP_M6KlDD-ghhk"
 BOOKS = json.dumps({"Books": [{"book_title": "bookA", "user": "alice"},
                               {"book_title": "bookB", "user": "bob"}]})
+# A listing the app serves to anyone, carrying other people's data.
+USERS = json.dumps({"users": [{"username": "name1", "email": "mail1@mail.com"},
+                              {"username": "name2", "email": "mail2@mail.com"},
+                              {"username": "admin", "email": "admin@mail.com"}]})
 
 
 class _ScriptedKali:
@@ -100,6 +104,8 @@ class _ScriptedSite:
                              body='{"detail":"No authorization token provided"}')
         if path.startswith("/books/v1"):
             pass                                      # handled above
+        if path.rstrip("/").endswith("/users/v1"):
+            return WebResult(status=200, url=url, body=USERS)
         if path.startswith("/users/v1/"):
             value = path.rsplit("/", 1)[-1]
             if value.count("%27") % 2 == 1:          # unbalanced quote -> DB error
@@ -224,5 +230,19 @@ def test_every_finding_carries_report_grade_enrichment():
             assert e["cvss"] > 0, f.title
             assert e["refs"] and e["impact"] and e["remediation"], f.title
             assert e["impact"] != "Weakens the security posture of the target.", f.title
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_chain_notices_what_the_app_gives_a_stranger():
+    """A listing served without credentials, carrying other people's data, is a finding
+    the chain should reach on its own — and the severity must track what leaked."""
+    sess, result, kali, site, audit, tmp = _run_loop()
+    try:
+        exposure = [f for f in sess.findings.all() if "Unauthenticated exposure" in f.title]
+        assert exposure, {f.title for f in sess.findings.all()}
+        f = exposure[0]
+        assert f.confirmed and f.category == "api"
+        assert "email" in f.evidence and "record(s)" in f.evidence
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

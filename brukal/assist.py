@@ -1712,6 +1712,52 @@ class AssistSession:
             stamp += 1
         return False
 
+    def confirm_data_exposure(self, url: str) -> bool:
+        """Sensitive data served to an UNAUTHENTICATED caller (OWASP API3 / A01).
+
+        Read-only and credential-free by construction: our own session is suppressed, so
+        a 200 here means anyone on the network can fetch it. Bulk is what separates a
+        finding from a feature — one record about the caller is their own profile, the
+        same fields across many principals is an exposure — and credentials in the body
+        are decisive regardless of volume.
+
+        A host that answers 200 for everything (soft-404) proves nothing, and an endpoint
+        whose job is to issue a token is excluded."""
+        from . import webmap
+        from .web import WebAction
+        if self.browser is None:
+            return False
+        if self.surface is not None and getattr(self.surface, "soft_404", False):
+            return False
+        if self._ISSUES_TOKENS_RE.search(url or ""):
+            return False
+        saved_header = getattr(self.browser, "auth_header", "")
+        saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
+        try:
+            self.browser.auth_header = ""
+            if hasattr(self.browser, "_cookies"):
+                self.browser._cookies = {}
+            _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+        finally:
+            self.browser.auth_header = saved_header
+            if hasattr(self.browser, "_cookies"):
+                self.browser._cookies = saved_cookies
+        if r is None:
+            self._note_rate_limit(_d)
+            return False
+        if r.status != 200:
+            return False                       # refused: working as intended
+        count, fields, severity = webmap.sensitive_records(r.body or "")
+        if not severity:
+            return False
+        kind = ("credentials" if severity == "critical" else "personal data")
+        self._record_confirmed(
+            url, f"Unauthenticated exposure of {kind}", severity, "",
+            f"an anonymous GET returned {count} record(s) carrying "
+            f"{', '.join(fields)} — no credential of any kind was presented",
+            category="api")
+        return True
+
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -2078,6 +2124,7 @@ class AssistSession:
         confirmed = tried = 0
         probed: set[str] = set()          # endpoints already covered by passes 1 and 2
         confirmed_bola = [False]          # one object-authz proof per run is enough
+        exposure_checked: set[str] = set()   # listings already asked anonymously
 
         from . import aiscan
 
@@ -2183,7 +2230,25 @@ class AssistSession:
                     except Exception:
                         pass
 
-            # 4) AI / LLM endpoints — a chat API on a SPA has neither a form nor a query
+            # 5) COLLECTION endpoints — ask what the app hands to a stranger. Routes
+            #     WITHOUT a path parameter are the listings, and a listing is where bulk
+            #     data leaks. One credential-free GET each.
+            for route in list(getattr(self.surface, "api_routes", []) or []):
+                if self._confirm_budget <= 0 or self._rate_limited:
+                    break
+                if self._PATH_PARAM_RE.search(route):
+                    continue                    # an item, not a listing
+                url = route if route.startswith("http") else _urljoin(base_origin, route)
+                if url in exposure_checked:
+                    continue
+                exposure_checked.add(url)
+                try:
+                    if self.confirm_data_exposure(url):
+                        confirmed += 1
+                except Exception:
+                    pass
+
+            # 6) AI / LLM endpoints — a chat API on a SPA has neither a form nor a query
             #    parameter, so it is reachable only as a mined route. Its body field name
             #    isn't discoverable either: try the handful the ecosystem actually uses.
             for url in self._ai_endpoints():
