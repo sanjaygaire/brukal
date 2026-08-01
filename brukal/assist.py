@@ -171,6 +171,7 @@ class AssistSession:
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.allow_intrusive = False   # may a proof CREATE state on the target?
         self._cors_checked = False     # the CORS question is per-host, asked once
+        self._graphql_checked = False  # introspection sweep runs once per engagement
         self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
         self._learned: set = set()     # research queries already looked up (de-dup)
         from .findings import FindingStore
@@ -1841,6 +1842,58 @@ class AssistSession:
             return True
         return False
 
+    # Where a GraphQL endpoint usually lives.
+    _GRAPHQL_PATHS = ("/graphql", "/api/graphql", "/graphql/api", "/v1/graphql",
+                      "/query", "/gql", "/graphql/console", "/index.php?graphql")
+    _INTROSPECTION = ('{"query":"{__schema{types{name fields{name}}}}"}')
+
+    def confirm_graphql_introspection(self, url: str) -> bool:
+        """A GraphQL endpoint that hands its entire schema to an anonymous caller.
+
+        Introspection returns every type, field and mutation — including the operations
+        no client is meant to call — which turns a black-box API into a documented one
+        and is the natural first step of any GraphQL attack.
+
+        The verdict is STRUCTURAL: the response must genuinely contain a __schema with
+        types. That matters because the most common target shape here is a single-page
+        app that answers 200 with its index.html for every path, and a status-code or
+        keyword check would call that a GraphQL server."""
+        from . import webmap
+        from .web import WebAction
+        if self.browser is None:
+            return False
+        _d, r = self.browser.run(WebAction(
+            "request", url=url, method="POST", body=self._INTROSPECTION,
+            headers={"Content-Type": "application/json"}))
+        if r is None:
+            self._note_rate_limit(_d)
+            return False
+        count, notable = webmap.graphql_schema(r.body or "")
+        if count <= 0:
+            return False
+        detail = (f"; the schema names {', '.join(notable)}" if notable else "")
+        self._record_confirmed(
+            url, "GraphQL introspection enabled", "medium", "",
+            f"an unauthenticated introspection query returned the full schema — "
+            f"{count} types{detail}",
+            category="api")
+        return True
+
+    def graphql_endpoints(self) -> list[str]:
+        """Candidate GraphQL URLs: anything the crawl mined that looks like one, plus the
+        conventional paths on the seed host."""
+        from urllib.parse import urljoin
+        base = (getattr(self.surface, "seed", "") or f"http://{self.target}/")
+        found: list[str] = []
+        for route in list(getattr(self.surface, "api_routes", None) or []):
+            if "graphql" in route.lower() or route.lower().endswith("/gql"):
+                found.append(route if route.startswith("http") else urljoin(base, route))
+        for path in self._GRAPHQL_PATHS:
+            u = urljoin(base, path.lstrip("/"))
+            if u not in found:
+                found.append(u)
+        return found[:8]
+
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -2275,7 +2328,21 @@ class AssistSession:
                 except Exception:
                     pass
 
-            # 3) COLLECTION endpoints — ask what the app hands to a stranger. Routes
+            # 3) GraphQL — one introspection query per candidate. A schema is the map
+            #    of every operation the API exposes, so it is worth asking early.
+            if not self._graphql_checked:
+                self._graphql_checked = True
+                for gurl in self.graphql_endpoints():
+                    if self._confirm_budget <= 0 or self._rate_limited:
+                        break
+                    try:
+                        if self.confirm_graphql_introspection(gurl):
+                            confirmed += 1
+                            break
+                    except Exception:
+                        pass
+
+            # 4) COLLECTION endpoints — ask what the app hands to a stranger. Routes
             #     WITHOUT a path parameter are the listings, and a listing is where bulk
             #     data leaks. One credential-free GET each.
             for route in list(getattr(self.surface, "api_routes", []) or []):

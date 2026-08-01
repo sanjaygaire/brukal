@@ -111,6 +111,15 @@ _KB = [
      "against the calling user; require confirmation for state-changing actions.",
      ["OWASP LLM06:2025 Excessive Agency", "CWE-285"]),
     # --- API / token authentication -------------------------------------------
+    (("graphql introspection",), 5.3, "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+     "The API publishes its complete schema to anyone — every type, field and mutation, "
+     "including operations no client is meant to call — which is the starting map for "
+     "everything else an attacker does against it.",
+     "Disable introspection in production, and do not rely on that alone: authorize every "
+     "resolver, since a schema can also be recovered from error messages and field "
+     "suggestions. Disable suggestions and cap query depth and cost.",
+     ["OWASP API9:2023 Improper Inventory Management", "CWE-200"]),
+
     (("unauthenticated exposure of credentials",), 9.8,
      "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
      "Credentials for every account are readable by anyone who can reach the endpoint — "

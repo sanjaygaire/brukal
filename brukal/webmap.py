@@ -335,6 +335,38 @@ def sensitive_records(text: str) -> tuple[int, list[str], str]:
     return 0, [], ""
 
 
+def graphql_schema(text: str) -> tuple[int, list[str]]:
+    """(type count, notable type names) from an introspection response.
+
+    A GraphQL endpoint that answers introspection has handed over its entire schema —
+    every type, field and mutation, including the ones no client is meant to call. The
+    check is structural, not textual: the response must actually contain a __schema with
+    types, which is what tells a real endpoint apart from a single-page app that returns
+    its index.html with status 200 for every path."""
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return 0, []
+    if not isinstance(doc, dict):
+        return 0, []
+    schema = ((doc.get("data") or {}).get("__schema")
+              if isinstance(doc.get("data"), dict) else None)
+    if not isinstance(schema, dict):
+        return 0, []
+    types = schema.get("types")
+    if not isinstance(types, list):
+        return 0, []
+    names = [t.get("name") for t in types
+             if isinstance(t, dict) and isinstance(t.get("name"), str)]
+    real = [n for n in names if not n.startswith("__")]
+    # Types worth naming in a report: the mutation surface and anything that sounds
+    # administrative or personal.
+    notable = [n for n in real if re.search(
+        r"(?i)mutation|user|account|admin|password|token|secret|credit|payment|order|"
+        r"internal|audit|import|paste", n)]
+    return len(real), notable[:12]
+
+
 def protected_operations(text: str) -> list[tuple[str, str]]:
     """(METHOD, path) for the operations an OpenAPI document declares as REQUIRING
     authentication — per-operation `security`, or the document-level default that an
