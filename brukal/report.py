@@ -143,4 +143,13 @@ def write_reports(store: FindingStore, meta: dict, out_dir) -> dict:
         written["json"] = str(js)
     except OSError:
         pass
+    # Interchange formats, so the run lands in whatever the organisation already runs
+    # (SARIF is read by GitHub code scanning, GitLab, Azure DevOps, DefectDojo) without
+    # anyone writing glue. Best-effort like the rest: a failure here never costs the
+    # human report.
+    try:
+        from . import export
+        written.update(export.write(store.all(), out_dir, meta))
+    except Exception:
+        pass
     return written

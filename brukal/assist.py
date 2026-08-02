@@ -172,6 +172,7 @@ class AssistSession:
         self.allow_intrusive = False   # may a proof CREATE state on the target?
         self._cors_checked = False     # the CORS question is per-host, asked once
         self._graphql_checked = False  # introspection sweep runs once per engagement
+        self.signature_packs: list = []   # contributed detections (data, never code)
         self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
         self._learned: set = set()     # research queries already looked up (de-dup)
         from .findings import FindingStore
@@ -722,6 +723,12 @@ class AssistSession:
                         new_hl.append(h)
                     self._record_ai_finding(command, _sev, _label, _line)
             exposures = webprobe.scan_exposures(raw) if _is_raw_fetch(command) else []
+            # Contributed detections apply to tool output too — an organisation's own
+            # error strings surface in a scanner transcript far more often than in a
+            # crawled page. Same recorder, so they dedupe and downgrade identically.
+            if self.signature_packs:
+                from . import packs as _packs
+                exposures = list(exposures) + _packs.scan(raw, self.signature_packs)
             for _sev, _label, _line in exposures:
                 h = (f"exposure/{_sev}", f"{_label}: {_line}")
                 if h not in new_hl:
@@ -1349,7 +1356,11 @@ class AssistSession:
             self._seen_jwts.add(tok)
             self.last_jwt = tok
             n += self.scan_jwt(tok, source=url)
-        for sev, label, line in webprobe.scan_exposures(body):
+        contributed = []
+        if self.signature_packs:
+            from . import packs
+            contributed = packs.scan(body, self.signature_packs)
+        for sev, label, line in list(webprobe.scan_exposures(body)) + contributed:
             # An auth endpoint returning a token to its own client is the design, not a
             # leak. Reporting "JWT exposed" for a login response is a false positive, and
             # it is the kind that costs a report its credibility.
@@ -4112,6 +4123,11 @@ def _write_session_report(session, result, cage, audit, spend=""):
             "blocked": result.blocked,
             "stop_reason": result.stop_reason,
             "audit_intact": bool(audit.verify()) if audit is not None else False,
+            # Same fact under the name the interchange formats use: a result is worth
+            # only as much as the evidence it was obtained in scope, so governance
+            # travels WITH the findings rather than staying in the human report.
+            "audit_chain_intact": bool(audit.verify()) if audit is not None else False,
+            "audit_log": str(getattr(audit, "path", "")) if audit is not None else "",
             "spend": spend,
             "surface": session.surface.summary() if session.surface else "",
         }
@@ -4125,6 +4141,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
              container="brukal-kali", model=None, provider=None, base_url=None,
              max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
              full_send=False, mode=None, no_research=False,
+             packs_dir=None, fail_on=None,
              max_cost=None, max_research=None, max_time=None, resume=True,
              login=None) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
@@ -4225,6 +4242,13 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # it). The web door has no risk layer to escalate through, so that stays behind the
     # operator's explicit "unleash" rather than running by default.
     session.allow_intrusive = full
+    # Contributed detections, if the operator pointed at a pack directory. Loaded here so
+    # a malformed pack is visible at start-up rather than mid-engagement.
+    if packs_dir:
+        from . import packs as _packs
+        session.signature_packs = _packs.load_dir(packs_dir)
+        _emit(console, f"  signature packs: {len(session.signature_packs)} contributed "
+                       f"detection(s) from {packs_dir}")
     if full:
         _emit(console,
               "  ⚠ FULL-SEND — auto-approving ALL in-scope actions (incl. irreversible "
@@ -4390,4 +4414,14 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
           f"continue in: [cyan]brukal solve {target}[/]\n"
           f"  session recorded to {audit_path} · chain intact: "
           f"[green]{audit.verify()}[/]\n{spend}\n")
+    if fail_on:
+        # A pipeline gate, deliberately CONFIRMED-only: a build should break on
+        # something Brukal proved, not on a lead nobody has triaged — a gate that cries
+        # wolf gets switched off within a week, and then it protects nothing.
+        from . import export
+        code = export.exit_code(session.findings.all(), fail_on=fail_on)
+        if code:
+            _emit(console, f"  ✖ CI gate: a confirmed finding at or above "
+                           f"'{fail_on}' was recorded — exiting non-zero.")
+        return code
     return 0

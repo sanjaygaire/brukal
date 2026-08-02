@@ -265,6 +265,7 @@ def _cmd_auto(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url,
         handoff_to_menu=not args.no_handoff, single_agent=args.single_agent,
         full_send=args.full_send, mode=getattr(args, "mode", None),
+        packs_dir=getattr(args, "packs", None), fail_on=getattr(args, "fail_on", None),
         no_research=args.no_research,
         max_cost=getattr(args, "max_cost", None),
         max_research=getattr(args, "max_research", None),
@@ -592,6 +593,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="authorise a web vhost at scope time (e.g. --host nexus.htb); "
                          "repeatable. Lets auto render/request that vhost.")
     _add_login_args(pa)
+    pa.add_argument("--packs", default=None, metavar="DIR",
+                    help="directory of contributed signature packs (*.json). Packs are "
+                         "DATA: patterns and labels only, never code — they cannot act, "
+                         "request, or widen scope")
+    pa.add_argument("--fail-on", default=None, metavar="SEVERITY",
+                    choices=["critical", "high", "medium", "low", "info"],
+                    help="exit non-zero when a CONFIRMED finding of at least this "
+                         "severity is recorded (for CI). Off by default")
     pa.add_argument("--max-steps", type=int, default=20,
                     help="hand back to you after this many autonomous turns")
     pa.add_argument("--no-handoff", action="store_true",
