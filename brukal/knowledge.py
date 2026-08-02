@@ -69,6 +69,13 @@ _KB = [
      "only a value from that list; never combine a wildcard or a reflected origin with "
      "Access-Control-Allow-Credentials, and never trust the null origin.",
      ["OWASP A05:2021 Security Misconfiguration", "CWE-942", "CWE-346"]),
+    (("default credentials",), 9.8, "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+     "Anyone who reads the vendor documentation can log in — the single most common "
+     "route to initial access, and it needs no exploit at all.",
+     "Force a credential change at first start and refuse to serve until it happens; "
+     "never ship a working account. Audit existing deployments for the documented "
+     "defaults and rotate anything reachable.",
+     ["OWASP A07:2021 Identification and Authentication Failures", "CWE-1392", "CWE-798"]),
     # --- AI / LLM applications (OWASP Top 10 for LLM Applications, 2025) -------
     (("prompt injection",), 8.6, "AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N",
      "Attacker text becomes instruction: the model abandons its own rules — leaking its "

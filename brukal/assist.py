@@ -1271,13 +1271,23 @@ class AssistSession:
         # 4) Confirm: a token, OR a redirect away from the login page, OR the response no
         #    longer shows the password field (cookie session established).
         ok = bool(token)
-        if not ok and res2 is not None:
+        # The "no password field in the response" fallback is a COOKIE-session heuristic
+        # and must not be applied to a token login: a JSON API rejecting credentials
+        # answers {"status":"fail"}, which contains no password field either, so the
+        # fallback declared every failed API login a success. Brukal would then believe
+        # it held a session it never got — and a default-credential check built on it
+        # would call any endpoint vulnerable.
+        if not ok and res2 is not None and lt == "form":
             hdrs = res2.headers or {}
             loc = hdrs.get("Location", "") or hdrs.get("location", "")
             redirected_away = (res2.status in (301, 302, 303, 307, 308)
                                and "login" not in loc.lower())
             no_login_form = bool(res2.body) and pass_field not in (res2.body or "")
-            ok = bool(redirected_away or no_login_form)
+            # An explicit failure in the body outranks the absence of a form.
+            failed = bool(self._AUTH_ERROR_RE.search((res2.body or "")[:2000])
+                          or re.search(r'"status"\s*:\s*"(?:fail|error)"',
+                                       (res2.body or "")[:2000], re.I))
+            ok = bool((redirected_away or no_login_form) and not failed)
         self.authenticated = ok
         jar = len(getattr(self.browser, "_cookies", {}) or {})
         how = "bearer token" if token else f"{jar} cookie(s)"
@@ -1995,6 +2005,74 @@ class AssistSession:
             if u not in found:
                 found.append(u)
         return found[:8]
+
+    # Shipped credentials, in the order they are actually found. Deliberately SHORT:
+    # this asks "was the documented default ever changed", it is not a password attack.
+    # Every extra pair is another failed login against a real account, and lockout is a
+    # genuine hazard on a production target.
+    DEFAULT_CREDENTIALS = (
+        ("admin", "admin"), ("admin", "password"), ("admin", "admin123"),
+        ("administrator", "administrator"), ("root", "root"), ("root", "toor"),
+        ("user", "user"), ("test", "test"), ("guest", "guest"),
+        ("admin", "changeme"), ("admin", "letmein"), ("tomcat", "tomcat"),
+    )
+
+    def confirm_default_credentials(self, login_url: str, login_type: str = "form",
+                                    user_field: str = "username",
+                                    pass_field: str = "password") -> bool:
+        """Shipped credentials that were never changed (CWE-1392).
+
+        A comparative benchmark against nuclei found a critical default login on a target
+        Brukal walked straight past, which is what prompted this: it is the most common
+        route to initial access in the real world and no amount of injection testing
+        substitutes for it.
+
+        Proved against a CONTROL. A wrong password for the same account must FAIL first —
+        otherwise an application that accepts anything, or one whose login always
+        redirects, would report every pair as a success. Only then are the defaults
+        tried, and the first that authenticates is the finding.
+
+        Gated on intrusive authorisation because failed logins can lock a real account,
+        and bounded to a dozen documented pairs: this asks whether the default was
+        changed, it is not a password-guessing attack."""
+        if self.browser is None or not self.allow_intrusive:
+            return False
+
+        def attempt(user: str, password: str) -> bool:
+            saved_header = getattr(self.browser, "auth_header", "")
+            saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
+            saved_auth = self.authenticated
+            try:
+                self.browser.auth_header = ""
+                if hasattr(self.browser, "_cookies"):
+                    self.browser._cookies = {}
+                self.authenticated = False
+                return bool(self.login(login_url, user, password,
+                                       login_type=login_type,
+                                       user_field=user_field, pass_field=pass_field))
+            except Exception:
+                return False
+            finally:
+                self.browser.auth_header = saved_header
+                if hasattr(self.browser, "_cookies"):
+                    self.browser._cookies = saved_cookies
+                self.authenticated = saved_auth
+
+        control_user = self.DEFAULT_CREDENTIALS[0][0]
+        if attempt(control_user, f"brukalControl{random.randint(10 ** 6, 10 ** 7)}"):
+            return False        # it accepts anything: a default pair would prove nothing
+
+        for user, password in self.DEFAULT_CREDENTIALS:
+            if not attempt(user, password):
+                continue
+            self._record_confirmed(
+                login_url, "Default credentials accepted", "critical", user_field,
+                f"the shipped credentials {user!r}/{password!r} authenticate, while a "
+                f"wrong password for the same account is rejected — the documented "
+                f"default was never changed",
+                category="web")
+            return True
+        return False
 
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
