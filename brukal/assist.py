@@ -118,6 +118,17 @@ def _outcome_feedback(decision, result, raw: str) -> str:
         return (f"{decision.verdict}: TIMED OUT — the command was too slow and got "
                 f"killed with no result. Use a FASTER, more targeted command "
                 f"(fewer ports, drop -A/-p-).")
+    # A tool that FAILED is not a tool that found nothing. nikto given -Format without
+    # -output exits rc=13 after printing its banner, and Brukal recorded that as "no
+    # notable output" — indistinguishable from a clean scan, which is a false negative
+    # dressed as a result. Surface the failure and the reason.
+    rc = getattr(result, "returncode", 0) or 0
+    err = (getattr(result, "stderr", "") or "").strip()
+    if rc not in (0, None) and len(raw.strip()) < 200:
+        why = err.splitlines()[0][:200] if err else f"exit code {rc}"
+        return (f"{decision.verdict}: TOOL FAILED — it exited {rc} without scanning, so "
+                f"this is NOT a clean result. Reason: {why}. Fix the invocation or use "
+                f"another tool; do not treat the silence as 'nothing found'.")
     if not raw:
         return (f"{decision.verdict}: (no output — this returned nothing useful; "
                 f"try a different tool or target)")

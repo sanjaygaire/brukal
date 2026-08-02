@@ -1,0 +1,127 @@
+{
+  "generated_at": "2026-08-02T00:59:38Z",
+  "targets": {
+    "VAmPI (REST API)": [
+      {
+        "tool": "brukal",
+        "seconds": 3.7,
+        "ground_truth_total": 7,
+        "ground_truth_found": 7,
+        "found_ids": [
+          "bola",
+          "jwt-forgery",
+          "jwt-weak-key",
+          "mass-assignment",
+          "sqli-path-param",
+          "unauth-credential-exposure",
+          "unauth-pii-exposure"
+        ],
+        "missed_ids": [],
+        "stateful_total": 4,
+        "stateful_found": 4,
+        "findings_reported": 7,
+        "additional_findings_unjudged": 0,
+        "proof_carrying_findings": 7,
+        "audit_chain_intact": true,
+        "ran_successfully": true,
+        "returncode": null,
+        "stderr": ""
+      },
+      {
+        "tool": "nuclei",
+        "seconds": 220.0,
+        "ground_truth_total": 7,
+        "ground_truth_found": 0,
+        "found_ids": [],
+        "missed_ids": [
+          "bola",
+          "jwt-forgery",
+          "jwt-weak-key",
+          "mass-assignment",
+          "sqli-path-param",
+          "unauth-credential-exposure",
+          "unauth-pii-exposure"
+        ],
+        "stateful_total": 4,
+        "stateful_found": 0,
+        "findings_reported": 14,
+        "additional_findings_unjudged": 14,
+        "proof_carrying_findings": 0,
+        "audit_chain_intact": true,
+        "ran_successfully": true,
+        "returncode": 0,
+        "stderr": ""
+      },
+      {
+        "tool": "nikto",
+        "seconds": 8.7,
+        "ground_truth_total": 7,
+        "ground_truth_found": 0,
+        "found_ids": [],
+        "missed_ids": [
+          "bola",
+          "jwt-forgery",
+          "jwt-weak-key",
+          "mass-assignment",
+          "sqli-path-param",
+          "unauth-credential-exposure",
+          "unauth-pii-exposure"
+        ],
+        "stateful_total": 4,
+        "stateful_found": 0,
+        "findings_reported": 20,
+        "additional_findings_unjudged": 20,
+        "proof_carrying_findings": 0,
+        "audit_chain_intact": true,
+        "ran_successfully": true,
+        "returncode": 0,
+        "stderr": "+ ERROR: Failed to check for updates: 403\n"
+      }
+    ],
+    "DVGA (GraphQL)": [
+      {
+        "tool": "brukal",
+        "seconds": 0.5,
+        "ground_truth_total": 3,
+        "ground_truth_found": 3,
+        "found_ids": [
+          "graphql-batching",
+          "graphql-introspection",
+          "graphql-suggestions"
+        ],
+        "missed_ids": [],
+        "stateful_total": 0,
+        "stateful_found": 0,
+        "findings_reported": 3,
+        "additional_findings_unjudged": 0,
+        "proof_carrying_findings": 3,
+        "audit_chain_intact": true,
+        "ran_successfully": true,
+        "returncode": null,
+        "stderr": ""
+      },
+      {
+        "tool": "nuclei",
+        "seconds": 184.7,
+        "ground_truth_total": 3,
+        "ground_truth_found": 2,
+        "found_ids": [
+          "graphql-batching",
+          "graphql-suggestions"
+        ],
+        "missed_ids": [
+          "graphql-introspection"
+        ],
+        "stateful_total": 0,
+        "stateful_found": 0,
+        "findings_reported": 21,
+        "additional_findings_unjudged": 19,
+        "proof_carrying_findings": 0,
+        "audit_chain_intact": true,
+        "ran_successfully": true,
+        "returncode": 0,
+        "stderr": "2026/08/02 01:03:35 Unsolicited response received on idle HTTP channel starting with \"HTTP/1.1 400 Bad Request\\r\\nConnection: close\\r\\nContent-length: 0\\r\\n\\r\\n\"; err=<nil>\n"
+      }
+    ]
+  }
+}
