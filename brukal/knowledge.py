@@ -76,6 +76,14 @@ _KB = [
      "never ship a working account. Audit existing deployments for the documented "
      "defaults and rotate anything reachable.",
      ["OWASP A07:2021 Identification and Authentication Failures", "CWE-1392", "CWE-798"]),
+    (("missing security header", "cookie set without"), 3.1,
+     "AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:L/A:N",
+     "No single missing control is an exploit; together they remove the defences that "
+     "would have limited the damage of one.",
+     "Set the control at the edge for every response rather than per route: a strict "
+     "Content-Security-Policy, nosniff, frame-ancestors, HSTS on TLS, and Secure + "
+     "HttpOnly + SameSite on every session cookie.",
+     ["OWASP A05:2021 Security Misconfiguration", "CWE-693", "CWE-1004"]),
     # --- AI / LLM applications (OWASP Top 10 for LLM Applications, 2025) -------
     (("prompt injection",), 8.6, "AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N",
      "Attacker text becomes instruction: the model abandons its own rules — leaking its "

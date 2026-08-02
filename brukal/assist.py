@@ -182,6 +182,7 @@ class AssistSession:
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.allow_intrusive = False   # may a proof CREATE state on the target?
         self._cors_checked = False     # the CORS question is per-host, asked once
+        self._headers_checked = False  # hygiene sweep runs once per host
         self._graphql_checked = False  # introspection sweep runs once per engagement
         self.signature_packs: list = []   # contributed detections (data, never code)
         self.methodology = None        # methodology.Methodology (web=OWASP WSTG / box flow)
@@ -2074,6 +2075,80 @@ class AssistSession:
             return True
         return False
 
+    # (header, severity, what its absence means). Only controls whose absence is
+    # actually exploitable in some scenario — a checklist of every header ever proposed
+    # would bury the findings that matter under hygiene noise.
+    _SECURITY_HEADERS = (
+        ("content-security-policy", "low",
+         "no CSP, so an injected script has nothing standing in its way"),
+        ("x-content-type-options", "low",
+         "no nosniff, so a browser may execute a response typed as something else"),
+        ("x-frame-options", "low",
+         "framing is unrestricted (no X-Frame-Options and no CSP frame-ancestors), "
+         "which permits clickjacking"),
+        ("strict-transport-security", "low",
+         "no HSTS on an https origin, so a first request can be downgraded"),
+    )
+
+    def confirm_security_headers(self, url: str) -> int:
+        """Transport and browser-side controls that are absent from a real response.
+
+        Included because a comparison against nuclei and nikto showed them reporting
+        14-21 hygiene items per target where Brukal reported none — a client expects
+        these in a report even though none is a vulnerability on its own.
+
+        Kept honest in two ways: severity stays low, so hygiene can never crowd out a
+        proven critical; and the verdict is a fact rather than a guess — the header was
+        either present in an observed response or it was not. HSTS is only asked of an
+        https origin, since demanding it of http is meaningless."""
+        from urllib.parse import urlsplit
+
+        from .web import WebAction
+        if self.browser is None:
+            return 0
+        _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+        if r is None:
+            self._note_rate_limit(_d)
+            return 0
+        if r.status is None or r.status >= 500:
+            return 0                      # a broken response says nothing about policy
+        headers = {str(k).lower(): str(v) for k, v in (r.headers or {}).items()}
+        is_https = urlsplit(url).scheme == "https"
+        csp = headers.get("content-security-policy", "")
+        n = 0
+        for header, severity, meaning in self._SECURITY_HEADERS:
+            if header in headers:
+                continue
+            if header == "strict-transport-security" and not is_https:
+                continue
+            if header == "x-frame-options" and "frame-ancestors" in csp:
+                continue                  # CSP covers it; reporting both is noise
+            self._record_confirmed(url, f"Missing security header: {header}", severity,
+                                   "", meaning, category="web")
+            n += 1
+        # Cookie flags, read from the response that set them.
+        raw_cookie = headers.get("set-cookie", "")
+        if raw_cookie:
+            low = raw_cookie.lower()
+            for flag, severity, meaning in (
+                ("httponly", "low",
+                 "a session cookie is readable by JavaScript, so an XSS becomes a "
+                 "session theft"),
+                ("samesite", "low",
+                 "no SameSite, so the cookie rides cross-site requests (CSRF)"),
+            ):
+                if flag not in low:
+                    self._record_confirmed(
+                        url, f"Cookie set without {flag}", severity, "", meaning,
+                        category="web")
+                    n += 1
+            if is_https and "secure" not in low:
+                self._record_confirmed(
+                    url, "Cookie set without Secure", "low", "",
+                    "the cookie may be sent over plaintext http", category="web")
+                n += 1
+        return n
+
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -2498,7 +2573,16 @@ class AssistSession:
                     except Exception:
                         pass
 
-            # 2) CORS — one header-only question per host, asked of the seed. Cheap, and
+            # 2) Hygiene: transport and browser-side controls, one request per host.
+            #    Low severity by design so it can never crowd out a proven critical.
+            if not self._headers_checked:
+                self._headers_checked = True
+                try:
+                    self.confirm_security_headers(base_origin)
+                except Exception:
+                    pass
+
+            # 2b) CORS — one header-only question per host, asked of the seed. Cheap, and
             #    the answer governs whether any other site can read what this one serves.
             if not self._cors_checked:
                 self._cors_checked = True
